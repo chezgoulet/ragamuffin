@@ -86,7 +86,7 @@ func main() {
 	// ── Initialize git provider (optional) ───────────────────────────────────
 	var gp git.Provider
 	if cfg.HasGit() {
-		gp = git.New(cfg.GitProvider, cfg.GitToken)
+		gp = git.New(cfg.GitProvider, cfg.GitToken, cfg.GitBaseURL)
 		logger.Info("git provider ready", "provider", cfg.GitProvider)
 	} else {
 		logger.Info("git provider not configured — /draft PR mode disabled")

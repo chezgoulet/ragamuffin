@@ -38,6 +38,7 @@ type Config struct {
 	GitProvider        string
 	GitToken           string
 	GitBaseBranch      string
+	GitBaseURL         string
 	GitRepos           string
 
 	// Optional — Audit
@@ -83,6 +84,7 @@ func Load() *Config {
 		GitProvider:        envOrDefault("RAGAMUFFIN_GIT_PROVIDER", "github"),
 		GitToken:           os.Getenv("RAGAMUFFIN_GIT_TOKEN"),
 		GitBaseBranch:      envOrDefault("RAGAMUFFIN_GIT_BASE_BRANCH", "main"),
+		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),

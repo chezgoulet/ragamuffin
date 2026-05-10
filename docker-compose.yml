@@ -23,7 +23,7 @@ services:
         condition: service_healthy
 
   qdrant:
-    image: qdrant/qdrant:latest
+    image: qdrant/qdrant:v1.17.1
     container_name: ragamuffin-qdrant
     ports:
       - "6334:6334"

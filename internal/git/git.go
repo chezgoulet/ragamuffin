@@ -26,12 +26,13 @@ type Provider interface {
 
 // New returns a Provider for the given provider type.
 // provider is "github", "gitlab", or "gitea". token is the API token.
-func New(provider, token string) Provider {
+// baseURL is only used for gitea (the self-hosted instance URL).
+func New(provider, token, baseURL string) Provider {
 	switch provider {
 	case "gitlab":
 		return &gitlabProvider{token: token, client: &http.Client{Timeout: 30 * time.Second}}
 	case "gitea":
-		return &giteaProvider{token: token, client: &http.Client{Timeout: 30 * time.Second}}
+		return &giteaProvider{baseURL: strings.TrimRight(baseURL, "/"), token: token, client: &http.Client{Timeout: 30 * time.Second}}
 	default: // github
 		return &githubProvider{token: token, client: &http.Client{Timeout: 30 * time.Second}}
 	}
@@ -275,13 +276,13 @@ func (p *gitlabProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 // ── Gitea / Forgejo ─────────────────────────────────────────────────────────────
 
 type giteaProvider struct {
-	token  string
-	client *http.Client
+	baseURL string
+	token   string
+	client  *http.Client
 }
 
 func (p *giteaProvider) apiURL(format string, args ...interface{}) string {
-	// Gitea uses the same API structure as GitHub (mostly).
-	return fmt.Sprintf(format, args...)
+	return p.baseURL + fmt.Sprintf(format, args...)
 }
 
 func (p *giteaProvider) do(ctx context.Context, method, urlStr string, body interface{}, out interface{}) error {
@@ -325,10 +326,7 @@ func (p *giteaProvider) do(ctx context.Context, method, urlStr string, body inte
 
 func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, content, targetPath, description string) (string, string, error) {
 	branch := genBranch()
-
-	// Gitea URL is user-configured (self-hosted). Use a base URL configured at provider creation.
-	// For v0.1, Gitea's API is at {base}/api/v1.
-	base := strings.TrimRight(p.apiURL("%s", ""), "/")
+	apiBase := p.apiURL("/api/v1")
 
 	// 1. Get base branch SHA
 	var branchResp struct {
@@ -336,7 +334,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 			SHA string `json:"sha"`
 		} `json:"commit"`
 	}
-	if err := p.do(ctx, "GET", base+"/api/v1/repos/"+repo+"/branches/"+baseBranch, nil, &branchResp); err != nil {
+	if err := p.do(ctx, "GET", apiBase+"/repos/"+repo+"/branches/"+baseBranch, nil, &branchResp); err != nil {
 		return "", "", fmt.Errorf("get base branch: %w", err)
 	}
 
@@ -345,7 +343,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 		"old_branch_name": baseBranch,
 		"new_branch_name": branch,
 	}
-	if err := p.do(ctx, "POST", base+"/api/v1/repos/"+repo+"/branches", branchReq, nil); err != nil {
+	if err := p.do(ctx, "POST", apiBase+"/repos/"+repo+"/branches", branchReq, nil); err != nil {
 		return "", "", fmt.Errorf("create branch: %w", err)
 	}
 
@@ -359,13 +357,13 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 	var existing struct {
 		SHA string `json:"sha"`
 	}
-	err := p.do(ctx, "GET", base+"/api/v1/repos/"+repo+"/contents/"+targetPath+"?ref="+branch, nil, &existing)
+	err := p.do(ctx, "GET", apiBase+"/repos/"+repo+"/contents/"+targetPath+"?ref="+branch, nil, &existing)
 	if err == nil && existing.SHA != "" {
 		fileReq["sha"] = existing.SHA
 	}
 
 	if content != "" {
-		if err := p.do(ctx, "PUT", base+"/api/v1/repos/"+repo+"/contents/"+targetPath, fileReq, nil); err != nil {
+		if err := p.do(ctx, "PUT", apiBase+"/repos/"+repo+"/contents/"+targetPath, fileReq, nil); err != nil {
 			return "", "", fmt.Errorf("create file: %w", err)
 		}
 	} else if existing.SHA != "" {
@@ -374,7 +372,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 			"sha":     existing.SHA,
 			"branch":  branch,
 		}
-		if err := p.do(ctx, "DELETE", base+"/api/v1/repos/"+repo+"/contents/"+targetPath, deleteReq, nil); err != nil {
+		if err := p.do(ctx, "DELETE", apiBase+"/repos/"+repo+"/contents/"+targetPath, deleteReq, nil); err != nil {
 			return "", "", fmt.Errorf("delete file: %w", err)
 		}
 	}
@@ -392,7 +390,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 	var prResp struct {
 		HTMLURL string `json:"html_url"`
 	}
-	if err := p.do(ctx, "POST", base+"/api/v1/repos/"+repo+"/pulls", prReq, &prResp); err != nil {
+	if err := p.do(ctx, "POST", apiBase+"/repos/"+repo+"/pulls", prReq, &prResp); err != nil {
 		return "", "", fmt.Errorf("create PR: %w", err)
 	}
 
