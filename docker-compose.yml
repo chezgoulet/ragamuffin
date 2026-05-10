@@ -1,0 +1,40 @@
+services:
+  ragamuffin:
+    build: .
+    container_name: ragamuffin
+    ports:
+      - "${RAGAMUFFIN_PORT:-8000}:8000"
+    volumes:
+      - "${RAGAMUFFIN_VAULT_PATH:-./vault}:/opt/vault:ro"
+    environment:
+      - RAGAMUFFIN_VAULT_PATH=/opt/vault
+      - RAGAMUFFIN_QDRANT_URL=${RAGAMUFFIN_QDRANT_URL:-http://qdrant:6334}
+      - RAGAMUFFIN_EMBEDDING_API_KEY=${RAGAMUFFIN_EMBEDDING_API_KEY}
+      - RAGAMUFFIN_EMBEDDING_MODEL=${RAGAMUFFIN_EMBEDDING_MODEL:-text-embedding-3-small}
+      - RAGAMUFFIN_EMBEDDING_BASE_URL=${RAGAMUFFIN_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      - RAGAMUFFIN_LLM_PROVIDER=${RAGAMUFFIN_LLM_PROVIDER:-}
+      - RAGAMUFFIN_LLM_BASE_URL=${RAGAMUFFIN_LLM_BASE_URL:-}
+      - RAGAMUFFIN_LLM_MODEL=${RAGAMUFFIN_LLM_MODEL:-}
+      - RAGAMUFFIN_LLM_API_KEY=${RAGAMUFFIN_LLM_API_KEY:-}
+      - RAGAMUFFIN_LOG_LEVEL=${RAGAMUFFIN_LOG_LEVEL:-info}
+    restart: unless-stopped
+    depends_on:
+      qdrant:
+        condition: service_healthy
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ragamuffin-qdrant
+    ports:
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+volumes:
+  qdrant_data:
