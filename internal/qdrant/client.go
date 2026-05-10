@@ -88,7 +88,7 @@ func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, sco
 		Vector:         vector,
 		Limit:          limit,
 		ScoreThreshold: &scoreThreshold,
-		WithPayload:    &pb.WithPayloadSelector{Selector: &pb.WithPayloadSelector_Enable{Enable: true}},
+		WithPayload:    pb.NewWithPayload(true),
 	}
 
 	if sourceFilter != "" {
