@@ -142,6 +142,9 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		return nil // no embedding client — skip indexing
 	}
 	content, err := os.ReadFile(absPath)
+	if err != nil {
+		return fmt.Errorf("read file %s: %w", relPath, err)
+	}
 
 	stat, err := os.Stat(absPath)
 	if err != nil {

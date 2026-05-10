@@ -3,7 +3,6 @@ package qdrant
 import (
 	"context"
 	"fmt"
-	"time"
 
 	pb "github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc"
@@ -22,8 +21,6 @@ type Client struct {
 func New(ctx context.Context, url, collection string, vectorSize uint64) (*Client, error) {
 	conn, err := grpc.NewClient(url,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-		grpc.WithTimeout(5*time.Second),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant connect: %w", err)
@@ -82,6 +79,10 @@ func (c *Client) Upsert(ctx context.Context, points []*pb.PointStruct) error {
 }
 
 // Search performs a vector similarity search.
+// source_filter uses Match_Text, which does substring matching, not strict prefix matching.
+// A filter of "team/" will match "other-team/file.md". For exact directory prefix filtering,
+// ensure your directory names are distinct enough that substring collisions don't occur.
+// A proper prefix filter would require Qdrant payload index changes (Phase 2).
 func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*pb.ScoredPoint, error) {
 	req := &pb.SearchPoints{
 		CollectionName: c.collection,
@@ -154,29 +155,6 @@ func (c *Client) Count(ctx context.Context) (uint64, error) {
 		return 0, err
 	}
 	return resp.Result.Count, nil
-}
-
-// DistinctSources returns the count of distinct source files.
-func (c *Client) DistinctSources(ctx context.Context) (uint64, error) {
-	// Qdrant doesn't have a direct distinct count. Use scroll to estimate.
-	// For stats purposes, we count all points and track files separately.
-	resp, err := c.points.Scroll(ctx, &pb.ScrollPoints{
-		CollectionName: c.collection,
-		Limit:         nil,
-	})
-	if err != nil {
-		return 0, err
-	}
-
-	seen := make(map[string]bool)
-	for _, p := range resp.Result {
-		if src, ok := p.Payload["source_file"]; ok {
-			if s, ok := src.Kind.(*pb.Value_StringValue); ok {
-				seen[s.StringValue] = true
-			}
-		}
-	}
-	return uint64(len(seen)), nil
 }
 
 // Health checks if Qdrant is reachable.

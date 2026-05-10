@@ -763,8 +763,6 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
-// ── Startup coordination ───────────────────────────────────────────────────────
-
 // ── MCP Tools ──────────────────────────────────────────────────────────────────
 
 func (s *Server) mcpTools() []mcp.ToolDefinition {
@@ -973,8 +971,14 @@ func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
 	}
 
 	if modeUsed == "full" && contextText == "" {
-		vector, _ := s.embedder.EmbedSingle(ctx, query)
-		results, _ := s.qdrant.Search(ctx, vector, 50, 0.0, "")
+		vector, err := s.embedder.EmbedSingle(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("embedding failed: %w", err)
+		}
+		results, err := s.qdrant.Search(ctx, vector, 50, 0.0, "")
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
+		}
 		seenSources := make(map[string]bool)
 		var b strings.Builder
 		for _, r := range results {

@@ -299,7 +299,7 @@ func (p *giteaProvider) do(ctx context.Context, method, urlStr string, body inte
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "token "+p.token)
+	req.Header.Set("Authorization", "Bearer "+p.token)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
