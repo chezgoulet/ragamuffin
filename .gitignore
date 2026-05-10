@@ -1,0 +1,28 @@
+# Binaries
+ragamuffin
+ragamuffin-*
+cmd/ragamuffin/ragamuffin
+cmd/embedding-proxy/embedding-proxy
+
+# Test coverage
+coverage.out
+*.test
+
+# Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+.env
+! .env.example
+
+# Build artifacts
+/build/
+/dist/
