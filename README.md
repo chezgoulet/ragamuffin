@@ -62,4 +62,4 @@ Named with affection by [Christopher Goulet](https://github.com/chezgoulet) and 
 
 ---
 
-*"The curl test is the test that matters."*
+*"The monkey paw used curl. It was super effective!"*
