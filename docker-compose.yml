@@ -1,40 +1,62 @@
+name: ragamuffin
+
 services:
   ragamuffin:
-    build: .
+    image: ghcr.io/chezgoulet/ragamuffin:latest
     container_name: ragamuffin
-    ports:
-      - "${RAGAMUFFIN_PORT:-8000}:8000"
-    volumes:
-      - "${RAGAMUFFIN_VAULT_PATH:-./vault}:/opt/vault:ro"
-    environment:
-      - RAGAMUFFIN_VAULT_PATH=/opt/vault
-      - RAGAMUFFIN_QDRANT_URL=${RAGAMUFFIN_QDRANT_URL:-http://qdrant:6334}
-      - RAGAMUFFIN_EMBEDDING_API_KEY=${RAGAMUFFIN_EMBEDDING_API_KEY}
-      - RAGAMUFFIN_EMBEDDING_MODEL=${RAGAMUFFIN_EMBEDDING_MODEL:-text-embedding-3-small}
-      - RAGAMUFFIN_EMBEDDING_BASE_URL=${RAGAMUFFIN_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
-      - RAGAMUFFIN_LLM_PROVIDER=${RAGAMUFFIN_LLM_PROVIDER:-}
-      - RAGAMUFFIN_LLM_BASE_URL=${RAGAMUFFIN_LLM_BASE_URL:-}
-      - RAGAMUFFIN_LLM_MODEL=${RAGAMUFFIN_LLM_MODEL:-}
-      - RAGAMUFFIN_LLM_API_KEY=${RAGAMUFFIN_LLM_API_KEY:-}
-      - RAGAMUFFIN_LOG_LEVEL=${RAGAMUFFIN_LOG_LEVEL:-info}
     restart: unless-stopped
     depends_on:
       qdrant:
         condition: service_healthy
+    volumes:
+      - "${RAGAMUFFIN_VAULT_PATH:-/opt/vault}:/opt/vault:ro"
+    environment:
+      RAGAMUFFIN_VAULT_PATH: /opt/vault
+      RAGAMUFFIN_QDRANT_URL: http://qdrant:6334
+      RAGAMUFFIN_EMBEDDING_API_KEY: ${RAGAMUFFIN_EMBEDDING_API_KEY}
+      RAGAMUFFIN_EMBEDDING_MODEL: ${RAGAMUFFIN_EMBEDDING_MODEL:-text-embedding-3-small}
+      RAGAMUFFIN_EMBEDDING_BASE_URL: ${RAGAMUFFIN_EMBEDDING_BASE_URL:-https://api.openai.com/v1}
+      RAGAMUFFIN_LLM_PROVIDER: ${RAGAMUFFIN_LLM_PROVIDER:-}
+      RAGAMUFFIN_LLM_BASE_URL: ${RAGAMUFFIN_LLM_BASE_URL:-}
+      RAGAMUFFIN_LLM_MODEL: ${RAGAMUFFIN_LLM_MODEL:-}
+      RAGAMUFFIN_LLM_API_KEY: ${RAGAMUFFIN_LLM_API_KEY:-}
+      RAGAMUFFIN_GIT_PROVIDER_ENABLED: ${RAGAMUFFIN_GIT_PROVIDER_ENABLED:-false}
+      RAGAMUFFIN_GIT_PROVIDER: ${RAGAMUFFIN_GIT_PROVIDER:-github}
+      RAGAMUFFIN_GIT_TOKEN: ${RAGAMUFFIN_GIT_TOKEN:-}
+      RAGAMUFFIN_GIT_BASE_URL: ${RAGAMUFFIN_GIT_BASE_URL:-}
+      RAGAMUFFIN_GIT_REPOS: ${RAGAMUFFIN_GIT_REPOS:-}
+      RAGAMUFFIN_LOG_LEVEL: ${RAGAMUFFIN_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${RAGAMUFFIN_PORT:-8000}:8000"
+    networks:
+      - ragamuffin
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   qdrant:
     image: qdrant/qdrant:v1.17.1
     container_name: ragamuffin-qdrant
-    ports:
-      - "6334:6334"
+    restart: unless-stopped
     volumes:
       - qdrant_data:/qdrant/storage
+    networks:
+      - ragamuffin
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:6333/health"]
       interval: 30s
       timeout: 5s
       retries: 3
-    restart: unless-stopped
+    # No ports — Qdrant is internal to the ragamuffin network.
+    # Only ragamuffin talks to it via http://qdrant:6334 (gRPC).
+    # External stacks never touch Qdrant directly.
+
+networks:
+  ragamuffin:
+    driver: bridge
 
 volumes:
   qdrant_data:
