@@ -62,7 +62,7 @@ func Load() *Config {
 	return &Config{
 		VaultPath:      requireEnv("RAGAMUFFIN_VAULT_PATH"),
 		QdrantURL:      requireEnv("RAGAMUFFIN_QDRANT_URL"),
-		EmbeddingAPIKey: requireEnv("RAGAMUFFIN_EMBEDDING_API_KEY"),
+		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		WatchInterval:     envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),

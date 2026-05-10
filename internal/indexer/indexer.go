@@ -138,10 +138,10 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 }
 
 func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) error {
-	content, err := os.ReadFile(absPath)
-	if err != nil {
-		return fmt.Errorf("read file: %w", err)
+	if idx.embedder == nil {
+		return nil // no embedding client — skip indexing
 	}
+	content, err := os.ReadFile(absPath)
 
 	stat, err := os.Stat(absPath)
 	if err != nil {

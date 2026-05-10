@@ -15,6 +15,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
@@ -23,25 +24,27 @@ import (
 
 // Server is the HTTP server.
 type Server struct {
-	cfg      *config.Config
-	qdrant   *qdrant.Client
-	embedder *embedding.Client
-	llm      *llm.Client
-	indexer  *indexer.Indexer
-	logger   *slog.Logger
-	started  time.Time
+	cfg         *config.Config
+	qdrant      *qdrant.Client
+	embedder    *embedding.Client
+	llm         *llm.Client
+	indexer     *indexer.Indexer
+	gitProvider git.Provider
+	logger      *slog.Logger
+	started     time.Time
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, logger *slog.Logger) *Server {
 	return &Server{
-		cfg:      cfg,
-		qdrant:   qc,
-		embedder: ec,
-		llm:      lm,
-		indexer:  idx,
-		logger:   logger,
-		started:  time.Now(),
+		cfg:         cfg,
+		qdrant:      qc,
+		embedder:    ec,
+		llm:         lm,
+		indexer:     idx,
+		gitProvider: gp,
+		logger:      logger,
+		started:     time.Now(),
 	}
 }
 
@@ -440,9 +443,23 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createPR(title, content, path, description string) (prURL, branch string, err error) {
-	// TODO: Implement GitHub/GitLab/Gitea REST API PR creation
-	// For now, return a descriptive error
-	return "", "", fmt.Errorf("PR mode not yet implemented")
+	if !s.cfg.HasGit() {
+		return "", "", fmt.Errorf("git provider not configured")
+	}
+
+	repo := s.cfg.GitRepos
+	if idx := strings.IndexByte(repo, ','); idx != -1 {
+		repo = repo[:idx] // first repo in list
+	}
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		return "", "", fmt.Errorf("no git repos configured")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	return s.gitProvider.CreatePR(ctx, repo, s.cfg.GitBaseBranch, title, content, path, description)
 }
 
 // ── /audit ─────────────────────────────────────────────────────────────────────

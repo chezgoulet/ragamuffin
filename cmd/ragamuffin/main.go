@@ -12,6 +12,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
@@ -39,9 +40,14 @@ func main() {
 	defer qc.Close()
 	logger.Info("qdrant connected", "collection", cfg.QdrantCollection)
 
-	// ── Initialize embedding client ──────────────────────────────────────────
-	ec := embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
-	logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
+	// ── Initialize embedding client (optional) ──────────────────────────────
+	var ec *embedding.Client
+	if cfg.EmbeddingAPIKey != "" {
+		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
+		logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
+	} else {
+		logger.Warn("EMBEDDING_API_KEY not set — indexing and /recall disabled")
+	}
 
 	// ── Initialize LLM client (optional) ─────────────────────────────────────
 	var lm *llm.Client
@@ -77,8 +83,17 @@ func main() {
 	<-initialDone // Wait for initial indexing to complete
 	logger.Info("initial indexing complete")
 
+	// ── Initialize git provider (optional) ───────────────────────────────────
+	var gp git.Provider
+	if cfg.HasGit() {
+		gp = git.New(cfg.GitProvider, cfg.GitToken)
+		logger.Info("git provider ready", "provider", cfg.GitProvider)
+	} else {
+		logger.Info("git provider not configured — /draft PR mode disabled")
+	}
+
 	// ── Start HTTP server ────────────────────────────────────────────────────
-	srv := server.New(cfg, qc, ec, lm, idx, logger)
+	srv := server.New(cfg, qc, ec, lm, idx, gp, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
