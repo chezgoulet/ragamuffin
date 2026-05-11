@@ -11,27 +11,23 @@ import (
 
 	"log/slog"
 
+	"github.com/chezgoulet/ragamuffin/internal/chunker"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-// Chunk represents a single indexed section of a file.
-type Chunk struct {
-	Text       string
-	SourceFile string
-	Header     string
-	ChunkIndex int
-	UpdatedAt  time.Time
-}
+// Chunk is an alias for chunker.Chunk (backward compat).
+type Chunk = chunker.Chunk
 
 // Indexer processes file events and maintains the Qdrant index.
 type Indexer struct {
-	vaultPath string
-	qdrant    *qdrant.Client
-	embedder  *embedding.Client
-	logger    *slog.Logger
+	vaultPath     string
+	qdrant        *qdrant.Client
+	embedder      *embedding.Client
+	logger        *slog.Logger
+	chunkMaxTokens int
 
 	mu        sync.RWMutex
 	fileCount int
@@ -50,6 +46,11 @@ func New(vaultPath string, qc *qdrant.Client, ec *embedding.Client, logger *slog
 		embedder:  ec,
 		logger:    logger,
 	}
+}
+
+// SetChunkMaxTokens configures the maximum tokens per chunk (0 = unlimited).
+func (idx *Indexer) SetChunkMaxTokens(n int) {
+	idx.chunkMaxTokens = n
 }
 
 // Stats returns current indexing statistics.
@@ -157,7 +158,8 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		idx.logger.Warn("indexer: failed to delete old chunks", "path", relPath, "error", err)
 	}
 
-	chunks := chunkFile(string(content), relPath, filepath.Ext(relPath), modTime)
+	chunks := chunker.ChunkFile(string(content), relPath, filepath.Ext(relPath), modTime,
+		chunker.Options{MaxTokens: idx.chunkMaxTokens})
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -215,76 +217,6 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	idx.mu.Unlock()
 
 	return nil
-}
-
-// chunkFile splits a file into chunks based on extension.
-func chunkFile(content, sourcePath, ext string, modTime time.Time) []Chunk {
-	switch ext {
-	case ".md":
-		return chunkMarkdown(content, sourcePath, modTime)
-	default:
-		return chunkPlain(content, sourcePath, modTime)
-	}
-}
-
-func chunkMarkdown(content, sourcePath string, modTime time.Time) []Chunk {
-	lines := strings.Split(content, "\n")
-	var chunks []Chunk
-	var current strings.Builder
-	currentHeader := ""
-	chunkIndex := 0
-
-	flush := func() {
-		text := strings.TrimSpace(current.String())
-		if text != "" {
-			chunks = append(chunks, Chunk{
-				Text:       text,
-				SourceFile: sourcePath,
-				Header:     currentHeader,
-				ChunkIndex: chunkIndex,
-				UpdatedAt:  modTime,
-			})
-			chunkIndex++
-		}
-		current.Reset()
-	}
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-
-		// Detect headings (H1, H2, H3)
-		if strings.HasPrefix(trimmed, "### ") || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "# ") {
-			flush()
-			currentHeader = trimmed
-		}
-		current.WriteString(line)
-		current.WriteString("\n")
-	}
-	flush()
-
-	return chunks
-}
-
-func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
-	// Split on double newlines (paragraph boundaries)
-	paragraphs := strings.Split(content, "\n\n")
-	var chunks []Chunk
-
-	for i, p := range paragraphs {
-		text := strings.TrimSpace(p)
-		if text == "" {
-			continue
-		}
-		chunks = append(chunks, Chunk{
-			Text:       text,
-			SourceFile: sourcePath,
-			Header:     "",
-			ChunkIndex: i,
-			UpdatedAt:  modTime,
-		})
-	}
-
-	return chunks
 }
 
 func isIndexable(path string) bool {

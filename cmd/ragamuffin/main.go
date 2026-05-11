@@ -70,6 +70,8 @@ func main() {
 
 	// ── Initialize indexer ───────────────────────────────────────────────────
 	idx := indexer.New(cfg.VaultPath, qc, ec, logger)
+	idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+	logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
 
 	// ── Start watcher ────────────────────────────────────────────────────────
 	interval, err := time.ParseDuration(cfg.WatchInterval)
