@@ -79,7 +79,7 @@ func main() {
 		logger.Warn("invalid watch interval, using 60s", "value", cfg.WatchInterval)
 		interval = 60 * time.Second
 	}
-	w := watcher.New(cfg.VaultPath, interval, logger)
+	w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
 	events := make(chan watcher.Event, 100)
 	watcherDone := make(chan struct{})
 
