@@ -214,7 +214,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	b.WriteString("\n")
-	b.WriteString(strings.Join([]string{
+	fmt.Fprint(&b, strings.Join([]string{
 		"# HELP ragamuffin_indexed_files Number of files in the index.",
 		"# TYPE ragamuffin_indexed_files gauge",
 		fmt.Sprintf("ragamuffin_indexed_files %d", fileCount),
