@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -19,6 +20,10 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
+
+type ctxKey string
+
+const requestIDKey ctxKey = "request_id"
 
 var (
 	Version   = "unknown"
@@ -57,20 +62,62 @@ func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Cl
 	}
 }
 
-// RegisterRoutes sets up all HTTP routes.
+// RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/health", s.handleHealth)
-	mux.HandleFunc("/stats", s.handleStats)
-	mux.HandleFunc("/version", s.handleVersion)
-	mux.HandleFunc("/metrics", s.handleMetrics)
-	mux.HandleFunc("/recall", s.handleRecall)
-	mux.HandleFunc("/ask", s.handleAsk)
-	mux.HandleFunc("/draft", s.handleDraft)
-	mux.HandleFunc("/audit", s.handleAudit)
+	mux.HandleFunc("/health", s.withRequestID(s.handleHealth))
+	mux.HandleFunc("/stats", s.withRequestID(s.handleStats))
+	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
+	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
+	mux.HandleFunc("/recall", s.withRequestID(s.handleRecall))
+	mux.HandleFunc("/ask", s.withRequestID(s.handleAsk))
+	mux.HandleFunc("/draft", s.withRequestID(s.handleDraft))
+	mux.HandleFunc("/audit", s.withRequestID(s.handleAudit))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)
 	mux.Handle("/mcp", s.mcpHandler)
+}
+
+// ── Request ID middleware ──────────────────────────────────────────────────────
+
+// withRequestID wraps a handler with request ID tracing.
+// Accepts X-Request-ID from the client, or generates a new UUID.
+// Stores the ID in the request context and echoes it in the response.
+func (s *Server) withRequestID(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		reqID := r.Header.Get("X-Request-ID")
+		if reqID == "" {
+			reqID = newRequestID()
+		}
+		w.Header().Set("X-Request-ID", reqID)
+		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// requestID extracts the request ID from a context.
+func requestID(ctx context.Context) string {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
+		return id
+	}
+	return ""
+}
+
+func newRequestID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
+		b[0:4], b[5:7], b[7:9], b[9:11], b[11:16])
+}
+
+// log returns a logger with the request ID from ctx attached.
+func (s *Server) log(ctx context.Context) *slog.Logger {
+	if id := requestID(ctx); id != "" {
+		return s.logger.With("request_id", id)
+	}
+	return s.logger
 }
 
 // ── Error helpers ──────────────────────────────────────────────────────────────

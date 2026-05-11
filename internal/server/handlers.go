@@ -423,7 +423,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if checkSet["stale"] {
 		staleFiles, err := s.checkStaleness(req.StaleDays)
 		if err != nil {
-			s.logger.Error("audit: staleness check failed", "error", err)
+			s.log(ctx).Error("audit: staleness check failed", "error", err)
 		}
 		resp["stale_files"] = staleFiles
 	}

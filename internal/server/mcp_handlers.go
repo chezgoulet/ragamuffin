@@ -348,7 +348,7 @@ func (s *Server) mcpAudit(args map[string]interface{}) (interface{}, error) {
 	if checkSet["stale"] {
 		staleFiles, err := s.checkStaleness(staleDays)
 		if err != nil {
-			s.logger.Error("MCP audit: staleness check failed", "error", err)
+			s.log(context.Background()).Error("MCP audit: staleness check failed", "error", err)
 		}
 		resp["stale_files"] = staleFiles
 	}

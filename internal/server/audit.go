@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -123,7 +124,7 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]
 	vector := make([]float32, 1536) // zero vector as generic query proxy
 	results, err := s.qdrant.Search(scrollCtx, vector, uint64(sampleSize*2), 0.0, "")
 	if err != nil {
-		s.logger.Error("audit: conflict search failed", "error", err)
+		s.log(ctx).Error("audit: conflict search failed", "error", err)
 		return nil, 0
 	}
 
@@ -199,7 +200,7 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]
 		llmCalls++
 		summary, err := s.llm.Compare(ctx, textA, textB, srcA, srcB)
 		if err != nil {
-			s.logger.Warn("audit: LLM compare failed", "error", err)
+			s.log(ctx).Warn("audit: LLM compare failed", "error", err)
 			continue
 		}
 		if summary != "" {
