@@ -16,6 +16,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
@@ -27,6 +28,15 @@ func main() {
 	slog.SetDefault(logger)
 
 	cfg := config.Load()
+
+	// Validate config — fail fast on misconfiguration
+	if errs := cfg.Validate(); len(errs) > 0 {
+		for _, e := range errs {
+			logger.Error("config validation failed: " + e)
+		}
+		os.Exit(1)
+	}
+
 	logger.Info("starting ragamuffin", "vault", cfg.VaultPath, "qdrant", cfg.QdrantURL)
 
 	// ── Connect to Qdrant ────────────────────────────────────────────────────
@@ -92,8 +102,14 @@ func main() {
 		logger.Info("git provider not configured — /draft PR mode disabled")
 	}
 
+	// ── Initialize rate limiter ──────────────────────────────────────────────
+	rl := ratelimit.New(cfg.RateLimitEnabled)
+	logger.Info("rate limiter ready", "enabled", cfg.RateLimitEnabled,
+		"recall_rpm", cfg.RateLimitRecall, "ask_rpm", cfg.RateLimitAsk,
+		"draft_rpm", cfg.RateLimitDraft, "audit_rpm", cfg.RateLimitAudit)
+
 	// ── Start HTTP server ────────────────────────────────────────────────────
-	srv := server.New(cfg, qc, ec, lm, idx, gp, logger)
+	srv := server.New(cfg, qc, ec, lm, idx, gp, rl, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

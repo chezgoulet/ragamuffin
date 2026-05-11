@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 )
 
 type ctxKey string
@@ -40,6 +41,7 @@ type Server struct {
 	llm         *llm.Client
 	indexer     *indexer.Indexer
 	gitProvider git.Provider
+	ratelimit   *ratelimit.Limiter
 	mcpHandler  *mcp.Handler
 	logger      *slog.Logger
 	started     time.Time
@@ -48,18 +50,27 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, logger *slog.Logger) *Server {
-	return &Server{
+func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logger *slog.Logger) *Server {
+	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
 		embedder:      ec,
 		llm:           lm,
 		indexer:       idx,
 		gitProvider:   gp,
+		ratelimit:     rl,
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),
 	}
+
+	// Configure rate limits
+	rl.SetLimit("/recall", cfg.RateLimitRecall)
+	rl.SetLimit("/ask", cfg.RateLimitAsk)
+	rl.SetLimit("/draft", cfg.RateLimitDraft)
+	rl.SetLimit("/audit", cfg.RateLimitAudit)
+
+	return s
 }
 
 // RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.
@@ -68,10 +79,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/stats", s.withRequestID(s.handleStats))
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
 	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
-	mux.HandleFunc("/recall", s.withRequestID(s.handleRecall))
-	mux.HandleFunc("/ask", s.withRequestID(s.handleAsk))
-	mux.HandleFunc("/draft", s.withRequestID(s.handleDraft))
-	mux.HandleFunc("/audit", s.withRequestID(s.handleAudit))
+	mux.HandleFunc("/recall", s.withRequestID(s.withRateLimit("/recall", s.handleRecall)))
+	mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
+	mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
+	mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)
@@ -118,6 +129,22 @@ func (s *Server) log(ctx context.Context) *slog.Logger {
 		return s.logger.With("request_id", id)
 	}
 	return s.logger
+}
+
+// ── Rate limit middleware ──────────────────────────────────────────────────────
+
+// withRateLimit wraps a handler with per-endpoint rate limiting.
+func (s *Server) withRateLimit(endpoint string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		allowed, retryAfter := s.ratelimit.Allow(endpoint)
+		if !allowed {
+			w.Header().Set("Retry-After", retryAfter.Format(time.RFC1123))
+			writeError(w, 429, "RATE_LIMITED",
+				fmt.Sprintf("Too many requests to %s. Retry after: %s", endpoint, retryAfter.Format(time.RFC3339)))
+			return
+		}
+		next(w, r)
+	}
 }
 
 // ── Error helpers ──────────────────────────────────────────────────────────────
