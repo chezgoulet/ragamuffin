@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -206,4 +207,174 @@ func TestEnvInt(t *testing.T) {
 		t.Errorf("envInt invalid = %d, want 10", v)
 	}
 	os.Unsetenv("TEST_INT")
+}
+
+func TestValidate_ValidConfig(t *testing.T) {
+	dir := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) != 0 {
+		t.Errorf("expected no errors, got: %v", errs)
+	}
+}
+
+func TestValidate_VaultPathMissing(t *testing.T) {
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", "/nonexistent/path/12345")
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for missing vault path")
+	}
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "VAULT_PATH") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected VAULT_PATH error, got: %v", errs)
+	}
+}
+
+func TestValidate_InvalidQdrantURL(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "not-a-url")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for invalid Qdrant URL")
+	}
+}
+
+func TestValidate_NegativeEmbeddingDims(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_EMBEDDING_DIMS", "-1")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_EMBEDDING_DIMS")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for negative embedding dims")
+	}
+}
+
+func TestValidate_InvalidWatchInterval(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_WATCH_INTERVAL", "not-a-duration")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_WATCH_INTERVAL")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for invalid watch interval")
+	}
+}
+
+func TestValidate_InvalidWatcherMode(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_WATCHER_MODE", "magic")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_WATCHER_MODE")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for invalid watcher mode")
+	}
+}
+
+func TestValidate_NegativeRateLimit(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_RATE_LIMIT_RECALL", "-5")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_RATE_LIMIT_RECALL")
+	}()
+
+	cfg := Load()
+	errs := cfg.Validate()
+	if len(errs) == 0 {
+		t.Error("expected error for negative rate limit")
+	}
+}
+
+func TestValidate_ValidWatcherModes(t *testing.T) {
+	dir := t.TempDir()
+
+	for _, mode := range []string{"poll", "inotify"} {
+		os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+		os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+		os.Setenv("RAGAMUFFIN_WATCHER_MODE", mode)
+
+		cfg := Load()
+		errs := cfg.Validate()
+		if len(errs) != 0 {
+			t.Errorf("mode %q should be valid, got errors: %v", mode, errs)
+		}
+
+		os.Unsetenv("RAGAMUFFIN_WATCHER_MODE")
+	}
+	os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+	os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+}
+
+func TestValidate_ZeroChunkMaxTokens(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_CHUNK_MAX_TOKENS", "0")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_CHUNK_MAX_TOKENS")
+	}()
+
+	cfg := Load()
+	if cfg.ChunkMaxTokens != 0 {
+		t.Errorf("ChunkMaxTokens = %d, want 0", cfg.ChunkMaxTokens)
+	}
+	errs := cfg.Validate()
+	if len(errs) != 0 {
+		t.Errorf("zero chunk max tokens should be valid, got: %v", errs)
+	}
 }
