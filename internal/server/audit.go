@@ -2,8 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
-	"log/slog"
 	"math/rand"
 	"os"
 	"path/filepath"
