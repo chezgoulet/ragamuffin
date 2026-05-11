@@ -3,6 +3,7 @@ package qdrant
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	pb "github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc"
@@ -11,15 +12,27 @@ import (
 
 // Client wraps the Qdrant gRPC client.
 type Client struct {
-	conn       *grpc.ClientConn
-	points     pb.PointsClient
+	conn        *grpc.ClientConn
+	points      pb.PointsClient
 	collections pb.CollectionsClient
-	collection string
+	collection  string
+}
+
+// grpcTarget strips http:// / https:// schemes from the URL.
+// The Qdrant Go client uses gRPC which expects bare host:port.
+func grpcTarget(url string) string {
+	for _, prefix := range []string{"http://", "https://"} {
+		if strings.HasPrefix(url, prefix) {
+			return url[len(prefix):]
+		}
+	}
+	return url
 }
 
 // New connects to Qdrant and ensures the collection exists.
 func New(ctx context.Context, url, collection string, vectorSize uint64) (*Client, error) {
-	conn, err := grpc.NewClient(url,
+	target := grpcTarget(url)
+	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 	)
 	if err != nil {
