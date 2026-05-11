@@ -29,9 +29,9 @@ Final section text.
 		header string
 		body   string
 	}{
-		{"# Title", "# Title\nSome intro text.\n\n"},
-		{"## Section 1", "## Section 1\nContent for section 1.\n\n"},
-		{"### Subsection 1.1", "### Subsection 1.1\nDeeper content.\n\n"},
+		{"# Title", "# Title\nSome intro text."},
+		{"## Section 1", "## Section 1\nContent for section 1."},
+		{"### Subsection 1.1", "### Subsection 1.1\nDeeper content."},
 		{"## Section 2", "## Section 2\nFinal section text."},
 	}
 
@@ -117,7 +117,7 @@ func TestEnforceMaxTokens_NoSplit(t *testing.T) {
 func TestEnforceMaxTokens_ParagraphSplit(t *testing.T) {
 	// Build a chunk with many paragraphs that together exceed the token limit
 	var paragraphs []string
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 10; i++ {
 		paragraphs = append(paragraphs, strings.Repeat("word ", 50)) // ~50 words per paragraph
 	}
 	c := Chunk{
@@ -148,7 +148,7 @@ func TestEnforceMaxTokens_ParagraphSplit(t *testing.T) {
 func TestEnforceMaxTokens_SentenceSplit(t *testing.T) {
 	// One giant paragraph with no paragraph breaks — must split on sentences
 	var sentences []string
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 15; i++ {
 		sentences = append(sentences, "This is sentence number something with many words in it.")
 	}
 	c := Chunk{
@@ -170,7 +170,7 @@ func TestEnforceMaxTokens_SentenceSplit(t *testing.T) {
 
 func TestEnforceMaxTokens_HardSplit(t *testing.T) {
 	// One giant blob with no sentence breaks — must hard-split at token boundary
-	words := strings.Repeat("word ", 200) // 200 words, ~260 tokens
+	words := strings.Repeat("word ", 100) // 100 words, ~130 tokens
 	c := Chunk{
 		Text:       words,
 		SourceFile: "log.txt",

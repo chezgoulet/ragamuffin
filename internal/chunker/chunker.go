@@ -101,9 +101,9 @@ func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
 }
 
 // enforceMaxTokens splits a chunk that exceeds maxTokens.
-// Splits at paragraph boundary first, then sentence, then hard split.
+// maxTokens <= 0 means no enforcement (return chunk as-is).
 func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
-	if estTokens(c.Text) <= maxTokens {
+	if maxTokens <= 0 || estTokens(c.Text) <= maxTokens {
 		return []Chunk{c}
 	}
 

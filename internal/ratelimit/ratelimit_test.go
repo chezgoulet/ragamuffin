@@ -89,11 +89,11 @@ func TestAllow_RateLimited(t *testing.T) {
 
 func TestAllow_Refill(t *testing.T) {
 	lim := New(true)
-	// 60 rpm = 1 per second
-	lim.SetLimit("/recall", 60)
+	// Use very high rate so refill is nearly instant
+	lim.SetLimit("/recall", 6000) // 100 tokens/sec
 
 	// Empty the bucket
-	for i := 0; i < 60; i++ {
+	for i := 0; i < 6000; i++ {
 		lim.Allow("/recall")
 	}
 
@@ -103,8 +103,8 @@ func TestAllow_Refill(t *testing.T) {
 		t.Skip("bucket didn't empty (clock resolution)")
 	}
 
-	// Wait for refill
-	time.Sleep(1100 * time.Millisecond)
+	// Wait for refill — at 100 tokens/sec, 300ms gives 30 tokens
+	time.Sleep(300 * time.Millisecond)
 
 	// Should have at least 1 token now
 	allowed, _ = lim.Allow("/recall")

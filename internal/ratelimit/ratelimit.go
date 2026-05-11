@@ -31,10 +31,24 @@ func New(enabled bool) *Limiter {
 }
 
 // SetLimit configures the rate limit (requests per minute) for a key.
+// If a bucket already exists for this key, its capacity is updated.
 func (l *Limiter) SetLimit(key string, rpm int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	oldCapacity := l.limits[key]
 	l.limits[key] = rpm
+	if b, ok := l.buckets[key]; ok {
+		newCapacity := float64(rpm)
+		oldCap := float64(oldCapacity)
+		if newCapacity > oldCap {
+			b.tokens += newCapacity - oldCap
+		}
+		b.rate = float64(rpm) / 60.0
+		b.capacity = newCapacity
+		if b.tokens > b.capacity {
+			b.tokens = b.capacity
+		}
+	}
 }
 
 // Allow returns true if the request is allowed for the given key.
