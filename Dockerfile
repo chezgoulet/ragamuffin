@@ -15,8 +15,8 @@ RUN CGO_ENABLED=0 go build \
     -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=go1.25.0'" \
   -o ragamuffin ./cmd/ragamuffin
 
-FROM scratch
-COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates wget
 COPY --from=build /src/ragamuffin /ragamuffin
 EXPOSE 8000
 ENTRYPOINT ["/ragamuffin"]
