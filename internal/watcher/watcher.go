@@ -63,6 +63,10 @@ func New(vaultPath string, interval time.Duration, logger *slog.Logger, mode str
 
 // isIndexable returns true if the file extension is supported.
 func isIndexable(path string) bool {
+	// Skip dot-directories (.git, .github) — never useful retrieval targets
+	if strings.Contains(path, "/.") || strings.HasPrefix(path, ".") {
+		return false
+	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".md", ".txt", ".org", ".rst":
