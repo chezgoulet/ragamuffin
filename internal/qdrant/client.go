@@ -170,6 +170,27 @@ func (c *Client) Count(ctx context.Context) (uint64, error) {
 	return resp.Result.Count, nil
 }
 
+// Scroll returns a page of points from the collection, ordered by point ID.
+// offset is the point ID to start from (nil for beginning). limit caps results.
+func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	req := &pb.ScrollPoints{
+		CollectionName: c.collection,
+		WithPayload:    pb.NewWithPayload(true),
+	}
+	if limit > 0 {
+		req.Limit = &limit
+	}
+	if offset != nil {
+		req.Offset = offset
+	}
+
+	resp, err := c.points.Scroll(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp.Result, resp.NextPageOffset, nil
+}
+
 // Health checks if Qdrant is reachable.
 func (c *Client) Health(ctx context.Context) error {
 	_, err := c.collections.List(ctx, &pb.ListCollectionsRequest{})

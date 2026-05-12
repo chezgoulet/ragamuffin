@@ -117,12 +117,11 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]
 	scrollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Simplified: do a large search with a generic query to get a sample
-	// In production, this would use proper scroll/pagination
-	vector := make([]float32, 1536) // zero vector as generic query proxy
-	results, err := s.qdrant.Search(scrollCtx, vector, uint64(sampleSize*2), 0.0, "")
+	// Use Scroll API for a deterministic random sample — no embedding call needed.
+	// Scroll returns points ordered by ID; we fetch sampleSize*2 and shuffle.
+	results, _, err := s.qdrant.Scroll(scrollCtx, uint32(sampleSize*2), nil)
 	if err != nil {
-		s.log(ctx).Error("audit: conflict search failed", "error", err)
+		s.log(ctx).Error("audit: scroll failed", "error", err)
 		return nil, 0
 	}
 
@@ -131,10 +130,10 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]
 	}
 
 	type pair struct {
-		a, b *pb.ScoredPoint
+		a, b *pb.RetrievedPoint
 	}
 	var pairs []pair
-	sourceMap := make(map[string][]*pb.ScoredPoint)
+	sourceMap := make(map[string][]*pb.RetrievedPoint)
 
 	for _, r := range results {
 		src := ""
@@ -144,7 +143,7 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]
 		sourceMap[src] = append(sourceMap[src], r)
 	}
 
-	var allChunks []*pb.ScoredPoint
+	var allChunks []*pb.RetrievedPoint
 	for _, chunks := range sourceMap {
 		allChunks = append(allChunks, chunks...)
 	}

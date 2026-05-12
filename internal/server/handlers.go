@@ -62,15 +62,18 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	chunkCount, err := s.qdrant.Count(ctx)
 	cancel()
+	chunkReliable := true
 	if err != nil {
 		s.logger.Warn("stats: qdrant count failed", "error", err)
 		chunkCount = 0
+		chunkReliable = false
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
 		"vault_path":        s.cfg.VaultPath,
 		"indexed_files":     fileCount,
 		"total_chunks":      chunkCount,
+		"chunk_count_reliable": chunkReliable,
 		"last_indexed":      lastIndexed.Format(time.RFC3339),
 		"qdrant_collection": s.cfg.QdrantCollection,
 		"embedding_provider": s.cfg.EmbeddingProvider,
@@ -292,7 +295,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.cfg.HasLLM() {
-		writeError(w, 503, "LLM_NOT_CONFIGURED", "LLM is not configured — set RAGAMUFFIN_LLM_PROVIDER and RAGAMUFFIN_LLM_API_KEY")
+		writeError(w, 503, "LLM_NOT_CONFIGURED", "LLM not configured")
 		return
 	}
 
@@ -320,85 +323,11 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	modeUsed := req.Mode
-	var contextText string
-	var sources []string
-
-	if req.Mode == "rag" || req.Mode == "auto" {
-		vector, err := s.embedder.EmbedSingle(ctx, req.Query)
-		if err != nil {
-			writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("embedding failed: %s", err))
-			return
-		}
-		results, err := s.qdrant.Search(ctx, vector, uint64(req.TopK), 0.0, "")
-		if err != nil {
-			writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
-			return
-		}
-
-		seenSources := make(map[string]bool)
-		var topScore float32
-		var b strings.Builder
-		for _, r := range results {
-			if r.Score > topScore {
-				topScore = r.Score
-			}
-			if src, ok := r.Payload["source_file"]; ok {
-				s := src.GetStringValue()
-				if !seenSources[s] {
-					sources = append(sources, s)
-					seenSources[s] = true
-				}
-			}
-			if text, ok := r.Payload["text"]; ok {
-				b.WriteString(text.GetStringValue())
-				b.WriteString("\n\n")
-			}
-		}
-		contextText = b.String()
-
-		// Auto mode: if confidence is high enough, use RAG. Otherwise, fall through to full.
-		if req.Mode == "auto" && topScore >= 0.75 {
-			modeUsed = "rag"
-		} else if req.Mode == "auto" {
-			modeUsed = "full"
-			contextText = "" // trigger full-vault load below
-		}
-	}
-
-	if modeUsed == "full" {
-		// Load all chunks (up to context limit)
-		// Simple approach: load all chunks from indexed files
-		if contextText == "" {
-			// Use larger search for full mode
-			vector, err := s.embedder.EmbedSingle(ctx, req.Query)
-			if err != nil {
-				writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("embedding failed: %s", err))
-				return
-			}
-			results, err := s.qdrant.Search(ctx, vector, 50, 0.0, "")
-			if err != nil {
-				writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
-				return
-			}
-
-			seenSources := make(map[string]bool)
-			var b strings.Builder
-			for _, r := range results {
-				if src, ok := r.Payload["source_file"]; ok {
-					s := src.GetStringValue()
-					if !seenSources[s] {
-						sources = append(sources, s)
-						seenSources[s] = true
-					}
-				}
-				if text, ok := r.Payload["text"]; ok {
-					b.WriteString(text.GetStringValue())
-					b.WriteString("\n\n")
-				}
-			}
-			contextText = b.String()
-		}
+	// Use shared queryContext for RAG/auto/full modes (shared with MCP handler)
+	contextText, sources, modeUsed, err := s.queryContext(ctx, req.Query, req.Mode, req.TopK)
+	if err != nil {
+		writeError(w, 502, "RETRIEVAL_ERROR", fmt.Sprintf("retrieval failed: %s", err))
+		return
 	}
 
 	answer, err := s.llm.Synthesize(ctx, req.Query, contextText)
