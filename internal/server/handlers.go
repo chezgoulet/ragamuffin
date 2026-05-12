@@ -36,9 +36,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	if indexing {
 		resp["status"] = "indexing"
-		resp["indexed_files"] = totalFiles * progressPct / 100
 		resp["total_files"] = totalFiles
 		resp["progress_pct"] = progressPct
+		if totalFiles > 0 {
+			resp["indexed_files"] = totalFiles * progressPct / 100
+		} else {
+			resp["indexed_files"] = 0
+		}
 	}
 
 	writeJSON(w, 200, resp)
@@ -52,7 +56,16 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileCount, chunkCount, lastIndexed, _, _, _ := s.indexer.Stats()
+	fileCount, _, lastIndexed, _, _, _ := s.indexer.Stats()
+
+	// Get accurate chunk count from Qdrant (not in-process counter)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	chunkCount, err := s.qdrant.Count(ctx)
+	cancel()
+	if err != nil {
+		s.logger.Warn("stats: qdrant count failed", "error", err)
+		chunkCount = 0
+	}
 
 	writeJSON(w, 200, map[string]interface{}{
 		"vault_path":        s.cfg.VaultPath,
@@ -90,8 +103,13 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req recallRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
 		return
 	}
 	if req.Query == "" {
@@ -163,6 +181,110 @@ type askRequest struct {
 	TopK  int    `json:"top_k"`
 }
 
+
+// queryContext retrieves context text for /ask requests.
+// Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
+func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
+	modeUsed = mode
+
+	if mode == "rag" || mode == "auto" {
+		vector, err := s.embedder.EmbedSingle(ctx, query)
+		if err != nil {
+			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
+		}
+		results, err := s.qdrant.Search(ctx, vector, uint64(topK), 0.0, "")
+		if err != nil {
+			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
+		}
+
+		seenSources := make(map[string]bool)
+		var topScore float32
+		var b strings.Builder
+		for _, r := range results {
+			if r.Score > topScore {
+				topScore = r.Score
+			}
+			if src, ok := r.Payload["source_file"]; ok {
+				s := src.GetStringValue()
+				if !seenSources[s] {
+					sources = append(sources, s)
+					seenSources[s] = true
+				}
+			}
+			if text, ok := r.Payload["text"]; ok {
+				b.WriteString(text.GetStringValue())
+				b.WriteString("\n\n")
+			}
+		}
+		contextText = b.String()
+
+		if mode == "auto" && topScore >= 0.75 {
+			modeUsed = "rag"
+		} else if mode == "auto" {
+			modeUsed = "full"
+			contextText = "" // trigger full-vault load below
+		}
+	}
+
+	if modeUsed == "full" && contextText == "" {
+		vector, err := s.embedder.EmbedSingle(ctx, query)
+		if err != nil {
+			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
+		}
+		results, err := s.qdrant.Search(ctx, vector, 50, 0.0, "")
+		if err != nil {
+			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
+		}
+
+		// Collect top source files from RAG results
+		topFiles := make(map[string]bool)
+		var fileOrder []string
+		for _, r := range results {
+			if src, ok := r.Payload["source_file"]; ok {
+				s := src.GetStringValue()
+				if !topFiles[s] {
+					topFiles[s] = true
+					fileOrder = append(fileOrder, s)
+				}
+			}
+		}
+
+		// Load all chunks from those files via source_filter
+		var b strings.Builder
+		sourceSet := make(map[string]bool)
+		for _, file := range fileOrder {
+			if estTokens(b.String()) > 8000 { // conservative context limit
+				break
+			}
+			fileResults, err := s.qdrant.Search(ctx, vector, 100, 0.0, file)
+			if err != nil {
+				continue
+			}
+			for _, r := range fileResults {
+				if src, ok := r.Payload["source_file"]; ok {
+					s := src.GetStringValue()
+					if !sourceSet[s] {
+						sources = append(sources, s)
+						sourceSet[s] = true
+					}
+				}
+				if text, ok := r.Payload["text"]; ok {
+					b.WriteString(text.GetStringValue())
+					b.WriteString("\n\n")
+				}
+			}
+		}
+		contextText = b.String()
+	}
+
+	return contextText, sources, modeUsed, nil
+}
+
+// estTokens returns an approximate token count (words × 1.3).
+func estTokens(text string) int {
+	return int(float64(len(strings.Fields(text))) * 1.3)
+}
+
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
@@ -175,8 +297,13 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req askRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
 		return
 	}
 	if req.Query == "" {
@@ -304,8 +431,13 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req draftRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10 MB for draft
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 10 MB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
 		return
 	}
 	if req.Title == "" {
@@ -320,9 +452,12 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		req.Mode = "direct"
 	}
 
-	// Security: prevent path traversal
+	// Security: prevent path traversal — verify resolved path stays under vault root
 	cleanPath := filepath.Clean(req.TargetPath)
-	if strings.HasPrefix(cleanPath, "..") {
+	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
+	absVault := filepath.Clean(s.cfg.VaultPath) + string(os.PathSeparator)
+	absTarget := filepath.Clean(fullPath) + string(os.PathSeparator)
+	if !strings.HasPrefix(absTarget, absVault) {
 		writeError(w, 400, "INVALID_REQUEST", "target_path must not escape vault root")
 		return
 	}
@@ -347,7 +482,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Direct mode: write to filesystem
-	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
+	fullPath = filepath.Join(s.cfg.VaultPath, cleanPath)
 
 	if req.Content == "" {
 		// Delete
@@ -390,8 +525,13 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req auditRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
 		return
 	}
 	if req.StaleDays <= 0 {
