@@ -128,6 +128,10 @@ func (c *Config) Validate() []string {
 }
 
 func parseURL(raw string) (interface{}, error) {
+	// gRPC addresses are bare host:port — skip URL validation
+	if strings.Contains(raw, ":") && !strings.Contains(raw, "://") {
+		return nil, nil
+	}
 	if !strings.Contains(raw, "://") {
 		return nil, fmt.Errorf("missing scheme")
 	}
