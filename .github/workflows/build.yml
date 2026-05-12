@@ -8,8 +8,7 @@ on:
     branches: [main]
 
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  DOCKERHUB_REPO: chezgoulet
 
 jobs:
   # ── Test (every push + PR) ──────────────────────────────────────────────
@@ -25,28 +24,26 @@ jobs:
       - name: Run tests
         run: go test ./...
 
-  # ── Docker build + push (main + tags only) ──────────────────────────────
+  # ── Docker build + push to Docker Hub (main + tags only) ───────────────
   docker:
     needs: test
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.DOCKERHUB_REPO }}/${{ github.event.repository.name }}
           tags: |
             type=ref,event=branch
             type=ref,event=tag
