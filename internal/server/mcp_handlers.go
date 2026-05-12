@@ -158,7 +158,7 @@ func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
 	}
 
 	if !s.cfg.HasLLM() {
-		return nil, fmt.Errorf("LLM not configured — set RAGAMUFFIN_LLM_PROVIDER and RAGAMUFFIN_LLM_API_KEY")
+		return nil, fmt.Errorf("LLM not configured")
 	}
 
 	mode, _ := args["mode"].(string)
@@ -174,74 +174,9 @@ func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	modeUsed := mode
-	var contextText string
-	var sources []string
-
-	if mode == "rag" || mode == "auto" {
-		vector, err := s.embedder.EmbedSingle(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("embedding failed: %w", err)
-		}
-		results, err := s.qdrant.Search(ctx, vector, uint64(topK), 0.0, "")
-		if err != nil {
-			return nil, fmt.Errorf("search failed: %w", err)
-		}
-
-		seenSources := make(map[string]bool)
-		var topScore float32
-		var b strings.Builder
-		for _, r := range results {
-			if r.Score > topScore {
-				topScore = r.Score
-			}
-			if src, ok := r.Payload["source_file"]; ok {
-				s := src.GetStringValue()
-				if !seenSources[s] {
-					sources = append(sources, s)
-					seenSources[s] = true
-				}
-			}
-			if text, ok := r.Payload["text"]; ok {
-				b.WriteString(text.GetStringValue())
-				b.WriteString("\n\n")
-			}
-		}
-		contextText = b.String()
-
-		if mode == "auto" && topScore >= 0.75 {
-			modeUsed = "rag"
-		} else if mode == "auto" {
-			modeUsed = "full"
-			contextText = ""
-		}
-	}
-
-	if modeUsed == "full" && contextText == "" {
-		vector, err := s.embedder.EmbedSingle(ctx, query)
-		if err != nil {
-			return nil, fmt.Errorf("embedding failed: %w", err)
-		}
-		results, err := s.qdrant.Search(ctx, vector, 50, 0.0, "")
-		if err != nil {
-			return nil, fmt.Errorf("search failed: %w", err)
-		}
-		seenSources := make(map[string]bool)
-		var b strings.Builder
-		for _, r := range results {
-			if src, ok := r.Payload["source_file"]; ok {
-				s := src.GetStringValue()
-				if !seenSources[s] {
-					sources = append(sources, s)
-					seenSources[s] = true
-				}
-			}
-			if text, ok := r.Payload["text"]; ok {
-				b.WriteString(text.GetStringValue())
-				b.WriteString("\n\n")
-			}
-		}
-		contextText = b.String()
+	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK)
+	if err != nil {
+		return nil, fmt.Errorf("retrieval failed: %w", err)
 	}
 
 	answer, err := s.llm.Synthesize(ctx, query, contextText)
@@ -274,7 +209,10 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 	}
 
 	cleanPath := filepath.Clean(targetPath)
-	if strings.HasPrefix(cleanPath, "..") {
+	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
+	absVault := filepath.Clean(s.cfg.VaultPath) + string(os.PathSeparator)
+	absTarget := filepath.Clean(fullPath) + string(os.PathSeparator)
+	if !strings.HasPrefix(absTarget, absVault) {
 		return nil, fmt.Errorf("target_path must not escape vault root")
 	}
 
@@ -290,7 +228,7 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 		}, nil
 	}
 
-	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
+	fullPath = filepath.Join(s.cfg.VaultPath, cleanPath)
 
 	if content == "" {
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
