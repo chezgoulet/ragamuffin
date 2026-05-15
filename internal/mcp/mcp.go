@@ -48,6 +48,7 @@ type Handler struct {
 	tools       []ToolDefinition
 	callHandler ToolCallHandler
 	logger      *slog.Logger
+	version     string
 
 	mu      sync.Mutex
 	clients map[string]chan []byte // sessionID → SSE message channel
@@ -60,11 +61,12 @@ type Handler struct {
 type ToolCallHandler func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error)
 
 // New creates an MCP handler.
-func New(tools []ToolDefinition, handler ToolCallHandler, logger *slog.Logger) *Handler {
+func New(tools []ToolDefinition, handler ToolCallHandler, logger *slog.Logger, version string) *Handler {
 	return &Handler{
 		tools:       tools,
 		callHandler: handler,
 		logger:      logger,
+		version:     version,
 		clients:     make(map[string]chan []byte),
 	}
 }
@@ -135,6 +137,7 @@ data: /mcp?session_id=%s
 }
 
 func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024) // 1 MB for MCP RPC
 	var req JSONRPCRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		sendRPCError(w, nil, -32700, "Parse error")
@@ -173,7 +176,7 @@ func (h *Handler) handleInitialize(w http.ResponseWriter, req JSONRPCRequest) {
 		},
 		"serverInfo": map[string]interface{}{
 			"name":    "ragamuffin",
-			"version": "0.1.0",
+			"version": h.version,
 		},
 	}
 	sendRPCResult(w, req.ID, result)

@@ -105,7 +105,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.withRateLimit("/v1/snapshot", s.handleSnapshot)))
 
 	// MCP bolt-on
-	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)
+	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
 	mux.Handle("/mcp", s.mcpHandler)
 }
 
