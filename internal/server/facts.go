@@ -93,7 +93,12 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	if len(fp.Tags) > 0 {
 		tagVals := make([]*qdrant.Value, len(fp.Tags))
 		for i, t := range fp.Tags {
-			tagVals[i] = qdrant.NewValue(t)
+			v, err := qdrant.NewValue(t)
+			if err != nil {
+				writeError(w, 500, "INVALID_TAG", fmt.Sprintf("invalid tag value: %v", err))
+				return
+			}
+			tagVals[i] = v
 		}
 		payload["fact_tags"] = &qdrant.Value{
 			Kind: &qdrant.Value_ListValue{
