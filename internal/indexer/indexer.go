@@ -120,6 +120,11 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 	idx.totalFiles = total
 	idx.mu.Unlock()
 
+	if total == 0 {
+		idx.logger.Debug("indexer: vault is empty, skipping reindex")
+		return
+	}
+
 	for i, relPath := range files {
 		absPath := filepath.Join(idx.vaultPath, relPath)
 		if err := idx.indexFile(ctx, absPath, relPath); err != nil {

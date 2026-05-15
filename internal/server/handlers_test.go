@@ -18,7 +18,7 @@ func newTestServer() *Server {
 	}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	return New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	return New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
 }
 
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
@@ -186,7 +186,7 @@ func TestHandleAsk_MissingQuery(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
 	body := bytes.NewBufferString(`{"top_k": 8}`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -201,7 +201,7 @@ func TestHandleAsk_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
 	body := bytes.NewBufferString(`bad`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -293,6 +293,57 @@ func TestHandleDraft_DefaultMode(t *testing.T) {
 		var resp errResp
 		json.NewDecoder(w.Body).Decode(&resp)
 		t.Errorf("default mode should be direct, got 400: %s", resp.Message)
+	}
+}
+
+func TestHandleDraft_DeleteRequiresExplicitFlag(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"title":"test","content":"","target_path":"test.md"}`)
+	req := httptest.NewRequest("POST", "/draft", body)
+	w := httptest.NewRecorder()
+	srv.handleDraft(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for empty content without delete=true, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp errResp
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Message != "content required unless delete=true" {
+		t.Errorf("expected content-required message, got: %s", resp.Message)
+	}
+}
+
+func TestHandleDraft_ExplicitDelete(t *testing.T) {
+	t.Skip("needs filesystem backend for direct write")
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"title":"test","content":"","target_path":"test.md","delete":true}`)
+	req := httptest.NewRequest("POST", "/draft", body)
+	w := httptest.NewRecorder()
+	srv.handleDraft(w, req)
+
+	if w.Code >= 400 && w.Code < 500 {
+		var resp errResp
+		json.NewDecoder(w.Body).Decode(&resp)
+		t.Errorf("delete=true with empty content should not be 400, got %d: %s", w.Code, resp.Message)
+	}
+}
+
+func TestHandleDraft_PRNoContentRequired(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"title":"test","target_path":"test.md","mode":"pr"}`)
+	req := httptest.NewRequest("POST", "/draft", body)
+	w := httptest.NewRecorder()
+	srv.handleDraft(w, req)
+
+	// Should fail at git-not-configured, not at missing content
+	if w.Code == 400 {
+		var resp errResp
+		json.NewDecoder(w.Body).Decode(&resp)
+		t.Errorf("content should not be required in PR mode, got 400: %s", resp.Message)
+	}
+	if w.Code != 503 {
+		t.Errorf("expected 503 for PR mode without git (content should be optional), got %d", w.Code)
 	}
 }
 

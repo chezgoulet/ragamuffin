@@ -15,6 +15,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
@@ -126,7 +127,17 @@ func main() {
 		"draft_rpm", cfg.RateLimitDraft, "audit_rpm", cfg.RateLimitAudit)
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
-	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, logger)
+	// ── Initialize log store ──────────────────────────────────────────────────
+	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
+	logStore, err := logstore.Open(logPath)
+	if err != nil {
+		logger.Error("failed to open log store", "error", err)
+		os.Exit(1)
+	}
+	defer logStore.Close()
+	logger.Info("log store ready", "path", logPath)
+
+	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, w, logStore, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

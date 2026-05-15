@@ -41,6 +41,11 @@ func (a Action) String() string {
 // Watcher detects file changes in the vault directory.
 type Watcher interface {
 	Watch(events chan<- Event, done <-chan struct{})
+
+	// Lock/Unlock prevent the watcher from processing events during
+	// snapshot or other read-consistent operations.
+	Lock()
+	Unlock()
 }
 
 // New creates a new Watcher based on the configured mode.
