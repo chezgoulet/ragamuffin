@@ -22,7 +22,7 @@ func TestIsIndexable(t *testing.T) {
 		{"file.yaml", false},
 		{"file.yml", false},
 		{"file.pdf", false},
-		{".hidden.md", true},
+		{".hidden.md", false},
 	}
 
 	for _, tt := range tests {

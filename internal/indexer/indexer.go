@@ -29,22 +29,24 @@ type Indexer struct {
 	logger        *slog.Logger
 	chunkMaxTokens int
 
-	mu        sync.RWMutex
-	fileCount int
+	mu         sync.RWMutex
+	fileCount  int
 	chunkCount int
 	lastIndexed time.Time
 	indexing   bool
 	progressPct int
 	totalFiles  int
+	knownFiles map[string]struct{} // set of indexed files for dedup counting
 }
 
 // New creates an Indexer.
 func New(vaultPath string, qc *qdrant.Client, ec *embedding.Client, logger *slog.Logger) *Indexer {
 	return &Indexer{
-		vaultPath: vaultPath,
-		qdrant:    qc,
-		embedder:  ec,
-		logger:    logger,
+		vaultPath:  vaultPath,
+		qdrant:     qc,
+		embedder:   ec,
+		logger:     logger,
+		knownFiles: make(map[string]struct{}),
 	}
 }
 
@@ -100,6 +102,7 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 	idx.mu.Lock()
 	idx.indexing = true
 	idx.progressPct = 0
+	idx.knownFiles = make(map[string]struct{})
 	idx.mu.Unlock()
 
 	var files []string
@@ -216,7 +219,10 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	}
 
 	idx.mu.Lock()
-	idx.fileCount++
+	if _, seen := idx.knownFiles[relPath]; !seen {
+		idx.knownFiles[relPath] = struct{}{}
+		idx.fileCount++
+	}
 	idx.chunkCount += len(chunks)
 	idx.lastIndexed = time.Now()
 	idx.mu.Unlock()
@@ -225,6 +231,10 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 }
 
 func isIndexable(path string) bool {
+	// Skip dot-directories (.git, .github, .ragamuffin) — never useful retrieval targets
+	if strings.Contains(path, "/.") || strings.HasPrefix(path, ".") {
+		return false
+	}
 	ext := strings.ToLower(filepath.Ext(path))
 	switch ext {
 	case ".md", ".txt", ".org", ".rst":

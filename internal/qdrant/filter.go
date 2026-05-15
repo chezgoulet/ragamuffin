@@ -8,7 +8,8 @@ import (
 
 // ScrollFiltered returns points from the given collection matching the filter,
 // ordered by point ID. limit caps results; pass 0 for the Qdrant default (10).
-func (c *Client) ScrollFiltered(ctx context.Context, collection string, filter *pb.Filter, limit uint32) ([]*pb.RetrievedPoint, error) {
+// offset is an optional point ID to start after (for cursor pagination).
+func (c *Client) ScrollFiltered(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
 	req := &pb.ScrollPoints{
 		CollectionName: collection,
 		WithPayload:    pb.NewWithPayload(true),
@@ -18,6 +19,13 @@ func (c *Client) ScrollFiltered(ctx context.Context, collection string, filter *
 	}
 	if filter != nil {
 		req.Filter = filter
+	}
+	if offset != "" {
+		req.Offset = &pb.PointId{
+			PointIdOptions: &pb.PointId_Uuid{
+				Uuid: offset,
+			},
+		}
 	}
 
 	resp, err := c.points.Scroll(ctx, req)
