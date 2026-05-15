@@ -56,8 +56,9 @@ type Config struct {
 	GitBaseURL         string
 	GitRepos           string
 
-	// Optional — Audit
+	// Optional — Audit / Tuning
 	AuditSampleSize int
+	AutoThreshold  float64
 
 	// Optional — Logging
 	LogLevel string
@@ -188,6 +189,7 @@ func Load() (*Config, error) {
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
+		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
 		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 	}, nil
 }
@@ -217,6 +219,18 @@ func envBool(key string) bool {
 		return false
 	}
 	return b
+}
+
+func envFloat(key string, def float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 func envInt(key string, def int) int {

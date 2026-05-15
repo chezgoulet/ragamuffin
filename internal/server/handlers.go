@@ -223,7 +223,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		}
 		contextText = b.String()
 
-		if mode == "auto" && topScore >= 0.75 {
+		if mode == "auto" && topScore >= float32(s.cfg.AutoThreshold) {
 			modeUsed = "rag"
 		} else if mode == "auto" {
 			modeUsed = "full"
