@@ -27,7 +27,11 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Error("config load failed", "error", err)
+		os.Exit(1)
+	}
 
 	// Validate config — fail fast on misconfiguration
 	if errs := cfg.Validate(); len(errs) > 0 {
