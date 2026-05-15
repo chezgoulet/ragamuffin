@@ -97,6 +97,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 func (s *Server) withRequestID(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
+		if reqID != "" && len(reqID) > 256 {
+			http.Error(w, "X-Request-ID header too long", http.StatusBadRequest)
+			return
+		}
 		if reqID == "" {
 			reqID = newRequestID()
 		}
@@ -119,8 +123,9 @@ func newRequestID() string {
 	rand.Read(b)
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
+	// Format as canonical UUID per RFC 9562: time_low-time_mid-time_hi_and_version-clock_seq-node
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[5:7], b[7:9], b[9:11], b[11:16])
+		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // log returns a logger with the request ID from ctx attached.
