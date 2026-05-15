@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
@@ -49,12 +48,13 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"title":       map[string]interface{}{"type": "string", "description": "PR title if PR mode"},
-					"content":     map[string]interface{}{"type": "string", "description": "Complete file content. Empty string to delete."},
+					"content":     map[string]interface{}{"type": "string", "description": "File content to write. Required unless delete=true."},
 					"target_path": map[string]interface{}{"type": "string", "description": "Vault path relative to vault root"},
 					"mode":        map[string]interface{}{"type": "string", "description": "direct or pr (default: direct)"},
 					"description": map[string]interface{}{"type": "string", "description": "Optional PR body"},
+					"delete":      map[string]interface{}{"type": "boolean", "description": "Delete the file instead of writing"},
 				},
-				"required": []string{"title", "content", "target_path"},
+				"required": []string{"title", "target_path"},
 			},
 		},
 		{
@@ -197,6 +197,7 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 	targetPath, _ := args["target_path"].(string)
 	mode, _ := args["mode"].(string)
 	description, _ := args["description"].(string)
+	doDelete, _ := args["delete"].(bool)
 
 	if title == "" {
 		return nil, fmt.Errorf("title is required")
@@ -209,11 +210,9 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 	}
 
 	cleanPath := filepath.Clean(targetPath)
-	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
-	absVault := filepath.Clean(s.cfg.VaultPath) + string(os.PathSeparator)
-	absTarget := filepath.Clean(fullPath) + string(os.PathSeparator)
-	if !strings.HasPrefix(absTarget, absVault) {
-		return nil, fmt.Errorf("target_path must not escape vault root")
+	fullPath, err := safeVaultPath(s.cfg.VaultPath, cleanPath)
+	if err != nil {
+		return nil, err
 	}
 
 	if mode == "pr" {
@@ -228,12 +227,12 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 		}, nil
 	}
 
-	fullPath = filepath.Join(s.cfg.VaultPath, cleanPath)
-
-	if content == "" {
+	if doDelete {
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			return nil, fmt.Errorf("delete failed: %w", err)
 		}
+	} else if content == "" {
+		return nil, fmt.Errorf("content required unless delete=true")
 	} else {
 		dir := filepath.Dir(fullPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {

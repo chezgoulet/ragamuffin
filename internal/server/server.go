@@ -21,6 +21,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
+	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
 type ctxKey string
@@ -44,6 +45,7 @@ type Server struct {
 	indexer     *indexer.Indexer
 	gitProvider git.Provider
 	ratelimit   *ratelimit.Limiter
+	watcher     watcher.Watcher
 	logStore    *logstore.Store
 	mcpHandler  *mcp.Handler
 	logger      *slog.Logger
@@ -53,7 +55,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logStore *logstore.Store, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -63,6 +65,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 		indexer:       idx,
 		gitProvider:   gp,
 		ratelimit:     rl,
+		watcher:       w,
 		logStore:      logStore,
 		logger:        logger,
 		started:       time.Now(),
@@ -94,6 +97,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.handleLogs))
+
+	// Snapshot
+	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.handleSnapshot))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)

@@ -18,6 +18,9 @@ type pollWatcher struct {
 	mu        sync.Mutex
 }
 
+func (w *pollWatcher) Lock()   { w.mu.Lock() }
+func (w *pollWatcher) Unlock() { w.mu.Unlock() }
+
 func newPollWatcher(vaultPath string, interval time.Duration, logger *slog.Logger) *pollWatcher {
 	return &pollWatcher{
 		vaultPath: vaultPath,

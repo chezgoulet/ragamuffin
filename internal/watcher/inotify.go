@@ -26,6 +26,9 @@ type inotifyWatcher struct {
 	mu        sync.Mutex
 }
 
+func (w *inotifyWatcher) Lock()   { w.mu.Lock() }
+func (w *inotifyWatcher) Unlock() { w.mu.Unlock() }
+
 func newInotifyWatcher(vaultPath string, logger *slog.Logger) (Watcher, error) {
 	// Test that we can create an inotify instance
 	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)

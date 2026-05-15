@@ -350,6 +350,7 @@ type draftRequest struct {
 	TargetPath  string `json:"target_path"`
 	Mode        string `json:"mode"`
 	Description string `json:"description"`
+	Delete      bool   `json:"delete"`
 }
 
 func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
@@ -382,11 +383,9 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 
 	// Security: prevent path traversal — verify resolved path stays under vault root
 	cleanPath := filepath.Clean(req.TargetPath)
-	fullPath := filepath.Join(s.cfg.VaultPath, cleanPath)
-	absVault := filepath.Clean(s.cfg.VaultPath) + string(os.PathSeparator)
-	absTarget := filepath.Clean(fullPath) + string(os.PathSeparator)
-	if !strings.HasPrefix(absTarget, absVault) {
-		writeError(w, 400, "INVALID_REQUEST", "target_path must not escape vault root")
+	fullPath, err := safeVaultPath(s.cfg.VaultPath, cleanPath)
+	if err != nil {
+		writeError(w, 400, "INVALID_REQUEST", err.Error())
 		return
 	}
 
@@ -412,12 +411,14 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 	// Direct mode: write to filesystem
 	fullPath = filepath.Join(s.cfg.VaultPath, cleanPath)
 
-	if req.Content == "" {
-		// Delete
+	if req.Delete {
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			writeError(w, 500, "INTERNAL", fmt.Sprintf("delete failed: %s", err))
 			return
 		}
+	} else if req.Content == "" {
+		writeError(w, 400, "INVALID_INPUT", "content required unless delete=true")
+		return
 	} else {
 		// Write
 		dir := filepath.Dir(fullPath)

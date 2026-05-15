@@ -137,7 +137,7 @@ func main() {
 	defer logStore.Close()
 	logger.Info("log store ready", "path", logPath)
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, logStore, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, w, logStore, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

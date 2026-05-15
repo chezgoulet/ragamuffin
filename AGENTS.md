@@ -105,7 +105,6 @@ For v0.2 specifically:
 6. Config validation → `config.Load()` enhancement
 7. Chunk size enforcement → `internal/indexer/` chunker
 8. Native file watcher → `internal/watcher/inotify.go`
-9. Embedding proxy → separate `cmd/embedding-proxy/`
 
 ## Non-Goals
 
