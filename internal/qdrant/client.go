@@ -170,6 +170,33 @@ func (c *Client) Count(ctx context.Context) (uint64, error) {
 	return resp.Result.Count, nil
 }
 
+// CountFiles returns the number of distinct source_file values in the collection.
+func (c *Client) CountFiles(ctx context.Context) (int, error) {
+	seen := make(map[string]struct{})
+	var offset *pb.PointId
+	const pageSize uint32 = 200
+
+	for {
+		points, nextOffset, err := c.Scroll(ctx, pageSize, offset)
+		if err != nil {
+			return 0, fmt.Errorf("count files scroll: %w", err)
+		}
+		for _, p := range points {
+			if v, ok := p.Payload["source_file"]; ok {
+				if s, ok := v.GetKind().(*pb.Value_StringValue); ok {
+					seen[s.StringValue] = struct{}{}
+				}
+			}
+		}
+		if nextOffset == nil {
+			break
+		}
+		offset = nextOffset
+	}
+
+	return len(seen), nil
+}
+
 // Scroll returns a page of points from the collection, ordered by point ID.
 // offset is the point ID to start from (nil for beginning). limit caps results.
 func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {

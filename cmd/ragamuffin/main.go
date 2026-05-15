@@ -143,7 +143,7 @@ func main() {
 
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
-		Handler:           mux,
+		Handler:           srv.Recovery(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0, // 0 = no timeout — MaxBytesReader + per-handler context timeouts protect; 30s would kill slow /draft uploads
 		WriteTimeout:      0, // 0 = no timeout — needed for streaming /v1/snapshot
