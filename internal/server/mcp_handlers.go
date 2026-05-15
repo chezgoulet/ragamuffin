@@ -72,22 +72,22 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 	}
 }
 
-func (s *Server) mcpDispatch(toolName string, args map[string]interface{}) (interface{}, error) {
+func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
 	switch toolName {
 	case "ragamuffin_recall":
-		return s.mcpRecall(args)
+		return s.mcpRecall(ctx, args)
 	case "ragamuffin_ask":
-		return s.mcpAsk(args)
+		return s.mcpAsk(ctx, args)
 	case "ragamuffin_draft":
-		return s.mcpDraft(args)
+		return s.mcpDraft(ctx, args)
 	case "ragamuffin_audit":
-		return s.mcpAudit(args)
+		return s.mcpAudit(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
 }
 
-func (s *Server) mcpRecall(args map[string]interface{}) (interface{}, error) {
+func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")
@@ -105,7 +105,7 @@ func (s *Server) mcpRecall(args map[string]interface{}) (interface{}, error) {
 
 	sourceFilter, _ := args["source_filter"].(string)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	vector, err := s.embedder.EmbedSingle(ctx, query)
@@ -151,7 +151,7 @@ func (s *Server) mcpRecall(args map[string]interface{}) (interface{}, error) {
 	}, nil
 }
 
-func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
+func (s *Server) mcpAsk(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	query, _ := args["query"].(string)
 	if query == "" {
 		return nil, fmt.Errorf("query is required")
@@ -171,7 +171,7 @@ func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
 		topK = int(v)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK)
@@ -191,7 +191,7 @@ func (s *Server) mcpAsk(args map[string]interface{}) (interface{}, error) {
 	}, nil
 }
 
-func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
+func (s *Server) mcpDraft(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	title, _ := args["title"].(string)
 	content, _ := args["content"].(string)
 	targetPath, _ := args["target_path"].(string)
@@ -250,7 +250,7 @@ func (s *Server) mcpDraft(args map[string]interface{}) (interface{}, error) {
 	}, nil
 }
 
-func (s *Server) mcpAudit(args map[string]interface{}) (interface{}, error) {
+func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	staleDays := 90
 	if v, ok := args["stale_days"].(float64); ok {
 		staleDays = int(v)
@@ -304,7 +304,7 @@ func (s *Server) mcpAudit(args map[string]interface{}) (interface{}, error) {
 		if !s.cfg.HasLLM() {
 			resp["semantic_conflicts"] = []interface{}{}
 		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
 			conflicts, llmCalls := s.checkSemanticConflicts(ctx, sampleSize)
 			resp["semantic_conflicts"] = conflicts
