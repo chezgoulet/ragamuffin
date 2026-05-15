@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -82,6 +83,25 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 
 	return s
+}
+
+// Recovery wraps a handler to catch panics, log stack traces, and return 500.
+func (s *Server) Recovery(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				stack := debug.Stack()
+				s.logger.Error("handler panic recovered",
+					"path", r.URL.Path,
+					"method", r.Method,
+					"panic", fmt.Sprintf("%v", rec),
+					"stack", string(stack),
+				)
+				writeError(w, 500, "INTERNAL", "internal server error")
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.

@@ -199,7 +199,7 @@ func Load() (*Config, error) {
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
-		LLMBaseURL:  os.Getenv("RAGAMUFFIN_LLM_BASE_URL"),
+		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
 		LLMModel:    os.Getenv("RAGAMUFFIN_LLM_MODEL"),
 		LLMAPIKey:   os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
 

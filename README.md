@@ -18,14 +18,14 @@ curl -s http://localhost:8000/recall \
 
 ```bash
 # 1. Qdrant — the only runtime dependency
-docker run -d -p 6333:6333 qdrant/qdrant
+docker run -d -p 6334:6334 qdrant/qdrant
 
 # 2. Run Ragamuffin
 docker run -d \
   -p 8000:8000 \
   -v /path/to/vault:/opt/vault:ro \
   -e RAGAMUFFIN_VAULT_PATH=/opt/vault \
-  -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6333 \
+  -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6334 \
   -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-... \
   chezgoulet/ragamuffin:latest
 
@@ -357,7 +357,7 @@ uses `modernc.org/sqlite`, no CGo dependency.
 | Env Var | Description |
 |---|---|
 | `RAGAMUFFIN_VAULT_PATH` | Path to the knowledge base directory |
-| `RAGAMUFFIN_QDRANT_URL` | Qdrant gRPC endpoint (e.g. `http://localhost:6333`) |
+| `RAGAMUFFIN_QDRANT_URL` | Qdrant gRPC endpoint (e.g. `http://localhost:6334`) |
 | `RAGAMUFFIN_EMBEDDING_API_KEY` | API key for the embedding service |
 
 ### Embedding
@@ -371,12 +371,25 @@ uses `modernc.org/sqlite`, no CGo dependency.
 
 ### LLM
 
-| Env Var | Description |
-|---|---|
-| `RAGAMUFFIN_LLM_PROVIDER` | LLM provider (e.g. `openai`) |
-| `RAGAMUFFIN_LLM_BASE_URL` | LLM API base URL |
-| `RAGAMUFFIN_LLM_MODEL` | Model name (e.g. `gpt-4o`) |
-| `RAGAMUFFIN_LLM_API_KEY` | LLM API key |
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_LLM_PROVIDER` | — | LLM provider (e.g. `openai`) |
+| `RAGAMUFFIN_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL without `/v1` — the LLM client appends `/v1/chat/completions` internally. For LiteLLM proxy use `http://litellm:4000`. See [URL convention](#url-conventions). |
+| `RAGAMUFFIN_LLM_MODEL` | — | Model name (e.g. `gpt-4o`, `deepseek-chat`, `deepseek-v4-flash`) |
+| `RAGAMUFFIN_LLM_API_KEY` | — | LLM API key |
+
+### URL Conventions
+
+Ragamuffin has two API clients with **opposite base URL conventions** — this is by design after normalization.
+
+| Client | Appends to base URL | Example `RAGAMUFFIN_*_BASE_URL` |
+|---|---|---|
+| **Embedding** | `/embeddings` | `https://api.openai.com/v1` (include `/v1`) |
+| **LLM** | `/v1/chat/completions` | `https://api.deepseek.com` (omit `/v1`) |
+
+For a LiteLLM proxy (`http://litellm:4000`), set:
+- `RAGAMUFFIN_EMBEDDING_BASE_URL=http://litellm:4000/v1` (LiteLLM proxies `/v1/embeddings`)
+- `RAGAMUFFIN_LLM_BASE_URL=http://litellm:4000` (LiteLLM handles `/v1/chat/completions`)
 
 ### Qdrant
 
@@ -417,6 +430,9 @@ uses `modernc.org/sqlite`, no CGo dependency.
 | `RAGAMUFFIN_HOST` | `0.0.0.0` | HTTP listen host |
 | `RAGAMUFFIN_PORT` | `8000` | HTTP listen port |
 | `RAGAMUFFIN_LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
+
+All handlers are wrapped in a panic recovery middleware that logs stack traces
+via slog and returns JSON 500 errors instead of silent connection drops.
 
 ### Tuning
 
@@ -465,7 +481,18 @@ uses `modernc.org/sqlite`, no CGo dependency.
 
 ## Status
 
-Active development. v0.2.2 with all REST endpoints, rate limiting, request tracing, and MCP support.
+Active development. v0.3.4 with all REST endpoints, structured facts and logs,
+panic recovery, Prometheus metrics, rate limiting, request tracing, and MCP support.
+
+### v0.3.x Release History
+
+| Version | Highlights |
+|---|---|
+| v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |
+| v0.3.3 | Tags fix for facts POST (`qdrant.NewValue` 2-value return), deployment fixes |
+| v0.3.2 | (skipped — build failure) |
+| v0.3.1 | UUID point IDs, Qdrant gRPC port (6334), healthcheck improvements |
+| v0.3.0 | Facts endpoint, Logs endpoint, Snapshot endpoint, code-review fixes batch |
 
 Named with affection by [Christopher Goulet](https://github.com/chezgoulet).
 

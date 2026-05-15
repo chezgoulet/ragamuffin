@@ -73,6 +73,16 @@ func (idx *Indexer) ProcessEvents(ctx context.Context, events <-chan watcher.Eve
 	} else if count == 0 {
 		idx.logger.Info("indexer: empty collection, starting full re-index")
 		idx.fullReindex(ctx)
+	} else {
+		// Qdrant already has data — sync file count from existing points
+		fc, err := idx.qdrant.CountFiles(ctx)
+		if err == nil {
+			idx.mu.Lock()
+			idx.fileCount = fc
+			idx.lastIndexed = time.Now()
+			idx.mu.Unlock()
+			idx.logger.Info("indexer: synced file count from qdrant", "files", fc)
+		}
 	}
 
 	// Signal that initial indexing is done
