@@ -174,12 +174,14 @@ Returns stale files, semantic conflicts (requires LLM), gaps, and duplicates.
 The following env vars are available to agents composing Ragamuffin deployment:
 
 ```yaml
-RAGAMUFFIN_VAULT_PATH=/opt/vault       # Where your knowledge lives
-RAGAMUFFIN_QDRANT_URL=http://qdrant:6333    # Vector DB
-RAGAMUFFIN_EMBEDDING_API_KEY=sk-...         # For embedding text into vectors
-RAGAMUFFIN_LLM_API_KEY=sk-...               # For /ask and audit (optional)
-RAGAMUFFIN_LLM_MODEL=gpt-4o                 # Which model to use
-RAGAMUFFIN_GIT_TOKEN=ghp_...                # For PR mode (optional)
+RAGAMUFFIN_VAULT_PATH=/opt/vault                # Where your knowledge lives
+RAGAMUFFIN_QDRANT_URL=http://qdrant:6334            # Vector DB (gRPC port)
+RAGAMUFFIN_EMBEDDING_API_KEY=sk-...                 # For embedding text into vectors
+RAGAMUFFIN_LLM_API_KEY=sk-...                       # For /ask and audit (optional)
+RAGAMUFFIN_LLM_MODEL=deepseek-v4-flash              # Which model to use
+RAGAMUFFIN_LLM_BASE_URL=https://api.deepseek.com    # LLM API base URL
+# NOTE: LLM client appends /v1/chat/completions, so omit /v1 from the base URL
+RAGAMUFFIN_GIT_TOKEN=ghp_...                        # For PR mode (optional)
 ```
 
 ## Error Handling
@@ -204,9 +206,13 @@ wait before retrying. Adjust rate limit env vars per-endpoint if needed
 ```bash
 # What version is running?
 curl -s http://ragamuffin:8000/version
+# Returns version, commit, build date, Go version (requires ldflags at build time)
 
 # Is the server healthy and Qdrant reachable?
 curl -s http://ragamuffin:8000/health
+
+# How many files and chunks are indexed?
+curl -s http://ragamuffin:8000/stats
 
 # What endpoints are available?
 # Ragamuffin doesn't have a discovery endpoint — this document IS the discovery.
