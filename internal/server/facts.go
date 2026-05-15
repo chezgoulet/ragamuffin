@@ -85,13 +85,21 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	pointID := factKeyHash(fp.Key)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	payload := map[string]any{
+	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":   fp.Key,
 		"fact_value": fp.Value,
 		"updated_at": now,
-	}
+	})
 	if len(fp.Tags) > 0 {
-		payload["fact_tags"] = fp.Tags
+		tagVals := make([]*qdrant.Value, len(fp.Tags))
+		for i, t := range fp.Tags {
+			tagVals[i] = qdrant.NewValue(t)
+		}
+		payload["fact_tags"] = &qdrant.Value{
+			Kind: &qdrant.Value_ListValue{
+				ListValue: &qdrant.ListValue{Values: tagVals},
+			},
+		}
 	}
 
 	point := &qdrant.PointStruct{
@@ -100,7 +108,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 				Uuid: pointID,
 			},
 		},
-		Payload: qdrant.NewValueMap(payload),
+		Payload: payload,
 		Vectors: &qdrant.Vectors{
 			VectorsOptions: &qdrant.Vectors_Vector{
 				Vector: &qdrant.Vector{
