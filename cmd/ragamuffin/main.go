@@ -54,6 +54,17 @@ func main() {
 	defer qc.Close()
 	logger.Info("qdrant connected", "collection", cfg.QdrantCollection)
 
+	// Connect to facts collection (separate collection with smaller vector size)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	factsQc, err := qdrant.New(ctx2, cfg.QdrantURL, "ragamuffin_facts", 4)
+	cancel2()
+	if err != nil {
+		logger.Error("failed to connect to facts Qdrant", "error", err)
+		os.Exit(1)
+	}
+	defer factsQc.Close()
+	logger.Info("qdrant facts collection ready", "collection", "ragamuffin_facts")
+
 	// ── Initialize embedding client (optional) ──────────────────────────────
 	var ec *embedding.Client
 	if cfg.EmbeddingAPIKey != "" {
@@ -115,7 +126,7 @@ func main() {
 		"draft_rpm", cfg.RateLimitDraft, "audit_rpm", cfg.RateLimitAudit)
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
-	srv := server.New(cfg, qc, ec, lm, idx, gp, rl, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, logger)
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 

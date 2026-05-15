@@ -37,6 +37,7 @@ var (
 type Server struct {
 	cfg         *config.Config
 	qdrant      *qdrant.Client
+	facts       *qdrant.Client
 	embedder    *embedding.Client
 	llm         *llm.Client
 	indexer     *indexer.Indexer
@@ -50,10 +51,11 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
+		facts:         factsQc,
 		embedder:      ec,
 		llm:           lm,
 		indexer:       idx,
@@ -83,6 +85,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
 	mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
 	mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
+
+	// Facts
+	mux.HandleFunc("/v1/facts", s.withRequestID(s.handleFacts))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)
