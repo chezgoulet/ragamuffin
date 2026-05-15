@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/qdrant/go-client/qdrant"
@@ -13,7 +14,9 @@ import (
 
 // ── Fact Data Model ──────────────────────────────────────────────────────
 
-const factsCollection = "ragamuffin_facts"
+// Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
+// Vector size defaults to 4 — a sentinel for payload-only storage (no embeddings).
+// The cost of 4-dim vectors is negligible while satisfying Qdrant's vector requirement.
 
 // factPayload is the JSON body for upsert (POST /v1/facts).
 type factPayload struct {
@@ -60,6 +63,7 @@ func factKeyFilter(key string) *qdrant.Filter {
 // ── POST /v1/facts ───────────────────────────────────────────────────────
 
 func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024) // 256 KB for facts
 	var fp factPayload
 	if err := json.NewDecoder(r.Body).Decode(&fp); err != nil {
 		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
@@ -71,6 +75,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(fp.Key) > 1024 {
 		writeError(w, 400, "KEY_TOO_LONG", "key must be <= 1024 bytes")
+		return
+	}
+	if len(fp.Value) > 64*1024 {
+		writeError(w, 400, "VALUE_TOO_LARGE", "value must be <= 64 KB")
 		return
 	}
 
@@ -125,7 +133,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 
 	// Exact key lookup
 	if key != "" {
-		points, err := s.facts.ScrollFiltered(r.Context(), factsCollection, factKeyFilter(key), 1)
+		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
 		if err != nil {
 			s.log(r.Context()).Error("facts scroll failed", "error", err)
 			writeError(w, 500, "SCROLL_FAILED", "failed to query facts")
@@ -184,21 +192,44 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Scroll with reasonable limit
-	points, err := s.facts.ScrollFiltered(r.Context(), factsCollection, filter, 1000)
+	// Pagination params
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 1000 {
+			limit = v
+		}
+	}
+	offset := r.URL.Query().Get("before")
+
+	// Fetch limit+1 to detect if there's a next page
+	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, uint32(limit+1), offset)
 	if err != nil {
 		s.log(r.Context()).Error("facts scroll failed", "error", err)
 		writeError(w, 500, "SCROLL_FAILED", "failed to query facts")
 		return
 	}
 
-	resp := make([]factResponse, 0, len(points))
-	for _, p := range points {
+	var nextToken string
+	resp := make([]factResponse, 0, limit)
+	for i, p := range points {
+		if i >= limit {
+			if id := p.Id.GetUuid(); id != "" {
+				nextToken = id
+			}
+			break
+		}
 		if fr := pointToFact(p); fr != nil {
 			resp = append(resp, *fr)
 		}
 	}
-	writeJSON(w, 200, resp)
+
+	respBody := map[string]interface{}{
+		"entries": resp,
+	}
+	if nextToken != "" {
+		respBody["next_token"] = nextToken
+	}
+	writeJSON(w, 200, respBody)
 }
 
 // ── DELETE /v1/facts ─────────────────────────────────────────────────────
@@ -210,7 +241,7 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.facts.DeleteFiltered(r.Context(), factsCollection, factKeyFilter(key)); err != nil {
+	if err := s.facts.DeleteFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key)); err != nil {
 		s.log(r.Context()).Error("facts delete failed", "error", err)
 		writeError(w, 500, "DELETE_FAILED", "failed to delete fact")
 		return

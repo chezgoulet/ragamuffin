@@ -24,11 +24,6 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 
-	// Lock the watcher so no events fire during the tarball walk.
-	// Files can still change on disk, but the indexer won't race us.
-	s.watcher.Lock()
-	defer s.watcher.Unlock()
-
 	gw, err := gzip.NewWriterLevel(w, gzip.DefaultCompression)
 	if err != nil {
 		s.log(r.Context()).Error("snapshot: create gzip writer", "error", err)

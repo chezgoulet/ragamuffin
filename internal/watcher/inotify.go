@@ -87,72 +87,83 @@ func (w *inotifyWatcher) Watch(events chan<- Event, done <-chan struct{}) {
 }
 
 func (w *inotifyWatcher) processEvents(buf []byte, events chan<- Event) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	var pending []Event
 
-	for offset := 0; offset < len(buf); {
-		event := (*unix.InotifyEvent)(nil)
-		if offset+unix.SizeofInotifyEvent > len(buf) {
-			break
-		}
-		// Parse raw event
-		wd := int32(buf[offset]) | int32(buf[offset+1])<<8 | int32(buf[offset+2])<<16 | int32(buf[offset+3])<<24
-		mask := uint32(buf[offset+4]) | uint32(buf[offset+5])<<8 | uint32(buf[offset+6])<<16 | uint32(buf[offset+7])<<24
-		_ = wd
-		nameLen := uint32(buf[offset+12]) | uint32(buf[offset+13])<<8 | uint32(buf[offset+14])<<16 | uint32(buf[offset+15])<<24
+	func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
 
-		var name string
-		if nameLen > 0 {
-			nameStart := offset + unix.SizeofInotifyEvent
-			nameEnd := nameStart + int(nameLen)
-			if nameEnd <= len(buf) {
-				name = strings.TrimRight(string(buf[nameStart:nameEnd]), "\x00")
+		for offset := 0; offset < len(buf); {
+			if offset+unix.SizeofInotifyEvent > len(buf) {
+				break
+			}
+			// Parse raw event
+			wd := int32(buf[offset]) | int32(buf[offset+1])<<8 | int32(buf[offset+2])<<16 | int32(buf[offset+3])<<24
+			mask := uint32(buf[offset+4]) | uint32(buf[offset+5])<<8 | uint32(buf[offset+6])<<16 | uint32(buf[offset+7])<<24
+			_ = wd
+			nameLen := uint32(buf[offset+12]) | uint32(buf[offset+13])<<8 | uint32(buf[offset+14])<<16 | uint32(buf[offset+15])<<24
+
+			var name string
+			if nameLen > 0 {
+				nameStart := offset + unix.SizeofInotifyEvent
+				nameEnd := nameStart + int(nameLen)
+				if nameEnd <= len(buf) {
+					name = strings.TrimRight(string(buf[nameStart:nameEnd]), "\x00")
+				}
+			}
+
+			offset += unix.SizeofInotifyEvent + int(nameLen)
+
+			_ = mask
+			if name == "" {
+				continue
+			}
+
+			// Debounce: coalesce rapid events on the same file
+			now := time.Now()
+			if last, ok := w.debounce[name]; ok && now.Sub(last) < inotifyDebounce {
+				continue
+			}
+			w.debounce[name] = now
+
+			absPath := filepath.Join(w.vaultPath, name)
+			info, err := os.Stat(absPath)
+			if err != nil {
+				if os.IsNotExist(err) {
+					// File deleted
+					w.logger.Info("file deleted", "path", name)
+					pending = append(pending, Event{Path: name, Action: ActionDelete})
+					delete(w.state, name)
+				}
+				continue
+			}
+			if info.IsDir() {
+				continue
+			}
+
+			if !isIndexable(name) {
+				continue
+			}
+
+			prev, existed := w.state[name]
+			w.state[name] = info.ModTime()
+
+			if !existed {
+				w.logger.Info("file added", "path", name)
+				pending = append(pending, Event{Path: name, AbsPath: absPath, Action: ActionAdd})
+			} else if info.ModTime().After(prev) {
+				w.logger.Info("file modified", "path", name)
+				pending = append(pending, Event{Path: name, AbsPath: absPath, Action: ActionModify})
 			}
 		}
+	}()
 
-		offset += unix.SizeofInotifyEvent + int(nameLen)
-
-		_ = mask
-		_ = event
-		if name == "" {
-			continue
-		}
-
-		// Debounce: coalesce rapid events on the same file
-		now := time.Now()
-		if last, ok := w.debounce[name]; ok && now.Sub(last) < inotifyDebounce {
-			continue
-		}
-		w.debounce[name] = now
-
-		absPath := filepath.Join(w.vaultPath, name)
-		info, err := os.Stat(absPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// File deleted
-				w.logger.Info("file deleted", "path", name)
-				events <- Event{Path: name, Action: ActionDelete}
-				delete(w.state, name)
-			}
-			continue
-		}
-		if info.IsDir() {
-			continue
-		}
-
-		if !isIndexable(name) {
-			continue
-		}
-
-		prev, existed := w.state[name]
-		w.state[name] = info.ModTime()
-
-		if !existed {
-			w.logger.Info("file added", "path", name)
-			events <- Event{Path: name, AbsPath: absPath, Action: ActionAdd}
-		} else if info.ModTime().After(prev) {
-			w.logger.Info("file modified", "path", name)
-			events <- Event{Path: name, AbsPath: absPath, Action: ActionModify}
+	// Send events outside the lock so the channel send doesn't block the mutex
+	for _, ev := range pending {
+		select {
+		case events <- ev:
+		default:
+			w.logger.Warn("event dropped: channel full", "path", ev.Path)
 		}
 	}
 }

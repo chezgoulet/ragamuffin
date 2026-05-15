@@ -77,6 +77,9 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/ask", cfg.RateLimitAsk)
 	rl.SetLimit("/draft", cfg.RateLimitDraft)
 	rl.SetLimit("/audit", cfg.RateLimitAudit)
+	rl.SetLimit("/v1/facts", cfg.RateLimitFacts)
+	rl.SetLimit("/v1/logs", cfg.RateLimitLogs)
+	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 
 	return s
 }
@@ -93,13 +96,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
 
 	// Facts
-	mux.HandleFunc("/v1/facts", s.withRequestID(s.handleFacts))
+	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
 
 	// Logs
-	mux.HandleFunc("/v1/logs", s.withRequestID(s.handleLogs))
+	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
 
 	// Snapshot
-	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.handleSnapshot))
+	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.withRateLimit("/v1/snapshot", s.handleSnapshot)))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)

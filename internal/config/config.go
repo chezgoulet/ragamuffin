@@ -17,6 +17,8 @@ type Config struct {
 
 	// Optional — Qdrant
 	QdrantCollection string
+	FactsCollection  string
+	FactsVectorSize  uint64
 
 	// Optional — Watcher
 	WatchInterval string
@@ -41,6 +43,9 @@ type Config struct {
 	RateLimitAsk     int
 	RateLimitDraft   int
 	RateLimitAudit   int
+	RateLimitFacts   int
+	RateLimitLogs    int
+	RateLimitSnapshot int
 
 	// Optional — LLM
 	LLMProvider string
@@ -124,6 +129,18 @@ func (c *Config) Validate() []string {
 	if c.RateLimitAudit < 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_AUDIT must be non-negative, got %d", c.RateLimitAudit))
 	}
+		if c.FactsVectorSize == 0 {
+		errs = append(errs, "RAGAMUFFIN_FACTS_VECTOR_SIZE must be positive, got 0")
+	}
+	if c.RateLimitFacts < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_FACTS must be non-negative, got %d", c.RateLimitFacts))
+	}
+	if c.RateLimitLogs < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_LOGS must be non-negative, got %d", c.RateLimitLogs))
+	}
+	if c.RateLimitSnapshot < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT must be non-negative, got %d", c.RateLimitSnapshot))
+	}
 
 	return errs
 }
@@ -157,6 +174,8 @@ func Load() (*Config, error) {
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
+		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
+		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", 4)),
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
 
@@ -175,6 +194,9 @@ func Load() (*Config, error) {
 		RateLimitAsk:     envInt("RAGAMUFFIN_RATE_LIMIT_ASK", 10),
 		RateLimitDraft:   envInt("RAGAMUFFIN_RATE_LIMIT_DRAFT", 30),
 		RateLimitAudit:   envInt("RAGAMUFFIN_RATE_LIMIT_AUDIT", 5),
+		RateLimitFacts:   envInt("RAGAMUFFIN_RATE_LIMIT_FACTS", 30),
+		RateLimitLogs:    envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
+		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  os.Getenv("RAGAMUFFIN_LLM_BASE_URL"),

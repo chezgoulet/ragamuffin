@@ -4,6 +4,7 @@ package logstore
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -140,8 +141,8 @@ func (s *Store) List(ctx context.Context, f Filter) (entries []LogEntry, nextTok
 		args = append(args, f.Type)
 	}
 	if f.Tag != "" {
-		conditions = append(conditions, "tags LIKE ?")
-		args = append(args, fmt.Sprintf("%%\"%s\"%%", f.Tag))
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM json_each(tags) WHERE value = ?)")
+		args = append(args, f.Tag)
 	}
 	if f.Since != "" {
 		conditions = append(conditions, "created_at >= ?")
@@ -217,14 +218,7 @@ func (s *Store) Close() error {
 // encodeID converts an integer rowid to a 16-char hex string.
 func encodeID(id int64) string {
 	b := make([]byte, 8)
-	b[0] = byte(id >> 56)
-	b[1] = byte(id >> 48)
-	b[2] = byte(id >> 40)
-	b[3] = byte(id >> 32)
-	b[4] = byte(id >> 24)
-	b[5] = byte(id >> 16)
-	b[6] = byte(id >> 8)
-	b[7] = byte(id)
+	binary.BigEndian.PutUint64(b, uint64(id))
 	return hex.EncodeToString(b)
 }
 
@@ -234,8 +228,7 @@ func decodeID(s string) (int64, error) {
 	if err != nil || len(b) != 8 {
 		return 0, fmt.Errorf("invalid id format")
 	}
-	return int64(b[0])<<56 | int64(b[1])<<48 | int64(b[2])<<40 | int64(b[3])<<32 |
-		int64(b[4])<<24 | int64(b[5])<<16 | int64(b[6])<<8 | int64(b[7]), nil
+	return int64(binary.BigEndian.Uint64(b)), nil
 }
 
 
