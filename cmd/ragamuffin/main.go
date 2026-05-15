@@ -142,8 +142,12 @@ func main() {
 	srv.RegisterRoutes(mux)
 
 	httpServer := &http.Server{
-		Addr:    fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
-		Handler: mux,
+		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      0, // 0 = no timeout — needed for streaming /v1/snapshot
+		IdleTimeout:       60 * time.Second,
 	}
 
 	// Graceful shutdown
