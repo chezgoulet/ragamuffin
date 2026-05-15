@@ -2,6 +2,8 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -194,9 +196,10 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 
 		points := make([]*pb.PointStruct, len(batch))
 		for j, c := range batch {
-			id := fmt.Sprintf("%s:%d", relPath, c.ChunkIndex)
+			// Deterministic UUID from file path + chunk index
+			id := pointID(relPath, c.ChunkIndex)
 			points[j] = &pb.PointStruct{
-				Id: pb.NewIDUUID(id),
+				Id: id,
 				Vectors: &pb.Vectors{
 					VectorsOptions: &pb.Vectors_Vector{
 						Vector: &pb.Vector{
@@ -245,4 +248,19 @@ func isIndexable(path string) bool {
 	default:
 		return false
 	}
+}
+
+// pointID generates a deterministic UUID from a file path and chunk index.
+// Uses SHA-256 (not SHA-1) for compatibility with Qdrant's UUID parser,
+// producing a valid RFC 4122 UUID.
+func pointID(relPath string, chunkIndex int) *pb.PointId {
+	raw := fmt.Sprintf("%s:%d", relPath, chunkIndex)
+	h := sha256.Sum256([]byte(raw))
+	// Take first 16 bytes, set version 4 bits and RFC 4122 variant
+	buf := h[:16]
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	s := hex.EncodeToString(buf)
+	uuid := s[:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
+	return pb.NewIDUUID(uuid)
 }
