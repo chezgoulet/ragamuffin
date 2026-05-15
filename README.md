@@ -374,9 +374,22 @@ uses `modernc.org/sqlite`, no CGo dependency.
 | Env Var | Default | Description |
 |---|---|---|
 | `RAGAMUFFIN_LLM_PROVIDER` | — | LLM provider (e.g. `openai`) |
-| `RAGAMUFFIN_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL — the LLM client appends `/v1/chat/completions`, so **omit** the `/v1` suffix here. The embedding client uses the opposite convention (includes `/v1` in base URL). See issue #86. |
+| `RAGAMUFFIN_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL without `/v1` — the LLM client appends `/v1/chat/completions` internally. For LiteLLM proxy use `http://litellm:4000`. See [URL convention](#url-conventions). |
 | `RAGAMUFFIN_LLM_MODEL` | — | Model name (e.g. `gpt-4o`, `deepseek-chat`, `deepseek-v4-flash`) |
 | `RAGAMUFFIN_LLM_API_KEY` | — | LLM API key |
+
+### URL Conventions
+
+Ragamuffin has two API clients with **opposite base URL conventions** — this is by design after normalization.
+
+| Client | Appends to base URL | Example `RAGAMUFFIN_*_BASE_URL` |
+|---|---|---|
+| **Embedding** | `/embeddings` | `https://api.openai.com/v1` (include `/v1`) |
+| **LLM** | `/v1/chat/completions` | `https://api.deepseek.com` (omit `/v1`) |
+
+For a LiteLLM proxy (`http://litellm:4000`), set:
+- `RAGAMUFFIN_EMBEDDING_BASE_URL=http://litellm:4000/v1` (LiteLLM proxies `/v1/embeddings`)
+- `RAGAMUFFIN_LLM_BASE_URL=http://litellm:4000` (LiteLLM handles `/v1/chat/completions`)
 
 ### Qdrant
 

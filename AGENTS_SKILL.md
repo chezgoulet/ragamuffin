@@ -179,8 +179,11 @@ RAGAMUFFIN_QDRANT_URL=http://qdrant:6334            # Vector DB (gRPC port)
 RAGAMUFFIN_EMBEDDING_API_KEY=sk-...                 # For embedding text into vectors
 RAGAMUFFIN_LLM_API_KEY=sk-...                       # For /ask and audit (optional)
 RAGAMUFFIN_LLM_MODEL=deepseek-v4-flash              # Which model to use
-RAGAMUFFIN_LLM_BASE_URL=https://api.deepseek.com    # LLM API base URL
-# NOTE: LLM client appends /v1/chat/completions, so omit /v1 from the base URL
+RAGAMUFFIN_LLM_BASE_URL=https://api.deepseek.com    # LLM API base URL (omit /v1)
+RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1  # Embedding base URL (include /v1)
+# URL convention: LLM appends /v1/chat/completions, embedding appends /embeddings
+# LiteLLM proxy (http://litellm:4000):
+#   LLM_BASE_URL=http://litellm:4000  EMBEDDING_BASE_URL=http://litellm:4000/v1
 RAGAMUFFIN_GIT_TOKEN=ghp_...                        # For PR mode (optional)
 ```
 
