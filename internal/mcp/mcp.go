@@ -6,6 +6,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -53,8 +54,10 @@ type Handler struct {
 }
 
 // ToolCallHandler is called when a client invokes a tool.
-// Returns the tool result as a JSON-serializable value, or an error.
-type ToolCallHandler func(toolName string, args map[string]interface{}) (interface{}, error)
+// ctx is derived from the MCP HTTP request context — cancels when the
+// client disconnects. Returns the tool result as a JSON-serializable
+// value, or an error.
+type ToolCallHandler func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error)
 
 // New creates an MCP handler.
 func New(tools []ToolDefinition, handler ToolCallHandler, logger *slog.Logger) *Handler {
@@ -154,7 +157,7 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 	case "tools/list":
 		h.handleToolsList(w, req, sessionID)
 	case "tools/call":
-		h.handleToolsCall(w, req, sessionID)
+		h.handleToolsCall(r.Context(), w, req, sessionID)
 	default:
 		sendRPCError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
 	}
@@ -190,7 +193,7 @@ func (h *Handler) handleToolsList(w http.ResponseWriter, req JSONRPCRequest, ses
 	}
 }
 
-func (h *Handler) handleToolsCall(w http.ResponseWriter, req JSONRPCRequest, sessionID string) {
+func (h *Handler) handleToolsCall(ctx context.Context, w http.ResponseWriter, req JSONRPCRequest, sessionID string) {
 	var params struct {
 		Name      string                 `json:"name"`
 		Arguments map[string]interface{} `json:"arguments"`
@@ -205,7 +208,7 @@ func (h *Handler) handleToolsCall(w http.ResponseWriter, req JSONRPCRequest, ses
 		return
 	}
 
-	result, err := h.callHandler(params.Name, params.Arguments)
+	result, err := h.callHandler(ctx, params.Name, params.Arguments)
 	if err != nil {
 		sendRPCError(w, req.ID, -32603, err.Error())
 		return

@@ -122,6 +122,15 @@ func (r *statusRecorder) WriteHeader(code int) {
 	r.ResponseWriter.WriteHeader(code)
 }
 
+// Flush forwards Flush() to the underlying ResponseWriter if supported.
+// Required for the streaming gzip snapshot handler — statusRecorder must
+// satisfy http.Flusher so the gzip writer can flush incrementally.
+func (r *statusRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
 // withRequestID wraps a handler with request ID tracing and request counting.
 // Accepts X-Request-ID from the client, or generates a new UUID.
 // Stores the ID in the request context, echoes it in the response, and

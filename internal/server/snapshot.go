@@ -13,7 +13,8 @@ import (
 )
 
 // handleSnapshot streams a gzipped tarball of the vault directory.
-// Locks the watcher during snapshot to prevent concurrent file mutations.
+// Best-effort consistency: files may change during the walk.
+// Skips the .ragamuffin/ directory (operational metadata, not vault content).
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET")
