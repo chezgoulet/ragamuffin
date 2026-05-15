@@ -103,6 +103,7 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 	idx.indexing = true
 	idx.progressPct = 0
 	idx.knownFiles = make(map[string]struct{})
+	idx.chunkCount = 0
 	idx.mu.Unlock()
 
 	var files []string

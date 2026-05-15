@@ -47,6 +47,16 @@ func (s *Server) handleLogsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate agent and type length (indexed SQLite columns)
+	if len(lp.Agent) > 256 {
+		writeError(w, 400, "AGENT_TOO_LONG", "agent must be <= 256 bytes")
+		return
+	}
+	if len(lp.Type) > 256 {
+		writeError(w, 400, "TYPE_TOO_LONG", "type must be <= 256 bytes")
+		return
+	}
+
 	// Validate body size (separate from MaxBytesReader — the decoded body could be smaller)
 	if len(lp.Body) > 64*1024 {
 		writeError(w, 400, "BODY_TOO_LARGE", "body must be <= 64 KB")

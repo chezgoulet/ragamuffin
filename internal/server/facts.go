@@ -152,7 +152,11 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build list filter from optional prefix and tag
+	// Build list filter from optional search text and tag.
+	// Note: ?prefix= performs Qdrant full-text / substring matching, not
+	// a true prefix match. A query for "user/" will also match "superuser/"
+	// due to Qdrant's tokenizer behavior. For exact prefix filtering, a
+	// payload index with a keyword tokenizer would be needed.
 	var conditions []*qdrant.Condition
 
 	if prefix != "" {
