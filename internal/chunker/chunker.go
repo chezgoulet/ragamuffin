@@ -84,8 +84,9 @@ func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
 	// Split on double newlines (paragraph boundaries)
 	paragraphs := strings.Split(content, "\n\n")
 	var chunks []Chunk
+	chunkIndex := 0
 
-	for i, p := range paragraphs {
+	for _, p := range paragraphs {
 		text := strings.TrimSpace(p)
 		if text == "" {
 			continue
@@ -94,9 +95,10 @@ func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
 			Text:       text,
 			SourceFile: sourcePath,
 			Header:     "",
-			ChunkIndex: i,
+			ChunkIndex: chunkIndex,
 			UpdatedAt:  modTime,
 		})
+		chunkIndex++
 	}
 
 	return chunks

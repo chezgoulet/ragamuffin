@@ -17,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
@@ -43,6 +44,7 @@ type Server struct {
 	indexer     *indexer.Indexer
 	gitProvider git.Provider
 	ratelimit   *ratelimit.Limiter
+	logStore    *logstore.Store
 	mcpHandler  *mcp.Handler
 	logger      *slog.Logger
 	started     time.Time
@@ -51,7 +53,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, logStore *logstore.Store, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -61,6 +63,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 		indexer:       idx,
 		gitProvider:   gp,
 		ratelimit:     rl,
+		logStore:      logStore,
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),
@@ -89,6 +92,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.handleFacts))
 
+	// Logs
+	mux.HandleFunc("/v1/logs", s.withRequestID(s.handleLogs))
+
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger)
 	mux.Handle("/mcp", s.mcpHandler)
@@ -96,9 +102,21 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 // ── Request ID middleware ──────────────────────────────────────────────────────
 
-// withRequestID wraps a handler with request ID tracing.
+// statusRecorder wraps http.ResponseWriter to capture the response status code.
+type statusRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+// withRequestID wraps a handler with request ID tracing and request counting.
 // Accepts X-Request-ID from the client, or generates a new UUID.
-// Stores the ID in the request context and echoes it in the response.
+// Stores the ID in the request context, echoes it in the response, and
+// tracks request counts for /metrics.
 func (s *Server) withRequestID(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
@@ -111,7 +129,14 @@ func (s *Server) withRequestID(next http.HandlerFunc) http.HandlerFunc {
 		}
 		w.Header().Set("X-Request-ID", reqID)
 		ctx := context.WithValue(r.Context(), requestIDKey, reqID)
-		next(w, r.WithContext(ctx))
+
+		// Wrap in statusRecorder to capture the status code for metrics
+		rec := &statusRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+		next(rec, r.WithContext(ctx))
+
+		// Derive endpoint label from URL path
+		endpoint := r.URL.Path
+		s.countRequest(endpoint, rec.statusCode)
 	}
 }
 

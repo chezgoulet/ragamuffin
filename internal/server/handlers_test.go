@@ -18,7 +18,7 @@ func newTestServer() *Server {
 	}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	return New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	return New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil)
 }
 
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
@@ -186,7 +186,7 @@ func TestHandleAsk_MissingQuery(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil)
 	body := bytes.NewBufferString(`{"top_k": 8}`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -201,7 +201,7 @@ func TestHandleAsk_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil)
+	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil)
 	body := bytes.NewBufferString(`bad`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
