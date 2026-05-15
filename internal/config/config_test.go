@@ -12,7 +12,10 @@ func TestLoad_RequiredEnv(t *testing.T) {
 	defer os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
 	defer os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 
 	if cfg.VaultPath != "/test/vault" {
 		t.Errorf("VaultPath = %q, want /test/vault", cfg.VaultPath)
@@ -28,7 +31,10 @@ func TestLoad_Defaults(t *testing.T) {
 	defer os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
 	defer os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 
 	if cfg.QdrantCollection != "ragamuffin" {
 		t.Errorf("QdrantCollection = %q, want ragamuffin", cfg.QdrantCollection)
@@ -80,7 +86,10 @@ func TestLoad_CustomEnv(t *testing.T) {
 		}
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 
 	if cfg.EmbeddingAPIKey != "sk-test" {
 		t.Errorf("EmbeddingAPIKey = %q", cfg.EmbeddingAPIKey)
@@ -149,7 +158,10 @@ func TestLoad_GitConfig(t *testing.T) {
 		}
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 
 	if !cfg.GitProviderEnabled {
 		t.Error("GitProviderEnabled = false")
@@ -219,7 +231,10 @@ func TestValidate_ValidConfig(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) != 0 {
 		t.Errorf("expected no errors, got: %v", errs)
@@ -234,7 +249,10 @@ func TestValidate_VaultPathMissing(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for missing vault path")
@@ -259,7 +277,10 @@ func TestValidate_InvalidQdrantURL(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for invalid Qdrant URL")
@@ -277,7 +298,10 @@ func TestValidate_NegativeEmbeddingDims(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_EMBEDDING_DIMS")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for negative embedding dims")
@@ -295,7 +319,10 @@ func TestValidate_InvalidWatchInterval(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_WATCH_INTERVAL")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for invalid watch interval")
@@ -313,7 +340,10 @@ func TestValidate_InvalidWatcherMode(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_WATCHER_MODE")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for invalid watcher mode")
@@ -331,7 +361,10 @@ func TestValidate_NegativeRateLimit(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_RATE_LIMIT_RECALL")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	errs := cfg.Validate()
 	if len(errs) == 0 {
 		t.Error("expected error for negative rate limit")
@@ -346,7 +379,10 @@ func TestValidate_ValidWatcherModes(t *testing.T) {
 		os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
 		os.Setenv("RAGAMUFFIN_WATCHER_MODE", mode)
 
-		cfg := Load()
+		cfg, err := Load()
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
 		errs := cfg.Validate()
 		if len(errs) != 0 {
 			t.Errorf("mode %q should be valid, got errors: %v", mode, errs)
@@ -369,7 +405,10 @@ func TestValidate_ZeroChunkMaxTokens(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_CHUNK_MAX_TOKENS")
 	}()
 
-	cfg := Load()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
 	if cfg.ChunkMaxTokens != 0 {
 		t.Errorf("ChunkMaxTokens = %d, want 0", cfg.ChunkMaxTokens)
 	}

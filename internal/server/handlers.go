@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
 // ── /health ────────────────────────────────────────────────────────────────────
@@ -221,7 +223,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		}
 		contextText = b.String()
 
-		if mode == "auto" && topScore >= 0.75 {
+		if mode == "auto" && topScore >= float32(s.cfg.AutoThreshold) {
 			modeUsed = "rag"
 		} else if mode == "auto" {
 			modeUsed = "full"
@@ -256,7 +258,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		var b strings.Builder
 		sourceSet := make(map[string]bool)
 		for _, file := range fileOrder {
-			if estTokens(b.String()) > 8000 { // conservative context limit
+			if tokenutil.EstTokens(b.String()) > 8000 { // conservative context limit
 				break
 			}
 			fileResults, err := s.qdrant.Search(ctx, vector, 100, 0.0, file)
@@ -283,10 +285,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 	return contextText, sources, modeUsed, nil
 }
 
-// estTokens returns an approximate token count (words × 1.3).
-func estTokens(text string) int {
-	return int(float64(len(strings.Fields(text))) * 1.3)
-}
+
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

@@ -56,8 +56,9 @@ type Config struct {
 	GitBaseURL         string
 	GitRepos           string
 
-	// Optional — Audit
+	// Optional — Audit / Tuning
 	AuditSampleSize int
+	AutoThreshold  float64
 
 	// Optional — Logging
 	LogLevel string
@@ -139,10 +140,20 @@ func parseURL(raw string) (interface{}, error) {
 }
 
 // Load reads configuration from environment variables with defaults.
-func Load() *Config {
+// Returns an error if any required variable is unset.
+func Load() (*Config, error) {
+	vaultPath, err := requireEnv("RAGAMUFFIN_VAULT_PATH")
+	if err != nil {
+		return nil, err
+	}
+	qdrantURL, err := requireEnv("RAGAMUFFIN_QDRANT_URL")
+	if err != nil {
+		return nil, err
+	}
+
 	return &Config{
-		VaultPath:       requireEnv("RAGAMUFFIN_VAULT_PATH"),
-		QdrantURL:       requireEnv("RAGAMUFFIN_QDRANT_URL"),
+		VaultPath:       vaultPath,
+		QdrantURL:       qdrantURL,
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
@@ -178,16 +189,17 @@ func Load() *Config {
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
+		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
 		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
-	}
+	}, nil
 }
 
-func requireEnv(key string) string {
+func requireEnv(key string) (string, error) {
 	v := os.Getenv(key)
 	if v == "" {
-		panic("required environment variable not set: " + key)
+		return "", fmt.Errorf("required environment variable not set: %s", key)
 	}
-	return v
+	return v, nil
 }
 
 func envOrDefault(key, def string) string {
@@ -207,6 +219,18 @@ func envBool(key string) bool {
 		return false
 	}
 	return b
+}
+
+func envFloat(key string, def float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return def
+	}
+	return v
 }
 
 func envInt(key string, def int) int {
