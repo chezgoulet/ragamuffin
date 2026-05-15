@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
 func TestChunkMarkdown_Headings(t *testing.T) {
@@ -139,8 +141,8 @@ func TestEnforceMaxTokens_ParagraphSplit(t *testing.T) {
 		if r.Header != "## Big Section" {
 			t.Errorf("header = %q", r.Header)
 		}
-		if estTokens(r.Text) > 400 {
-			t.Errorf("chunk exceeds max tokens: %d > 400", estTokens(r.Text))
+		if tokenutil.EstTokens(r.Text) > 400 {
+			t.Errorf("chunk exceeds max tokens: %d > 400", tokenutil.EstTokens(r.Text))
 		}
 	}
 }
@@ -162,8 +164,8 @@ func TestEnforceMaxTokens_SentenceSplit(t *testing.T) {
 		t.Fatalf("expected at least 2 chunks from sentence split, got %d", len(result))
 	}
 	for _, r := range result {
-		if estTokens(r.Text) > 100 {
-			t.Errorf("chunk exceeds max tokens: %d > 100", estTokens(r.Text))
+		if tokenutil.EstTokens(r.Text) > 100 {
+			t.Errorf("chunk exceeds max tokens: %d > 100", tokenutil.EstTokens(r.Text))
 		}
 	}
 }
@@ -182,8 +184,8 @@ func TestEnforceMaxTokens_HardSplit(t *testing.T) {
 		t.Fatalf("expected at least 2 chunks from hard split, got %d", len(result))
 	}
 	for _, r := range result {
-		if estTokens(r.Text) > 100 {
-			t.Errorf("chunk exceeds max tokens: %d > 100", estTokens(r.Text))
+		if tokenutil.EstTokens(r.Text) > 100 {
+			t.Errorf("chunk exceeds max tokens: %d > 100", tokenutil.EstTokens(r.Text))
 		}
 	}
 }
@@ -210,8 +212,8 @@ func TestChunkFile_WithMaxTokens(t *testing.T) {
 		t.Fatal("expected chunks")
 	}
 	for _, c := range chunks {
-		if estTokens(c.Text) > 200 {
-			t.Errorf("chunk exceeds max: %d > 200", estTokens(c.Text))
+		if tokenutil.EstTokens(c.Text) > 200 {
+			t.Errorf("chunk exceeds max: %d > 200", tokenutil.EstTokens(c.Text))
 		}
 		if c.SourceFile != "big.md" {
 			t.Errorf("source = %q", c.SourceFile)
@@ -230,9 +232,9 @@ func TestEstTokens(t *testing.T) {
 		{strings.Repeat("a ", 10), 13}, // 10 words × 1.3 = 13
 	}
 	for _, tt := range tests {
-		got := estTokens(tt.text)
+		got := tokenutil.EstTokens(tt.text)
 		if got != tt.expected {
-			t.Errorf("estTokens(%q) = %d, want %d", tt.text, got, tt.expected)
+			t.Errorf("tokenutil.EstTokens(%q) = %d, want %d", tt.text, got, tt.expected)
 		}
 	}
 }

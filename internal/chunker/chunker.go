@@ -4,6 +4,8 @@ package chunker
 import (
 	"strings"
 	"time"
+
+	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
 // Chunk represents a single indexed section of a file.
@@ -103,7 +105,7 @@ func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
 // enforceMaxTokens splits a chunk that exceeds maxTokens.
 // maxTokens <= 0 means no enforcement (return chunk as-is).
 func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
-	if maxTokens <= 0 || estTokens(c.Text) <= maxTokens {
+	if maxTokens <= 0 || tokenutil.EstTokens(c.Text) <= maxTokens {
 		return []Chunk{c}
 	}
 
@@ -118,7 +120,7 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 			if p == "" {
 				continue
 			}
-			if estTokens(current.String())+estTokens(p) > maxTokens && current.Len() > 0 {
+			if tokenutil.EstTokens(current.String())+tokenutil.EstTokens(p) > maxTokens && current.Len() > 0 {
 				result = append(result, Chunk{
 					Text:       strings.TrimSpace(current.String()),
 					SourceFile: c.SourceFile,
@@ -159,7 +161,7 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 			if s == "" {
 				continue
 			}
-			if estTokens(current.String())+estTokens(s) > maxTokens && current.Len() > 0 {
+			if tokenutil.EstTokens(current.String())+tokenutil.EstTokens(s) > maxTokens && current.Len() > 0 {
 				result = append(result, Chunk{
 					Text:       strings.TrimSpace(current.String()),
 					SourceFile: c.SourceFile,
@@ -211,11 +213,7 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 	return result
 }
 
-// estTokens returns an approximate token count (words × 1.3).
-func estTokens(text string) int {
-	words := len(strings.Fields(text))
-	return int(float64(words) * 1.3)
-}
+
 
 // splitSentences splits text on period+space boundaries.
 func splitSentences(text string) []string {
