@@ -1,119 +1,205 @@
 # AGENTS.md — ragamuffin
 
 Ragamuffin is a Go knowledge tool for agents. RAG-first, REST-native,
-zero-dependency binary.
+zero-dependency binary. It turns a directory of files into a queryable
+knowledge base that agents can read from and write to.
 
-## Before You Start
+## Current State: v0.2.2
 
-1. Read [SPEC.md](SPEC.md). That's the ground truth.
-2. Read the version spec for whatever you're building (e.g., `SPEC-v0.2.md`).
-3. Run `go build ./...` and `go test ./...` to confirm a clean baseline.
+All endpoints are shipping. PRs target `main`.
+
+| Area | Status |
+|---|---|
+| Semantic search (`/recall`, `/ask`) | Done |
+| Write-back (`/draft`, direct + PR mode) | Done |
+| Vault audit (`/audit`) | Done |
+| Structured facts (`/v1/facts` POST/GET/DELETE) | Done |
+| Structured logs (`/v1/logs` POST/GET) | Done |
+| Snapshot (`/v1/snapshot`, streaming gzip tarball) | Done |
+| MCP SSE transport (`/mcp`) | Done |
+| Rate limiting (per-endpoint configurable) | Done |
+| Request ID tracing | Done |
+| Prometheus metrics (`/metrics`) | Done |
+| Health / Stats / Version | Done |
+| Watcher (poll + inotify) | Done |
+| Local embeddings (via upstream config) | Done |
+| Chunk size enforcement | Done |
 
 ## Project Structure
 
 ```
 cmd/ragamuffin/          # entry point — wires everything up
 internal/
-  config/                 # env var parsing, defaults
+  config/                 # env var parsing, validation, defaults
+  chunker/                # markdown chunking by heading boundaries
   embedding/              # OpenAI-compatible embedding client
   llm/                    # LLM client for /ask and semantic conflict
-  qdrant/                 # Qdrant gRPC client
-  watcher/                # file system polling (v0.1) → inotify (v0.2)
+  qdrant/                 # Qdrant gRPC client (search, scroll, upsert)
+  logstore/               # SQLite-backed append-only log stream
+  tokenutil/              # Token estimation utilities
+  ratelimit/              # Per-endpoint rate limiter
+  watcher/                # file system polling + inotify (Linux)
   indexer/                # chunking, embedding generation, Qdrant upsert
-  server/                 # HTTP handlers, MCP bolt-on, audit logic
-  git/                    # GitHub/GitLab/Gitea PR creation
-  mcp/                    # MCP SSE transport + JSON-RPC dispatch
+  server/                 # HTTP handlers, MCP bolt-on, audit, PR logic
+    server.go             # routing, middleware, common helpers
+    handlers.go           # /recall, /ask, /draft, /audit, /health, /stats
+    facts.go              # /v1/facts POST/GET/DELETE
+    logs.go               # /v1/logs POST/GET
+    snapshot.go           # /v1/snapshot
+    mcp_handlers.go       # MCP tool implementations (recall, ask, draft, audit)
+    path.go               # safeVaultPath (symlink-safe path resolution)
+    audit.go              # staleness, gap, duplicate, semantic conflict checks
+    pr.go                 # GitHub PR creation via REST API
+    audit_test.go         # audit unit tests
+    handlers_test.go      # handler unit tests
+  git/                    # GitHub/GitLab/Gitea provider client
+  mcp/                    # MCP SSE transport + JSON-RPC dispatch (stdlib, no SDK)
 ```
+
+## Before You Start
+
+1. Read this file.
+2. Read the online docs (README.md) for endpoint reference and config.
+3. Run `go build ./... && go test ./... && go vet ./...` to confirm baseline.
 
 ## Coding Conventions
 
+### Dependencies
+
+External dependencies are minimal and all indirect:
+
+- `github.com/qdrant/go-client` — Qdrant gRPC client
+- `modernc.org/sqlite` — pure Go SQLite driver (no CGo)
+- `golang.org/x/net`, `golang.org/x/text` — stdlib supplements
+- `google.golang.org/grpc` + protobuf — gRPC transport for Qdrant
+
+No web framework. No ORM. No MCP SDK. No LLM SDK. No config library.
+Everything is net/http, encoding/json, database/sql, and the Go standard
+library.
+
 ### Go Style
 
-- Standard library first. The only external dependency is the Qdrant gRPC
-  client (`github.com/qdrant/go-client`). Everything else is `net/http`.
+- Standard library first. Everything else is a Qdrant client or SQLite.
 - Errors are wrapped: `fmt.Errorf("what failed: %w", err)`. Never discard
   an error without at least logging it.
 - Contexts are passed through. Every I/O operation takes a context.
-- `interface{}` is acceptable for JSON serialization in handlers. It's not
-  worth creating response structs for one-off shapes.
+- All handlers use `writeError(w, status, code, message)` and `writeJSON`.
 - `slog` for all logging. Structured, JSON to stderr. Use `logger.Info`,
   `logger.Warn`, `logger.Error`. No `fmt.Println`.
 
 ### HTTP Handlers
 
-- All handlers follow the same pattern: decode → validate → execute → respond.
-- Error responses use `writeError(w, status, code, message)`.
-- Success responses use `writeJSON(w, status, data)`.
-- New endpoints go in `internal/server/handlers.go`. Audit logic goes in
-  `internal/server/audit.go`. MCP tool dispatch goes in
-  `internal/server/mcp.go`. PR logic in `internal/server/pr.go`.
+Every handler follows the same pattern:
+
+```go
+func (s *Server) handleFoo(w http.ResponseWriter, r *http.Request) {
+    // 1. Method guard (if not a multi-method endpoint)
+    if r.Method != http.MethodPost { ... }
+
+    // 2. Body limit
+    r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
+
+    // 3. Decode
+    var req fooRequest
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil { ... }
+
+    // 4. Validate
+    if req.Field == "" { ... }
+
+    // 5. Execute with context
+    ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+    defer cancel()
+    result, err := s.something(ctx, req)
+    if err != nil { ... }
+
+    // 6. Respond
+    writeJSON(w, 200, result)
+}
+```
+
+When a single path handles multiple methods (like `/v1/facts`), dispatch
+via a switch statement:
+
+```go
+func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
+    switch r.Method {
+    case http.MethodPost: s.handleFactsPost(w, r)
+    case http.MethodGet:  s.handleFactsGet(w, r)
+    case http.MethodDelete: s.handleFactsDelete(w, r)
+    default: writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET, POST, or DELETE")
+    }
+}
+```
+
+Routes are registered in `server.go`:
+
+```go
+mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+```
 
 ### Testing
 
 - Test files live alongside the package: `internal/config/config_test.go`.
-- Pure functions are tested with table-driven tests.
-- Use `t.Run()` for subtests.
-- Do not mock Qdrant. Use `testcontainers-go` for integration tests that
-  need a real Qdrant instance. If testcontainers isn't available, write
-  the test with a `t.Skip("needs testcontainers")` guard.
-- Every new endpoint needs a curl smoke test entry in `smoke_test.sh`.
+- Pure functions use table-driven tests with `t.Run()` for subtests.
+- Handler tests use `httptest.NewRequest` + `httptest.NewRecorder`.
+- No mock frameworks. If you need a real Qdrant for integration tests,
+  write the test with a `t.Skip("needs integration setup")` guard.
+- Go build/test/vet must pass before PR.
 
 ### Docker
 
-- `FROM scratch` in the final stage. `CGO_ENABLED=0` in the build stage.
-- Image name: `ghcr.io/chezgoulet/ragamuffin`.
-- The docker-compose follows the project's cross-stack networking pattern.
-  All containers on the internal `ragamuffin` network. No published ports
-  except ragamuffin on `127.0.0.1:8000`.
+- `FROM golang:1.25-alpine` for build → `FROM alpine:3.21` for runtime.
+- `CGO_ENABLED=0` at build time.
+- Image name: `chezgoulet/ragamuffin` (Docker Hub).
+- Version injected via `-ldflags`:
+  ```
+  -ldflags="-s -w \
+    -X 'github.com/chezgoulet/ragamuffin/internal/server.Version=${VERSION}' \
+    -X 'github.com/chezgoulet/ragamuffin/internal/server.Commit=${COMMIT}' \
+    -X 'github.com/chezgoulet/ragamuffin/internal/server.BuildDate=${BUILD_DATE}' \
+    -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=go1.25.0'"
+  ```
 
 ## Building
 
 ```bash
-go build ./...                    # compile check
-go test ./...                     # run tests
-go vet ./...                      # static analysis
-docker build -t ragamuffin .      # build Docker image
-./smoke_test.sh                   # curl smoke tests (needs running instance)
+# Compile, test, vet — must all pass
+go build ./...
+go test ./...
+go vet ./...
+
+# Docker
+docker build -t chezgoulet/ragamuffin:0.2 .
 ```
+
+## Configuration
+
+All configuration is via environment variables. The `config` package
+handles parsing in `internal/config/config.go`. Required vars:
+
+| Env Var | Purpose |
+|---|---|
+| `RAGAMUFFIN_VAULT_PATH` | Path to the vault directory |
+| `RAGAMUFFIN_QDRANT_URL` | Qdrant gRPC endpoint |
+| `RAGAMUFFIN_EMBEDDING_API_KEY` | Embedding service API key |
+
+Full reference: README.md (Configuration section).
 
 ## Version Specs
 
-Each version has its own spec. Always read the version spec before starting
-work on that version.
-
-| Version | Spec | Status |
-|---|---|---|
-| v0.1 | [SPEC.md](SPEC.md) | Done |
-| v0.2 | [SPEC-v0.2.md](SPEC-v0.2.md) | Designed, not started |
-| v0.3 | [SPEC-v0.3.md](SPEC-v0.3.md) | Designed, not started |
-| v0.4 | [SPEC-v0.4.md](SPEC-v0.4.md) | Designed, not started |
-
-The [ROADMAP.md](ROADMAP.md) has the high-level vision and out-of-scope list.
-
-## Implementation Order
-
-When building a version, follow the spec's feature order. Each feature is
-designed to be implemented independently — do one, test it, commit, move on.
-
-For v0.2 specifically:
-
-1. `server.go` split → refactor only, no behavior change
-2. `/version` endpoint → simplest, good warm-up
-3. Request ID tracing → middleware pattern
-4. Rate limiting → `internal/ratelimit/`
-5. `/metrics` endpoint → Prometheus format
-6. Config validation → `config.Load()` enhancement
-7. Chunk size enforcement → `internal/indexer/` chunker
-8. Native file watcher → `internal/watcher/inotify.go`
+The spec chain is:
+- **README.md** — living documentation of current state
+- **SPEC.md** — v0.1 architecture (historical)
+- **SPEC-v0.2.md** — v0.2 additions: metrics, version, rate limiting, local embeddings (historical)
+- **SPEC-v0.3.md** — this file is actually the v0.4 (Federated Knowledge) design. The actual v0.3 features (facts, logs, snapshot) were never separately spec'd — they went straight to code.
+- **ROADMAP.md** — future direction
 
 ## Non-Goals
 
 Do not add:
-- Dependencies beyond the Qdrant gRPC client
-- Authentication (that's v0.4)
-- Multi-tenancy (that's v0.4)
-- A web UI (that's v0.4)
-- Anything in the [ROADMAP.md](ROADMAP.md) "Out of Scope (Forever)" section
-
-If you're unsure whether something is in scope, check the version spec.
-If it's not there, it's not in scope.
+- Web UI (frontends are someone else's problem)
+- Authentication (trust the network — agents are internal)
+- Multi-tenancy
+- A Python SDK
+- Support for non-text files (PDF, images, audio)
+- Anything in the ROADMAP's "Out of Scope (Forever)" section
