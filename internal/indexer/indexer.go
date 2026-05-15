@@ -70,6 +70,9 @@ func (idx *Indexer) ProcessEvents(ctx context.Context, events <-chan watcher.Eve
 	count, err := idx.qdrant.Count(ctx)
 	if err != nil {
 		idx.logger.Error("indexer: failed to check qdrant count", "error", err)
+	} else if count == 0 {
+		idx.logger.Info("indexer: empty collection, starting full re-index")
+		idx.fullReindex(ctx)
 	} else {
 		// Qdrant already has data — sync file count from existing points
 		fc, err := idx.qdrant.CountFiles(ctx)
