@@ -27,7 +27,7 @@ docker run -d \
   -e RAGAMUFFIN_VAULT_PATH=/opt/vault \
   -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6333 \
   -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-... \
-  ghcr.io/chezgoulet/ragamuffin:latest
+  chezgoulet/ragamuffin:latest
 
 # 3. Wait for indexing, then search
 curl -s http://localhost:8000/recall \
@@ -36,8 +36,7 @@ curl -s http://localhost:8000/recall \
 # Online docs: https://raw.githubusercontent.com/chezgoulet/ragamuffin/main/README.md
 ```
 
-> ⚠️ The vault mount is `:ro` for the container but `/draft` writes directly.
-> Use a writable mount or enable PR mode (git-backed) for write-back.
+
 
 ---
 

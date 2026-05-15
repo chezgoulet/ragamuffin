@@ -2,14 +2,14 @@ name: ragamuffin
 
 services:
   ragamuffin:
-    image: ghcr.io/chezgoulet/ragamuffin:0.2
+    image: chezgoulet/ragamuffin:0.2
     container_name: ragamuffin
     restart: unless-stopped
     depends_on:
       qdrant:
         condition: service_healthy
     volumes:
-      - "${RAGAMUFFIN_VAULT_PATH:-/opt/vault}:/opt/vault:ro"
+      - "${RAGAMUFFIN_VAULT_PATH:-/opt/vault}:/opt/vault"
     environment:
       RAGAMUFFIN_VAULT_PATH: /opt/vault
       RAGAMUFFIN_QDRANT_URL: http://qdrant:6334
@@ -55,40 +55,9 @@ services:
       timeout: 5s
       retries: 3
 
-  # Optional: local embedding proxy + Ollama for offline operation.
-  # Uncomment and set RAGAMUFFIN_EMBEDDING_BASE_URL=http://embedding-proxy:8001/v1
-  # RAGAMUFFIN_EMBEDDING_API_KEY= to use local embeddings.
-
-  # embedding-proxy:
-  #   image: ghcr.io/chezgoulet/ragamuffin-embedding-proxy:0.2
-  #   container_name: ragamuffin-embedding-proxy
-  #   restart: unless-stopped
-  #   environment:
-  #     PROXY_LISTEN: ":8001"
-  #     PROXY_BACKEND_URL: ${PROXY_BACKEND_URL:-http://ollama:11434}
-  #     PROXY_BACKEND_TYPE: ${PROXY_BACKEND_TYPE:-openai_compatible}
-  #     PROXY_MODEL: ${PROXY_MODEL:-nomic-embed-text}
-  #   networks:
-  #     - ragamuffin
-  #   healthcheck:
-  #     test: ["CMD", "wget", "-qO-", "http://localhost:8001/health"]
-  #     interval: 15s
-  #     timeout: 5s
-  #     retries: 3
-
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: ragamuffin-ollama
-  #   restart: unless-stopped
-  #   volumes:
-  #     - ollama_data:/root/.ollama
-  #   networks:
-  #     - ragamuffin
-
 networks:
   ragamuffin:
     driver: bridge
 
 volumes:
   qdrant_data:
-  # ollama_data:
