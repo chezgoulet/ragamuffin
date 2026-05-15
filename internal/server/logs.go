@@ -36,6 +36,7 @@ type logListResponse struct {
 // ── POST /v1/logs ────────────────────────────────────────────────────────
 
 func (s *Server) handleLogsPost(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB for logs
 	var lp logPayload
 	if err := json.NewDecoder(r.Body).Decode(&lp); err != nil {
 		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
@@ -44,6 +45,28 @@ func (s *Server) handleLogsPost(w http.ResponseWriter, r *http.Request) {
 	if lp.Agent == "" || lp.Type == "" || lp.Body == "" {
 		writeError(w, 400, "INVALID_INPUT", "agent, type, and body are required")
 		return
+	}
+
+	// Validate body size (separate from MaxBytesReader — the decoded body could be smaller)
+	if len(lp.Body) > 64*1024 {
+		writeError(w, 400, "BODY_TOO_LARGE", "body must be <= 64 KB")
+		return
+	}
+
+	// Validate tag count and per-tag length
+	if len(lp.Tags) > 50 {
+		writeError(w, 400, "TOO_MANY_TAGS", "tags must be <= 50 entries")
+		return
+	}
+	for _, t := range lp.Tags {
+		if t == "" {
+			writeError(w, 400, "EMPTY_TAG", "tags must not be empty")
+			return
+		}
+		if len(t) > 256 {
+			writeError(w, 400, "TAG_TOO_LONG", "each tag must be <= 256 bytes")
+			return
+		}
 	}
 
 	var ts time.Time
@@ -86,6 +109,20 @@ func (s *Server) handleLogsGet(w http.ResponseWriter, r *http.Request) {
 		Until:  q.Get("until"),
 		Before: q.Get("before"),
 		Limit:  limit,
+	}
+
+	// Validate ISO 8601 timestamps
+	if filter.Since != "" {
+		if _, err := time.Parse(time.RFC3339, filter.Since); err != nil {
+			writeError(w, 400, "INVALID_SINCE", fmt.Sprintf("since must be ISO 8601 (RFC 3339): %v", err))
+			return
+		}
+	}
+	if filter.Until != "" {
+		if _, err := time.Parse(time.RFC3339, filter.Until); err != nil {
+			writeError(w, 400, "INVALID_UNTIL", fmt.Sprintf("until must be ISO 8601 (RFC 3339): %v", err))
+			return
+		}
 	}
 
 	entries, nextToken, err := s.logStore.List(r.Context(), filter)

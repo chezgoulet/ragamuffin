@@ -57,14 +57,14 @@ func main() {
 
 	// Connect to facts collection (separate collection with smaller vector size)
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	factsQc, err := qdrant.New(ctx2, cfg.QdrantURL, "ragamuffin_facts", 4)
+	factsQc, err := qdrant.New(ctx2, cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize)
 	cancel2()
 	if err != nil {
 		logger.Error("failed to connect to facts Qdrant", "error", err)
 		os.Exit(1)
 	}
 	defer factsQc.Close()
-	logger.Info("qdrant facts collection ready", "collection", "ragamuffin_facts")
+	logger.Info("qdrant facts collection ready", "collection", cfg.FactsCollection)
 
 	// ── Initialize embedding client (optional) ──────────────────────────────
 	var ec *embedding.Client
