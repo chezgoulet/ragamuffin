@@ -349,10 +349,23 @@ collection may be slow — document this.
 > embedding API costs on every fact upsert. Worth reconsidering when the
 > pruner proves useful.
 
+**LLM guard:** ConflictScan requires an LLM client — semantic contradiction
+detection uses `llm.Compare()` which is not available when no LLM provider
+is configured. Before starting, ConflictScan checks `HasLLM()`. If no LLM
+is available, the scan skips entirely and logs a warning at `WARN` level:
+`"conflict_scan skipped: no LLM provider configured"`. This mirrors the
+existing pattern in `/ask` (which returns 503 for missing LLM) and `/audit`
+(which returns `LLM_NOT_CONFIGURED` for semantic checks). The pruner is
+opt-in and its scans are additive — silently skipping one scan type when
+its dependencies are missing is correct behavior. ConflictScan also requires
+an embedder; if the embedder is nil, it logs `"conflict_scan skipped: no
+embedder configured"` at `WARN` level and skips.
+
 ```
 Scan logic:
-1. Load all active facts by scrolling facts collection (batch_size = 1000)
-2. For facts with source_type=manual or source_type=agent_observation:
+1. Check HasLLM() and HasEmbedder() — if either is missing, log warning and return
+2. Load all active facts by scrolling facts collection (batch_size = 1000)
+3. For facts with source_type=manual or source_type=agent_observation:
    a. Read fact values in EmbeddingBatchSize batches
    b. Call embedder.Embed() on each batch (on-the-fly, not stored)
    c. Compare real embedding vectors in-memory (cosine sim)
@@ -509,6 +522,15 @@ Actions:
 | `supersede` | Sets `status=superseded`, sets `supersedes` to new key (provided in `new_key` field), creates new fact if `new_value` provided |
 | `reject` | Sets `status=rejected`, sets rejection timestamp |
 | `reclassify` | Adjusts `confidence`, `ttl_days`, `tags`, `source_type` without changing status |
+
+**Supersede with new_value is a hidden write path.** When the `supersede`
+action includes `new_value`, a new fact is created implicitly. This must
+use the same validation path as `POST /v1/facts`: body size limits, fact
+value length checks, tag limits, and Qdrant point insertion. Rate limiting
+applies (uses the same rate limiter as POST /v1/facts). The watcher is NOT
+triggered — fact updates are not file-system events. The new fact inherits
+`source`, `source_type`, `tags` from the original unless overridden in the
+request body.
 
 ### GET /v1/review/stats — Review Queue Summary
 
