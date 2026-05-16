@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/qdrant/go-client/qdrant"
 )
 
@@ -63,6 +64,12 @@ func factKeyFilter(key string) *qdrant.Filter {
 // ── POST /v1/facts ───────────────────────────────────────────────────────
 
 func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024) // 256 KB for facts
 	var fp factPayload
 	if err := json.NewDecoder(r.Body).Decode(&fp); err != nil {
@@ -252,6 +259,12 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 // ── DELETE /v1/facts ─────────────────────────────────────────────────────
 
 func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
 	key := r.URL.Query().Get("key")
 	if key == "" {
 		writeError(w, 400, "MISSING_KEY", "key query parameter is required")

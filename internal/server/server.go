@@ -84,6 +84,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/v1/facts", cfg.RateLimitFacts)
 	rl.SetLimit("/v1/logs", cfg.RateLimitLogs)
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
+	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 
 	return s
 }
@@ -120,7 +121,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
 	mux.Handle("/static/", staticHandler)
-	mux.Handle("/", staticHandler)
+	mux.Handle("/", s.with404Check(staticHandler))
 
 	if s.cfg.IsMultiTenant() {
 		// Vault-prefixed routes (multi-tenant mode)
@@ -131,7 +132,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/facts", s.withRequestID(s.withVaultRateLimit("/v1/facts", s.handleVaultFacts)))
 		mux.HandleFunc("/vault/{name}/v1/logs", s.withRequestID(s.withVaultRateLimit("/v1/logs", s.handleVaultLogs)))
 		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot)))
-		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withVault(s.handleReindex)))
+		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withVaultRateLimit("/reindex", s.handleReindex)))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
 	} else {
 		// Single-tenant routes (v0.1–v0.3 behavior)
@@ -139,7 +140,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
 		mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
 		mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
-		mux.HandleFunc("/reindex", s.withRequestID(s.withRateLimit("/recall", s.handleReindex)))
+		mux.HandleFunc("/reindex", s.withRequestID(s.withRateLimit("/reindex", s.handleReindex)))
 	}
 
 	// Facts
@@ -299,9 +300,35 @@ func vaultFromContext(ctx context.Context) string {
 	return ""
 }
 
+// vaultPathFromContext resolves the vault root path from the request context.
+func (s *Server) vaultPathFromContext(ctx context.Context) string {
+	if name := vaultFromContext(ctx); name != "" && s.cfg.Vaults != nil {
+		if vc, ok := s.cfg.Vaults[name]; ok {
+			return vc.Path
+		}
+	}
+	return s.cfg.VaultPath
+}
+
 // withVault wraps a handler to validate vault access. Extracts the vault name
 // from the request path (set by Go 1.22+ pattern matching), validates it against
 // the configured vaults, and stores it in request context.
+// with404Check wraps the static file handler. If the request expects JSON
+// (Accept header), returns a JSON 404 instead of the SPA HTML catch-all.
+func (s *Server) with404Check(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if strings.Contains(r.Header.Get("Accept"), "application/json") {
+			writeError(w, 404, "NOT_FOUND", "endpoint not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (s *Server) withVault(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := vaultNameFromRequest(r)
@@ -313,6 +340,15 @@ func (s *Server) withVault(next http.HandlerFunc) http.HandlerFunc {
 			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", name))
 			return
 		}
+
+		// Enforce vault scope from auth claims
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil {
+			if !claims.HasVaultAccess(name) {
+				writeError(w, 403, "FORBIDDEN", fmt.Sprintf("access to vault %q denied", name))
+				return
+			}
+		}
+
 		ctx := context.WithValue(r.Context(), vaultNameKey, name)
 		next(w, r.WithContext(ctx))
 	}
@@ -367,48 +403,57 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.cfg.IsMultiTenant() {
-		// Single-tenant: return a single unnamed vault
+		// Single-tenant: return the single vault with real stats
+		idx := s.indexerFor(r.Context())
+		var fileCount, chunkCount int
+		var lastIndexed time.Time
+		var indexing bool
+		if idx != nil {
+			fileCount, chunkCount, lastIndexed, indexing, _, _ = idx.Stats()
+		}
+		var lastIndexedStr *string
+		if !lastIndexed.IsZero() {
+			formatted := lastIndexed.Format(time.RFC3339)
+			lastIndexedStr = &formatted
+		}
 		writeJSON(w, 200, map[string]interface{}{
 			"vaults": []map[string]interface{}{
 				{
-					"name":         "default",
-					"path":         s.cfg.VaultPath,
-					"indexed_files": 0,
-					"total_chunks":   0,
-					"last_indexed":   nil,
-					"indexing":       false,
+					"name":          "default",
+					"path":          s.cfg.VaultPath,
+					"indexed_files":  fileCount,
+					"total_chunks":   chunkCount,
+					"last_indexed":   lastIndexedStr,
+					"indexing":       indexing,
 				},
 			},
 		})
 		return
 	}
 
-	// Multi-tenant: list all configured vaults with live stats
-	idx := s.indexerFor(r.Context())
-	var fileCount, chunkCount int
-	var lastIndexed time.Time
-	var indexing bool
-	if idx != nil {
-		fileCount, chunkCount, lastIndexed, indexing, _, _ = idx.Stats()
-	}
-
-	var lastIndexedStr *string
-	if !lastIndexed.IsZero() {
-		formatted := lastIndexed.Format(time.RFC3339)
-		lastIndexedStr = &formatted
-	}
-
+	// Multi-tenant: list all configured vaults with per-vault stats
 	var vaults []map[string]interface{}
-	for name, vc := range s.cfg.Vaults {
+	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+		fileCount, chunkCount, lastIndexed, indexing, _, _ := idx.Stats()
+		var lastIndexedStr *string
+		if !lastIndexed.IsZero() {
+			formatted := lastIndexed.Format(time.RFC3339)
+			lastIndexedStr = &formatted
+		}
+		vc := s.cfg.Vaults[name]
+		path := ""
+		if vc != nil {
+			path = vc.Path
+		}
 		vaults = append(vaults, map[string]interface{}{
 			"name":          name,
-			"path":          vc.Path,
+			"path":          path,
 			"indexed_files": fileCount,
 			"total_chunks":  chunkCount,
 			"last_indexed":  lastIndexedStr,
 			"indexing":      indexing,
 		})
-	}
+	})
 
 	writeJSON(w, 200, map[string]interface{}{
 		"vaults": vaults,

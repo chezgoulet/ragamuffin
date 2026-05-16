@@ -17,16 +17,16 @@ type conflictResult struct {
 	Summary string            `json:"summary"`
 }
 
-func (s *Server) checkStaleness(staleDays int) ([]map[string]interface{}, error) {
+func (s *Server) checkStaleness(vaultPath string, staleDays int) ([]map[string]interface{}, error) {
 	var stale []map[string]interface{}
 	cutoff := time.Now().AddDate(0, 0, -staleDays)
 
-	err := filepath.Walk(s.cfg.VaultPath, func(absPath string, info os.FileInfo, err error) error {
+	err := filepath.Walk(vaultPath, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
 		if info.ModTime().Before(cutoff) {
-			relPath, _ := filepath.Rel(s.cfg.VaultPath, absPath)
+			relPath, _ := filepath.Rel(vaultPath, absPath)
 			stale = append(stale, map[string]interface{}{
 				"path":         relPath,
 				"last_updated": info.ModTime().Format(time.RFC3339),
@@ -38,10 +38,10 @@ func (s *Server) checkStaleness(staleDays int) ([]map[string]interface{}, error)
 	return stale, err
 }
 
-func (s *Server) checkGaps() []string {
+func (s *Server) checkGaps(vaultPath string) []string {
 	var gaps []string
 
-	filepath.Walk(s.cfg.VaultPath, func(absPath string, info os.FileInfo, err error) error {
+	filepath.Walk(vaultPath, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil || !info.IsDir() {
 			return nil
 		}
@@ -60,7 +60,7 @@ func (s *Server) checkGaps() []string {
 		}
 
 		if !hasFiles && len(entries) == 0 {
-			relPath, _ := filepath.Rel(s.cfg.VaultPath, absPath)
+			relPath, _ := filepath.Rel(vaultPath, absPath)
 			if relPath != "." {
 				gaps = append(gaps, relPath+"/ — directory exists but is empty")
 			}
@@ -78,7 +78,7 @@ func (s *Server) checkGaps() []string {
 				return nil
 			})
 			if !hasIndexable {
-				relPath, _ := filepath.Rel(s.cfg.VaultPath, absPath)
+				relPath, _ := filepath.Rel(vaultPath, absPath)
 				if relPath != "." {
 					gaps = append(gaps, relPath+"/ — directory exists but contains no indexable files")
 				}
@@ -89,16 +89,16 @@ func (s *Server) checkGaps() []string {
 	return gaps
 }
 
-func (s *Server) checkDuplicates() []map[string]interface{} {
+func (s *Server) checkDuplicates(vaultPath string) []map[string]interface{} {
 	seen := make(map[string]string) // filename → first path
 	var dupes []map[string]interface{}
 
-	filepath.Walk(s.cfg.VaultPath, func(absPath string, info os.FileInfo, err error) error {
+	filepath.Walk(vaultPath, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
 			return nil
 		}
 		name := info.Name()
-		relPath, _ := filepath.Rel(s.cfg.VaultPath, absPath)
+		relPath, _ := filepath.Rel(vaultPath, absPath)
 		if first, exists := seen[name]; exists {
 			dupes = append(dupes, map[string]interface{}{
 				"filename": name,
@@ -113,13 +113,17 @@ func (s *Server) checkDuplicates() []map[string]interface{} {
 	return dupes
 }
 
-func (s *Server) checkSemanticConflicts(ctx context.Context, sampleSize int) ([]conflictResult, int) {
+func (s *Server) checkSemanticConflicts(ctx context.Context, qc *qdrant.Client, sampleSize int) ([]conflictResult, int) {
+	if qc == nil {
+		qc = s.qdrant
+	}
+
 	scrollCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	// Use Scroll API for a deterministic random sample — no embedding call needed.
 	// Scroll returns points ordered by ID; we fetch sampleSize*2 and shuffle.
-	results, _, err := s.qdrant.Scroll(scrollCtx, uint32(sampleSize*2), nil)
+	results, _, err := qc.Scroll(scrollCtx, uint32(sampleSize*2), nil)
 	if err != nil {
 		s.log(ctx).Error("audit: scroll failed", "error", err)
 		return nil, 0

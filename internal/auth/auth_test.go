@@ -20,11 +20,11 @@ func TestNoneAuthenticator_AlwaysPermits(t *testing.T) {
 func TestNoneAuthenticator_EmptyRequest(t *testing.T) {
 	a := &NoneAuthenticator{}
 	claims, err := a.Authenticate(nil)
-	if err != nil {
-		t.Fatalf("expected no error for nil request, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error for nil request")
 	}
-	if claims == nil {
-		t.Fatal("expected non-nil claims")
+	if claims != nil {
+		t.Fatal("expected nil claims for nil request")
 	}
 }
 
