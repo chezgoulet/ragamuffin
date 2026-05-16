@@ -310,6 +310,17 @@ func (s *Server) vaultPathFromContext(ctx context.Context) string {
 	return s.cfg.VaultPath
 }
 
+// qdrantFor returns the per-vault Qdrant client from context,
+// falling back to the server-wide client (for single-tenant mode).
+func (s *Server) qdrantFor(ctx context.Context) *qdrant.Client {
+	if name := vaultFromContext(ctx); name != "" {
+		if qc := s.indexers.GetClient(name); qc != nil {
+			return qc
+		}
+	}
+	return s.qdrant
+}
+
 // withVault wraps a handler to validate vault access. Extracts the vault name
 // from the request path (set by Go 1.22+ pattern matching), validates it against
 // the configured vaults, and stores it in request context.

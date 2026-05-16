@@ -114,7 +114,7 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	results, err := s.qdrant.Search(ctx, vector, uint64(topK), scoreThreshold, sourceFilter)
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), scoreThreshold, sourceFilter)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
@@ -211,7 +211,8 @@ func (s *Server) mcpDraft(ctx context.Context, args map[string]interface{}) (int
 	}
 
 	cleanPath := filepath.Clean(targetPath)
-	fullPath, err := safeVaultPath(s.cfg.VaultPath, cleanPath)
+	vaultPath := s.vaultPathFromContext(ctx)
+	fullPath, err := safeVaultPath(vaultPath, cleanPath)
 	if err != nil {
 		return nil, err
 	}
