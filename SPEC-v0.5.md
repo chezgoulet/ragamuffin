@@ -27,6 +27,12 @@ only. It never deletes facts. It marks them `superseded`, `rejected`,
 storage layer remains the single source of truth; pruning is an annotation
 layer on top.
 
+**Note on v0.4 dependency:** The spec references v0.4 (multi-tenancy, auth)
+which is not yet implemented. The Pruner as described here assumes a
+single-vault, single facts-client topology. When v0.4 lands, the Pruner
+will need a vault-keyed redesign (one pruner per vault, or a multi-vault
+pruner that iterates over all vaults). For now, single-tenant is correct.
+
 ---
 
 ## Phase 1: Extended Fact Data Model
@@ -58,7 +64,7 @@ work unchanged.
 | `source` | string | `""` | Origin reference (PR URL, file path, conversation ID) |
 | `source_type` | string | `"manual"` | Enum: `manual`, `pr_discussion`, `agent_observation`, `file`, `conversation`, `code_review`, `automated` |
 | `confidence` | float | `1.0` | How sure are we? 0.0–1.0 |
-| `ttl_days` | int | `0` | Days until auto-expiry. 0 = never expires |
+| `ttl_days` | int | `0` | Days until auto-expiry. 0 = never expires. Stored alongside computed `expires_at` in Qdrant payload — the server converts `ttl_days` to a UTC timestamp on write and re-computes when `ttl_days` is updated. |
 
 ### New Payload Fields (server-managed — not settable by clients)
 
@@ -66,11 +72,11 @@ work unchanged.
 |---|---|---|
 | `status` | string | `active`, `needs_review`, `superseded`, `rejected` |
 | `supersedes` | string | Key of the fact this one replaces (empty if none) |
-| `contradicts` | string[] | Keys of facts flagged as contradictory (mutual) |
+| `contradicts` | string[] | Keys of flags that this fact contradicts. **Write-once** — the Pruner only sets `contradicts` on the *source* fact, never on both sides. Mutual linking is handled at read time: the review handler checks if this fact's key appears in any other fact's `contradicts` array. |
 | `conflict_resolved` | bool | Whether flagged contradictions have been resolved |
 | `confirmation_count` | int | How many times this fact has been re-confirmed |
 | `last_confirmed_at` | string | ISO8601 of most recent confirmation |
-| `created_at` | string | ISO8601 of original creation (set once on first POST) |
+| `created_at` | string | ISO8601 of original creation (set once on first POST). Since POST /v1/facts currently upserts by key (writes the same Qdrant point ID on PUT semantics), the server must check whether the fact already exists before stamping `created_at`. This requires a `FactExists(key)` wrapper on qdrant.Client — a scroll filter on `fact_key` returning point count. |
 | `updated_at` | string | ISO8601 of last update (already exists) |
 
 ### Extended Qdrant Payload
@@ -80,7 +86,9 @@ storage. The new fields are added as Qdrant payload keys alongside the
 existing `fact_key`, `fact_value`, `fact_tags`, `updated_at`.
 
 Payload filter indexes should be created on `status`, `source_type`,
-`confidence`, `expires_at` for efficient pruner queries.
+`confidence`, `expires_at` for efficient pruner queries. The `expires_at`
+index is critical — StaleScan filters on `expires_at < now` directly in
+Qdrant payload, avoiding any loop arithmetic.
 
 ### GET /v1/facts — Extended Response
 
@@ -106,13 +114,19 @@ lifecycle state:
 }
 ```
 
-### PUT /v1/facts/{key} — Update Single Field
+### PUT /v1/facts — Update Single Field (by query key)
 
 New endpoint for targeted status updates. Enables agent writes like
 "this fact is superseded by X" without re-POSTing the entire value.
 
+**Design note:** Fact keys contain `/` characters (e.g. `org/some-decision`),
+so the key is passed as a query parameter, not a path segment. This avoids
+routing ambiguity with standard `http.ServeMux` where a slash in the path
+would require Go 1.22 `{key...}` wildcard patterns or a prefix match.
+The same approach applies to the review resolution endpoint below.
+
 ```bash
-curl -X PUT http://ragamuffin:8000/v1/facts/org/some-decision \
+curl -X PUT 'http://ragamuffin:8000/v1/facts?key=org/some-decision' \
   -H "Content-Type: application/json" \
   -d '{"status": "superseded", "supersedes": "org/better-decision"}'
 ```
@@ -216,18 +230,19 @@ type PrunerConfig struct {
 
 #### StaleScan
 
-Walks facts collection. For each fact with `ttl_days > 0`, checks if
-`updated_at + ttl_days < now`. If expired, sets `status = needs_review`.
+Walks facts collection. Uses the stored `expires_at` timestamp (computed
+from `ttl_days` on write) to filter at the Qdrant level — no arithmetic
+in the scan loop.
 
 Also checks facts with `confidence < LowConfidenceThreshold` and no recent
 confirmation — flags them for review regardless of TTL.
 
 ```
 Scan logic:
-1. Scroll facts with status=active
-2. For each fact:
-   a. If ttl_days > 0 and now > updated_at + ttl_days → set needs_review
-   b. If confidence < threshold and not confirmed in 2×TTL → set needs_review
+1. Scroll facts with status=active and expires_at < now (Qdrant filter)
+   → these are stale facts, mark as needs_review
+2. Scroll facts with status=active and confidence < threshold
+   → flag for review (they may not have TTL-based expiry)
 3. Log results
 ```
 
@@ -237,6 +252,13 @@ Uses existing `/audit` semantic conflict pattern but operates on the facts
 collection instead of vault chunks. Also cross-references facts against
 vault chunks when a fact appears to contradict vault content.
 
+**Write-once contradicts rule:** When a conflict is detected, the Pruner
+only writes `contradicts` on the *newer* or *lower-confidence* fact, not
+both. The review queue handler reads mutual contradictions at query time
+by checking if this fact's key appears in any other fact's `contradicts`
+array. This avoids the partial-write problem where a server crash between
+two Qdrant point updates leaves one fact pointing into a void.
+
 ```
 Scan logic:
 1. Load all active facts (scroll, batch_size = 1000)
@@ -245,9 +267,9 @@ Scan logic:
    b. For each near pair with confidence > threshold:
       - Send to LLM Compare()
       - If conflict detected:
-        - Set status=needs_review on both facts
-        - Add each other's key to contradicts[]
-        - Set conflict_resolved=false
+        - Set status=needs_review on the newer/lower-confidence fact
+        - Add the other fact's key to contradicts[] (write-once)
+        - Set conflict_resolved=false on the flagged fact
 3. For facts that reference vault paths in source field:
    a. Recall related vault chunks
    b. Compare fact value against chunk content
@@ -360,12 +382,16 @@ Filter parameters:
 | `limit` | int | Max results (1–100, default 50) |
 | `before` | string | Cursor pagination |
 
-### POST /v1/review/:key — Resolve Review Item
+### POST /v1/review — Resolve Review Item (by query key)
 
-Accept, supersede, or reject a flagged fact.
+Accept, supersede, or reject a flagged fact. Key is passed as a query
+parameter for the same slash-in-path reason as PUT /v1/facts.
+
+`GET /v1/review/stats` is registered as a separate route before the
+review query handler to avoid prefix conflicts with `v1/review?key=...`.
 
 ```bash
-curl -s -X POST http://ragamuffin:8000/v1/review/org/prefer-rust-cli \
+curl -s -X POST 'http://ragamuffin:8000/v1/review?key=org/prefer-rust-cli' \
   -H "Content-Type: application/json" \
   -d '{
     "action": "confirm",
@@ -659,24 +685,28 @@ confirm/supersede/reject.
 
 ### Phase 1 (Foundation)
 1. Extend fact data model with lifecycle fields
-2. Add PUT /v1/facts/:key and PATCH /v1/facts endpoints
-3. Add payload filter indexes on status, source_type, confidence, expires_at
-4. Write migration pass for existing facts
-5. Add new env vars to Config struct and validation
-6. Write unit tests for new endpoints
+2. Add `FactExists(key)` wrapper to qdrant.Client (scroll filter on fact_key)
+3. Update POST /v1/facts upsert logic: preserve `created_at` on existing facts,
+   compute `expires_at` from `ttl_days` on write and on update
+4. Add PUT /v1/facts?key= and PATCH /v1/facts endpoints (query-param routing)
+5. Add payload filter indexes on status, source_type, confidence, expires_at
+6. Write migration pass for existing facts
+7. Add new env vars to Config struct and validation
+8. Write unit tests for new endpoints
 
 ### Phase 2 (Pruner Core)
 1. Create `internal/pruner/` package with Pruner struct and config
-2. Implement StaleScan
-3. Implement ConflictScan (fact-to-fact via Qdrant nearest-neighbor + LLM)
+2. Implement StaleScan (Qdrant filter: expires_at < now)
+3. Implement ConflictScan (fact-to-fact via Qdrant nearest-neighbor + LLM,
+   write-once contradicts)
 4. Implement SupersedeScan (source-tracking and key-pattern)
 5. Wire scheduler into main.go startup
 6. Write unit tests with mock Qdrant + mock LLM
 
 ### Phase 3 (Review Queue)
-1. Implement GET /v1/review with filters and pagination
-2. Implement POST /v1/review/:key resolution endpoint
-3. Implement GET /v1/review/stats summary
+1. Implement GET /v1/review?reason=...&tag=... with filters and pagination
+2. Implement POST /v1/review?key= resolution endpoint (query-param routing)
+3. Implement GET /v1/review/stats summary (registered as separate route)
 4. Add rate limiting for review endpoints
 5. Register routes in server.go
 
