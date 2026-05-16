@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4-postreview (unreleased)
+## v0.4.0 (2026-05-16)
 
 ### Security
 - **Write access enforcement**: All mutating endpoints (`/draft`, `/v1/facts` POST/DELETE,
