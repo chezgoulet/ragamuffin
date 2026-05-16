@@ -29,7 +29,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _, _, indexing, progressPct, totalFiles := s.indexer.Stats()
+	idx := s.indexerFor(r.Context())
+	var indexing bool
+	var progressPct, totalFiles int
+	if idx != nil {
+		_, _, _, indexing, progressPct, totalFiles = idx.Stats()
+	}
 
 	resp := map[string]interface{}{
 		"status":  "ok",
@@ -58,7 +63,12 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	fileCount, _, lastIndexed, _, _, _ := s.indexer.Stats()
+	idx := s.indexerFor(r.Context())
+	var fileCount int
+	var lastIndexed time.Time
+	if idx != nil {
+		fileCount, _, lastIndexed, _, _, _ = idx.Stats()
+	}
 
 	// Get accurate chunk count from Qdrant (not in-process counter)
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -71,8 +81,13 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		chunkReliable = false
 	}
 
+	vaultPath := s.cfg.VaultPath
+	if vaultPath == "" && s.cfg.IsMultiTenant() {
+		vaultPath = "multi-tenant (see /vaults)"
+	}
+
 	writeJSON(w, 200, map[string]interface{}{
-		"vault_path":        s.cfg.VaultPath,
+		"vault_path":        vaultPath,
 		"indexed_files":     fileCount,
 		"total_chunks":      chunkCount,
 		"chunk_count_reliable": chunkReliable,
