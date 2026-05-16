@@ -224,7 +224,12 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		for j, c := range batch {
 			// Deterministic UUID from file path + chunk index
 			id := pointID(relPath, c.ChunkIndex)
-			points[j] = &pb.PointStruct{
+			linksToValues := make([]*pb.Value, len(c.LinksTo))
+		for li, link := range c.LinksTo {
+			linksToValues[li] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: link}}
+		}
+
+		points[j] = &pb.PointStruct{
 				Id: id,
 				Vectors: &pb.Vectors{
 					VectorsOptions: &pb.Vectors_Vector{
@@ -239,6 +244,7 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 					"header":            {Kind: &pb.Value_StringValue{StringValue: c.Header}},
 					"chunk_index":       {Kind: &pb.Value_IntegerValue{IntegerValue: int64(c.ChunkIndex)}},
 					"file_last_updated": {Kind: &pb.Value_StringValue{StringValue: c.UpdatedAt.Format(time.RFC3339)}},
+					"links_to":          {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: linksToValues}}},
 				},
 			}
 		}
