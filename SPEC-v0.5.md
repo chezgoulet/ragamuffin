@@ -144,18 +144,82 @@ Accepts any subset of writable fields: `status`, `supersedes`, `confidence`,
 `conflict_resolved`, `last_confirmed_at`, `confirmation_count`, `ttl_days`,
 `tags`, `source`, `source_type`.
 
+### GET /v1/facts — New `status` Filter Parameter
+
+Once facts have lifecycle status, agents need to exclude superseded or
+rejected facts from query results. The existing `GET /v1/facts` endpoint
+gains a new optional filter parameter:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `key` | string | Exact key match (existing) |
+| `prefix` | string | Key prefix filter (existing) |
+| `tag` | string | Tag filter (existing) |
+| `status` | string | Filter by lifecycle status: `active`, `needs_review`, `superseded`, `rejected`. Default: all statuses (backward compatible). |
+
+```bash
+# Get all active facts (exclude superseded/rejected from agent context)
+curl -s 'http://ragamuffin:8000/v1/facts?status=active'
+
+# Get review-flagged facts
+curl -s 'http://ragamuffin:8000/v1/facts?status=needs_review'
+```
+
+The `status` filter is applied as a Qdrant payload filter on the facts
+collection, using the index created during Phase 1 setup.
+
 ### PATCH /v1/facts — Bulk Status Update
+
+Used by the Pruner and by agents that resolve review items in bulk. The
+same `updates` object is applied to every key. Operations are NOT
+transactional — partial failures return a per-key result array so the
+caller knows exactly which keys succeeded and which failed.
 
 ```bash
 curl -X PATCH http://ragamuffin:8000/v1/facts \
   -H "Content-Type: application/json" \
   -d '{
-    "keys": ["org/old-decision", "org/older-decision"],
+    "keys": ["org/old-decision", "org/older-decision", "org/missing-decision"],
     "updates": {"status": "superseded", "supersedes": "org/new-decision"}
   }'
 ```
 
-Used by the Pruner and by agents that resolve review items in bulk.
+```json
+{
+  "results": [
+    {"key": "org/old-decision", "ok": true},
+    {"key": "org/older-decision", "ok": true},
+    {"key": "org/missing-decision", "ok": false, "error": "NOT_FOUND"}
+  ],
+  "total": 3,
+  "succeeded": 2,
+  "failed": 1
+}
+```
+
+Error codes: `NOT_FOUND` (key doesn't exist), `INVALID_FIELD` (field not
+writable via PATCH), `INTERNAL` (Qdrant write failure). The handler
+continues processing remaining keys after any single failure — a single
+bad key never blocks the rest.
+
+---
+
+### /recall and /ask Interaction with Fact Status
+
+The existing `/recall` endpoint searches the *main vault chunk collection*
+(1536-dim vectors), not the facts collection (4-dim sentinel vectors).
+Facts do not appear in `/recall` results today, and this does not change
+in v0.5. The Pruner has no effect on `/recall`.
+
+Similarly, `/ask` synthesizes answers from vault chunk context retrieved
+via `/recall`. It does not read facts directly. No interaction.
+
+**If a future version adds semantic fact search** (by switching facts to
+real embeddings), the following rule applies: `status=active` facts are
+included, `status=superseded` and `status=rejected` facts are excluded.
+`status=needs_review` facts are included but may be surfaced with a
+confidence annotation. This is documented for future reference but is
+**not implemented in v0.5**.
 
 ---
 
@@ -259,19 +323,47 @@ by checking if this fact's key appears in any other fact's `contradicts`
 array. This avoids the partial-write problem where a server crash between
 two Qdrant point updates leaves one fact pointing into a void.
 
+**Zero-vector constraint:** The facts collection uses 4-dim sentinel
+vectors `[0,0,0,0]` — there are no real embeddings stored in it.
+Nearest-neighbor search on zero vectors returns garbage. ConflictScan
+cannot use Qdrant vector search directly.
+
+Solution — **Option 2: embed on-the-fly at scan time.** ConflictScan
+reads fact values in batches, calls `embedder.Embed()` on each fact
+value at scan time without storing the embedding. It then compares the
+real embedding vectors in-memory (cosine similarity) to find candidate
+pairs, then sends pairs above threshold to LLM `Compare()`. This is
+slower than a Qdrant vector search (O(n²) in the number of active facts
+if done naively), but avoids changing the collection schema and keeps
+the sentinel storage intact for backward compatibility.
+
+To keep runtime practical, the implementation should batch effectively:
+embed 20 fact values at a time (matching `EmbeddingBatchSize`), compare
+within each batch, and use the `ConflictSampleSize` config to limit how
+many pairs are sent to the LLM per scan cycle. The first scan on a large
+collection may be slow — document this.
+
+> **Future option (not v0.5):** Change the facts collection to use real
+> embeddings at write time. This would make ConflictScan an efficient
+> Qdrant nearest-neighbor search but changes the write path and incurs
+> embedding API costs on every fact upsert. Worth reconsidering when the
+> pruner proves useful.
+
 ```
 Scan logic:
-1. Load all active facts (scroll, batch_size = 1000)
+1. Load all active facts by scrolling facts collection (batch_size = 1000)
 2. For facts with source_type=manual or source_type=agent_observation:
-   a. Pre-filter: embed fact value, find nearest 10 facts via Qdrant search
-   b. For each near pair with confidence > threshold:
+   a. Read fact values in EmbeddingBatchSize batches
+   b. Call embedder.Embed() on each batch (on-the-fly, not stored)
+   c. Compare real embedding vectors in-memory (cosine sim)
+   d. For near pairs above threshold (top ConflictSampleSize):
       - Send to LLM Compare()
       - If conflict detected:
         - Set status=needs_review on the newer/lower-confidence fact
         - Add the other fact's key to contradicts[] (write-once)
         - Set conflict_resolved=false on the flagged fact
 3. For facts that reference vault paths in source field:
-   a. Recall related vault chunks
+   a. Recall related vault chunks (Qdrant search on main collection)
    b. Compare fact value against chunk content
    c. Flag if mismatch found
 4. Log results and LLM call count
@@ -306,7 +398,7 @@ Simple goroutine-based scheduler. Not a full cron — just `time.Ticker` with
 configurable intervals.
 
 ```go
-func (p *Pruner) Run(ctx context.Context) {
+func (p *Pruner) Run(ctx context.Context, ready chan<- struct{}) {
     staleTicker := time.NewTicker(p.cfg.StaleScanInterval)
     conflictTicker := time.NewTicker(p.cfg.ConflictScanInterval)
     supersedeTicker := time.NewTicker(p.cfg.SupersedeScanInterval)
@@ -315,8 +407,13 @@ func (p *Pruner) Run(ctx context.Context) {
     defer conflictTicker.Stop()
     defer supersedeTicker.Stop()
 
-    // Initial scan at startup (if enabled)
-    p.allScans(ctx)
+    // Initial scan runs in background goroutine — does not block startup.
+    // ConflictScan may spend minutes embedding + LLM-comparing facts;
+    // the server should be ready to serve HTTP before that finishes.
+    // Signal ready on the channel so main.go can proceed with listener
+    // registration while scans run concurrently.
+    close(ready)
+    go p.allScans(ctx)
     
     for {
         select {
@@ -333,7 +430,11 @@ func (p *Pruner) Run(ctx context.Context) {
 }
 ```
 
-All scans are cancellable via context and respect server shutdown.
+All scans are cancellable via context and respect server shutdown. The
+`ready` channel follows the same pattern as the indexer's `initialDone`
+channel — the Pruner signals readiness immediately and runs the initial
+scan in the background. If the initial scan fails (e.g. Qdrant not yet
+available), subsequent scheduled scans will pick up when Qdrant is ready.
 
 ---
 
@@ -557,10 +658,44 @@ on that file.
 
 ### Watcher Integration
 
-The watcher already emits file-change events. We can piggyback on that:
+The watcher emits file-change events on a single channel that is consumed
+exclusively by the indexer. A Go channel can only have one consumer — you
+can't fan-out a `<-chan Event` to two goroutines natively.
+
+**Solution: fan-out in main.go.** Before passing the event channel to the
+indexer, add a fan-out multiplexer that copies each event to both the
+indexer and the pruner. This requires no watcher interface changes.
 
 ```go
-// In Pruner (or via a small bridge):
+// In main.go:
+func fanOut(ctx context.Context, src <-chan watcher.Event,
+           dsts ...chan<- watcher.Event) {
+    for {
+        select {
+        case <-ctx.Done():
+            return
+        case evt, ok := <-src:
+            if !ok {
+                return
+            }
+            for _, dst := range dsts {
+                select {
+                case dst <- evt:
+                default:
+                    // Non-blocking: if a consumer is backed up,
+                    // the event is dropped. Prevents slow consumers
+                    // from blocking the watcher.
+                }
+            }
+        }
+    }
+}
+```
+
+The Pruner receives a dedicated event channel and watches for file changes
+with the same pattern:
+
+```go
 func (p *Pruner) WatchEvents(ctx context.Context, events <-chan watcher.Event) {
     for {
         select {
@@ -577,9 +712,10 @@ func (p *Pruner) WatchEvents(ctx context.Context, events <-chan watcher.Event) {
 }
 ```
 
-This is additive — the Pruner can register its own event handler without
-modifying the watcher. Facts get flagged within seconds of a source file
-change, not hours later in the next scheduled scan.
+This is additive and requires no watcher interface change. Facts get
+flagged within seconds of a source file change, not hours later in the
+next scheduled scan. The non-blocking send in the fan-out means a backed-up
+pruner never delays the indexer.
 
 ---
 
@@ -630,10 +766,21 @@ All v0.1–v0.4 endpoints remain unchanged. The Pruner is opt-in
 lifecycle fields continue to work — they simply won't be scanned until
 a client adds source/confidence/TTL data.
 
+### Index Creation Order
+
+Payload filter indexes (`status`, `source_type`, `confidence`, `expires_at`)
+must be created **before** the migration pass runs. Creating indexes on a
+large existing collection is blocking in Qdrant — if the migration runs
+first and sets `status=active` on 50k facts before the index exists, the
+first StaleScan will do a full collection scroll with an unindexed filter,
+which may time out.
+
+The correct order at startup: add new fields → add indexes → run migration.
+
 ### Data Migration
 
 When the Pruner first runs against existing facts (after being enabled),
-it performs a one-time stamping pass:
+it performs a one-time stamping pass (after indexes are created):
 
 1. If a fact has no `created_at`, set it to `updated_at`
 2. If a fact has no `status`, set it to `active`
@@ -689,24 +836,31 @@ confirm/supersede/reject.
 3. Update POST /v1/facts upsert logic: preserve `created_at` on existing facts,
    compute `expires_at` from `ttl_days` on write and on update
 4. Add PUT /v1/facts?key= and PATCH /v1/facts endpoints (query-param routing)
-5. Add payload filter indexes on status, source_type, confidence, expires_at
-6. Write migration pass for existing facts
-7. Add new env vars to Config struct and validation
-8. Write unit tests for new endpoints
+5. Add `status` filter to GET /v1/facts
+6. Document /recall and /ask not interacting with facts (no change needed)
+7. **Add payload filter indexes FIRST** on status, source_type, confidence, expires_at
+   — must be done in Qdrant before the migration pass (index creation on existing
+   data is blocking; creating on an empty collection is fast)
+8. Run migration pass for existing facts (sets defaults on missing lifecycle fields)
+9. Add new env vars to Config struct and validation
+10. Write unit tests for new endpoints
 
 ### Phase 2 (Pruner Core)
 1. Create `internal/pruner/` package with Pruner struct and config
 2. Implement StaleScan (Qdrant filter: expires_at < now)
-3. Implement ConflictScan (fact-to-fact via Qdrant nearest-neighbor + LLM,
-   write-once contradicts)
+3. Implement ConflictScan (on-the-fly embedding at scan time, in-memory
+   cosine compare, write-once contradicts)
 4. Implement SupersedeScan (source-tracking and key-pattern)
-5. Wire scheduler into main.go startup
+5. Wire scheduler into main.go — start via `go p.Run(ctx, ready)` with
+   `ready` channel to signal immediate readiness (initial scan in bg)
 6. Write unit tests with mock Qdrant + mock LLM
 
 ### Phase 3 (Review Queue)
 1. Implement GET /v1/review?reason=...&tag=... with filters and pagination
 2. Implement POST /v1/review?key= resolution endpoint (query-param routing)
-3. Implement GET /v1/review/stats summary (registered as separate route)
+   with per-action field validation
+3. Implement GET /v1/review/stats summary (registered as separate route
+   before the review query handler)
 4. Add rate limiting for review endpoints
 5. Register routes in server.go
 
@@ -715,7 +869,9 @@ confirm/supersede/reject.
 2. Add fact_conflict and fact_vault_conflict audit checks
 3. Wire Pruner metrics into /metrics endpoint
 4. Log scan results to /v1/logs
-5. Implement watcher event bridge for real-time source-staleness marking
+5. Add fan-out multiplexer in main.go to copy watcher events to both
+   indexer and pruner (non-blocking send; slow consumer drops events)
+6. Wire pruner's WatchEvents goroutine consuming the fan-out copy channel
 
 ### Phase 5 (Testing & Docs)
 1. Table-driven tests for all Pruner scan types
