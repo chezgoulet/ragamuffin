@@ -466,6 +466,7 @@ uses `modernc.org/sqlite`, no CGo dependency.
 | `RAGAMUFFIN_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL without `/v1` — the LLM client appends `/v1/chat/completions` internally. For LiteLLM proxy use `http://litellm:4000`. See [URL convention](#url-conventions). |
 | `RAGAMUFFIN_LLM_MODEL` | — | Model name (e.g. `gpt-4o`, `deepseek-chat`, `deepseek-v4-flash`) |
 | `RAGAMUFFIN_LLM_API_KEY` | — | LLM API key |
+| `RAGAMUFFIN_LLM_TIMEOUT` | `120s` | LLM request timeout (Go duration) |
 
 ### URL Conventions
 
@@ -511,6 +512,21 @@ For a LiteLLM proxy (`http://litellm:4000`), set:
 | `RAGAMUFFIN_GIT_BASE_BRANCH` | `main` (default) |
 | `RAGAMUFFIN_GIT_BASE_URL` | API base URL (for self-hosted) |
 | `RAGAMUFFIN_GIT_REPOS` | Repository list |
+
+### Events (v0.4)
+
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_EVENT_WEBHOOK_URL` | — | Webhook URL for CloudEvents v1.0 (empty = disabled) |
+
+When configured, Ragamuffin emits CloudEvents v1.0 structured JSON via HTTP POST
+with `Content-Type: application/cloudevents+json`. Delivery is fire-and-forget (async).
+
+| Event Type | When |
+|---|---|
+| `vault.file.changed` | File created or modified (after successful index) |
+| `vault.file.deleted` | File deleted from index |
+| `ragamuffin.started` | Server boot, before listen |
 
 ### Server
 
@@ -570,13 +586,15 @@ via slog and returns JSON 500 errors instead of silent connection drops.
 
 ## Status
 
-Active development. v0.3.4 with all REST endpoints, structured facts and logs,
-panic recovery, Prometheus metrics, rate limiting, request tracing, and MCP support.
+Active development. v0.4 with multi-tenancy, authentication, knowledge graph,
+CloudEvents, configurable LLM timeout, embedded web dashboard, and all v0.3
+features.
 
-### v0.3.x Release History
+### Release History
 
 | Version | Highlights |
 |---|---|
+| v0.4 | Multi-tenancy, authentication (API key + JWT), knowledge graph, CloudEvents, LLM timeout config, embedded web UI, built-in web dashboard |
 | v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |
 | v0.3.3 | Tags fix for facts POST (`qdrant.NewValue` 2-value return), deployment fixes |
 | v0.3.2 | (skipped — build failure) |

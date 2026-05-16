@@ -23,6 +23,11 @@ internal/
   server/                 # HTTP handlers, MCP bolt-on, audit logic
   git/                    # GitHub/GitLab/Gitea PR creation
   mcp/                    # MCP SSE transport + JSON-RPC dispatch
+  events/                 # CloudEvents v1.0 structs and webhook delivery
+  auth/                   # API key and JWT authentication
+  ratelimit/              # Per-endpoint rate limiter
+  logstore/               # SQLite-backed structured log store
+  mcp/                    # MCP SSE transport + JSON-RPC dispatch
 ```
 
 ## Coding Conventions
@@ -85,8 +90,8 @@ work on that version.
 |---|---|---|
 | v0.1 | [SPEC.md](SPEC.md) | Done |
 | v0.2 | [SPEC-v0.2.md](SPEC-v0.2.md) | Designed, not started |
-| v0.3 | [SPEC-v0.3.md](SPEC-v0.3.md) | Designed, not started |
-| v0.4 | [SPEC-v0.4.md](SPEC-v0.4.md) | Designed, not started |
+| v0.3 | [SPEC-v0.3.md](SPEC-v0.3.md) | Done |
+| v0.4 | [SPEC-v0.4.md](SPEC-v0.4.md) | Done — multi-tenancy, auth, graph, CloudEvents, web UI |
 
 The [ROADMAP.md](ROADMAP.md) has the high-level vision and out-of-scope list.
 
@@ -109,10 +114,7 @@ For v0.2 specifically:
 ## Non-Goals
 
 Do not add:
-- Dependencies beyond the Qdrant gRPC client
-- Authentication (that's v0.4)
-- Multi-tenancy (that's v0.4)
-- A web UI (that's v0.4)
+- Dependencies beyond the Qdrant gRPC client and `modernc.org/sqlite` (log store)
 - Anything in the [ROADMAP.md](ROADMAP.md) "Out of Scope (Forever)" section
 
 If you're unsure whether something is in scope, check the version spec.
