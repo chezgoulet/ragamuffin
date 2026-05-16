@@ -28,6 +28,7 @@ import (
 type ctxKey string
 
 const requestIDKey ctxKey = "request_id"
+const vaultNameKey ctxKey = "vault_name"
 
 var (
 	Version   = "unknown"
@@ -106,14 +107,29 @@ func (s *Server) Recovery(next http.Handler) http.Handler {
 
 // RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	// Instance-wide routes (always registered)
 	mux.HandleFunc("/health", s.withRequestID(s.handleHealth))
 	mux.HandleFunc("/stats", s.withRequestID(s.handleStats))
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
 	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
-	mux.HandleFunc("/recall", s.withRequestID(s.withRateLimit("/recall", s.handleRecall)))
-	mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
-	mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
-	mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
+	mux.HandleFunc("/vaults", s.withRequestID(s.handleVaults))
+
+	if s.cfg.IsMultiTenant() {
+		// Vault-prefixed routes (multi-tenant mode)
+		mux.HandleFunc("/vault/{name}/recall", s.withRequestID(s.withVaultRateLimit("/recall", s.handleVaultRecall)))
+		mux.HandleFunc("/vault/{name}/ask", s.withRequestID(s.withVaultRateLimit("/ask", s.handleVaultAsk)))
+		mux.HandleFunc("/vault/{name}/draft", s.withRequestID(s.withVaultRateLimit("/draft", s.handleVaultDraft)))
+		mux.HandleFunc("/vault/{name}/audit", s.withRequestID(s.withVaultRateLimit("/audit", s.handleVaultAudit)))
+		mux.HandleFunc("/vault/{name}/v1/facts", s.withRequestID(s.withVaultRateLimit("/v1/facts", s.handleVaultFacts)))
+		mux.HandleFunc("/vault/{name}/v1/logs", s.withRequestID(s.withVaultRateLimit("/v1/logs", s.handleVaultLogs)))
+		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot)))
+	} else {
+		// Single-tenant routes (v0.1–v0.3 behavior)
+		mux.HandleFunc("/recall", s.withRequestID(s.withRateLimit("/recall", s.handleRecall)))
+		mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
+		mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
+		mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
+	}
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
@@ -202,6 +218,131 @@ func (s *Server) log(ctx context.Context) *slog.Logger {
 		return s.logger.With("request_id", id)
 	}
 	return s.logger
+}
+
+// ── Vault middleware ───────────────────────────────────────────────────────────
+
+// vaultNameFromRequest extracts the vault name from a PathValue pattern.
+// Only called for routes registered as /vault/{name}/...
+func vaultNameFromRequest(r *http.Request) string {
+	return r.PathValue("name")
+}
+
+// vaultFromContext extracts the vault name previously stored in the context.
+func vaultFromContext(ctx context.Context) string {
+	if name, ok := ctx.Value(vaultNameKey).(string); ok {
+		return name
+	}
+	return ""
+}
+
+// withVault wraps a handler to validate vault access. Extracts the vault name
+// from the request path (set by Go 1.22+ pattern matching), validates it against
+// the configured vaults, and stores it in request context.
+func (s *Server) withVault(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		name := vaultNameFromRequest(r)
+		if name == "" {
+			writeError(w, 400, "INVALID_REQUEST", "missing vault name in path")
+			return
+		}
+		if _, ok := s.cfg.Vaults[name]; !ok {
+			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", name))
+			return
+		}
+		ctx := context.WithValue(r.Context(), vaultNameKey, name)
+		next(w, r.WithContext(ctx))
+	}
+}
+
+// withVaultRateLimit combines vault validation with rate limiting. Uses the inner
+// endpoint name (e.g., "/recall") for rate limit tracking, not the vault-prefixed path.
+func (s *Server) withVaultRateLimit(endpoint string, next http.HandlerFunc) http.HandlerFunc {
+	return s.withVault(s.withRateLimit(endpoint, next))
+}
+
+// ── Vault-prefixed handlers ────────────────────────────────────────────────────
+
+// Each vault handler validates the vault, then delegates to the
+// underlying single-vault handler. Per-vault resource separation
+// (separate indexer, watcher, etc.) comes in issue #98.
+
+func (s *Server) handleVaultRecall(w http.ResponseWriter, r *http.Request) {
+	s.handleRecall(w, r)
+}
+
+func (s *Server) handleVaultAsk(w http.ResponseWriter, r *http.Request) {
+	s.handleAsk(w, r)
+}
+
+func (s *Server) handleVaultDraft(w http.ResponseWriter, r *http.Request) {
+	s.handleDraft(w, r)
+}
+
+func (s *Server) handleVaultAudit(w http.ResponseWriter, r *http.Request) {
+	s.handleAudit(w, r)
+}
+
+func (s *Server) handleVaultFacts(w http.ResponseWriter, r *http.Request) {
+	s.handleFacts(w, r)
+}
+
+func (s *Server) handleVaultLogs(w http.ResponseWriter, r *http.Request) {
+	s.handleLogs(w, r)
+}
+
+func (s *Server) handleVaultSnapshot(w http.ResponseWriter, r *http.Request) {
+	s.handleSnapshot(w, r)
+}
+
+// ── /vaults ─────────────────────────────────────────────────────────────────────
+
+func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+		return
+	}
+
+	if !s.cfg.IsMultiTenant() {
+		// Single-tenant: return a single unnamed vault
+		writeJSON(w, 200, map[string]interface{}{
+			"vaults": []map[string]interface{}{
+				{
+					"name":         "default",
+					"path":         s.cfg.VaultPath,
+					"indexed_files": 0,
+					"total_chunks":   0,
+					"last_indexed":   nil,
+					"indexing":       false,
+				},
+			},
+		})
+		return
+	}
+
+	// Multi-tenant: list all configured vaults with live stats
+	fileCount, chunkCount, _, lastIndexed, indexing, _ := s.indexer.Stats()
+
+	var lastIndexedStr *string
+	if lastIndexed != "" {
+		lastIndexedStr = &lastIndexed
+	}
+
+	var vaults []map[string]interface{}
+	for name, vc := range s.cfg.Vaults {
+		vaults = append(vaults, map[string]interface{}{
+			"name":          name,
+			"path":          vc.Path,
+			"indexed_files": fileCount,
+			"total_chunks":  chunkCount,
+			"last_indexed":  lastIndexedStr,
+			"indexing":      indexing,
+		})
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"vaults": vaults,
+	})
 }
 
 // ── Rate limit middleware ──────────────────────────────────────────────────────
