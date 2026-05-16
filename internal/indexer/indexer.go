@@ -39,6 +39,8 @@ type Indexer struct {
 	progressPct int
 	totalFiles  int
 	knownFiles map[string]struct{} // set of indexed files for dedup counting
+
+	reindexCh chan struct{} // buffered channel (cap 1) for re-index requests
 }
 
 // New creates an Indexer.
@@ -49,12 +51,23 @@ func New(vaultPath string, qc *qdrant.Client, ec *embedding.Client, logger *slog
 		embedder:   ec,
 		logger:     logger,
 		knownFiles: make(map[string]struct{}),
+		reindexCh:  make(chan struct{}, 1),
 	}
 }
 
 // SetChunkMaxTokens configures the maximum tokens per chunk (0 = unlimited).
 func (idx *Indexer) SetChunkMaxTokens(n int) {
 	idx.chunkMaxTokens = n
+}
+
+// Reindex triggers a full re-index. Returns false if a reindex is already queued.
+func (idx *Indexer) Reindex() bool {
+	select {
+	case idx.reindexCh <- struct{}{}:
+		return true
+	default:
+		return false // already queued or in progress
+	}
 }
 
 // Stats returns current indexing statistics.
@@ -92,6 +105,9 @@ func (idx *Indexer) ProcessEvents(ctx context.Context, events <-chan watcher.Eve
 		select {
 		case <-ctx.Done():
 			return
+		case <-idx.reindexCh:
+			idx.logger.Info("indexer: re-index triggered via API")
+			idx.fullReindex(ctx)
 		case evt, ok := <-events:
 			if !ok {
 				return
@@ -208,7 +224,12 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		for j, c := range batch {
 			// Deterministic UUID from file path + chunk index
 			id := pointID(relPath, c.ChunkIndex)
-			points[j] = &pb.PointStruct{
+			linksToValues := make([]*pb.Value, len(c.LinksTo))
+		for li, link := range c.LinksTo {
+			linksToValues[li] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: link}}
+		}
+
+		points[j] = &pb.PointStruct{
 				Id: id,
 				Vectors: &pb.Vectors{
 					VectorsOptions: &pb.Vectors_Vector{
@@ -223,6 +244,7 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 					"header":            {Kind: &pb.Value_StringValue{StringValue: c.Header}},
 					"chunk_index":       {Kind: &pb.Value_IntegerValue{IntegerValue: int64(c.ChunkIndex)}},
 					"file_last_updated": {Kind: &pb.Value_StringValue{StringValue: c.UpdatedAt.Format(time.RFC3339)}},
+					"links_to":          {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: linksToValues}}},
 				},
 			}
 		}

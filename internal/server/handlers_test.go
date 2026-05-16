@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
@@ -17,8 +18,9 @@ func newTestServer() *Server {
 		VaultPath: "/test/vault",
 	}
 	rl := ratelimit.New(false)
-	idx := indexer.New("/test/vault", nil, nil, nil)
-	return New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
+	idxm := indexer.NewManager()
+	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
 }
 
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
@@ -410,5 +412,188 @@ func TestHandleAudit_SampleSizeCap(t *testing.T) {
 
 	if w.Code != 200 {
 		t.Errorf("expected 200 with capped sample_size, got %d", w.Code)
+	}
+}
+
+func TestHandleVaults_MultiTenant(t *testing.T) {
+	cfg := &config.Config{
+		Vaults: map[string]*config.VaultConfig{
+			"docs": {Path: "/tmp/docs"},
+			"code": {Path: "/tmp/code"},
+		},
+	}
+	rl := ratelimit.New(false)
+	idxm := indexer.NewManager()
+	idxm.Add("docs", indexer.New("/tmp/docs", nil, nil, nil), nil)
+	idxm.Add("code", indexer.New("/tmp/code", nil, nil, nil), nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
+	req := httptest.NewRequest("GET", "/vaults", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	vaults, ok := resp["vaults"].([]interface{})
+	if !ok {
+		t.Fatal("expected vaults array")
+	}
+	if len(vaults) != 2 {
+		t.Errorf("expected 2 vaults, got %d", len(vaults))
+	}
+}
+
+func TestHandleVaults_SingleTenant(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/vaults", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	vaults, ok := resp["vaults"].([]interface{})
+	if !ok {
+		t.Fatal("expected vaults array")
+	}
+	if len(vaults) != 1 {
+		t.Errorf("expected 1 vault in single-tenant, got %d", len(vaults))
+	}
+}
+
+func TestHandleGraph_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/graph", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+type graphTestResponse struct {
+	Nodes []interface{} `json:"nodes"`
+	Edges []interface{} `json:"edges"`
+}
+
+func TestHandleGraph_FullGraph(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/graph", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp graphTestResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Nodes == nil {
+		t.Error("expected non-nil nodes")
+	}
+	if resp.Edges == nil {
+		t.Error("expected non-nil edges")
+	}
+}
+
+func TestHandleGraph_EntityDepth0(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/graph?entity=test&depth=0", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp graphTestResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Nodes) != 1 {
+		t.Errorf("expected 1 node for depth=0, got %d", len(resp.Nodes))
+	}
+	if resp.Nodes[0].(map[string]interface{})["id"] != "entity:test" {
+		t.Errorf("expected entity:test, got %v", resp.Nodes[0])
+	}
+}
+
+func TestHandleGraph_LimitParam(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/graph?limit=5", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp graphTestResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Nodes) > 5 {
+		t.Errorf("expected <=5 nodes with limit=5, got %d", len(resp.Nodes))
+	}
+}
+
+func TestHandleGraph_InvalidDepthClamped(t *testing.T) {
+	srv := newTestServer()
+	// depth=5 should be clamped to 3
+	req := httptest.NewRequest("GET", "/graph?entity=test&depth=5", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestHandleGraph_InvalidLimitClamped(t *testing.T) {
+	srv := newTestServer()
+	// limit=999 should be clamped to 200
+	req := httptest.NewRequest("GET", "/graph?limit=999", nil)
+	w := httptest.NewRecorder()
+	srv.handleGraph(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func TestVaultRouting_ExtractsVaultName(t *testing.T) {
+	req := httptest.NewRequest("GET", "/vault/docs/recall?query=test", nil)
+	vault := vaultNameFromRequest(req)
+	if vault != "docs" {
+		t.Errorf("expected docs, got %q", vault)
+	}
+}
+
+func TestVaultRouting_NoVault(t *testing.T) {
+	req := httptest.NewRequest("GET", "/recall?query=test", nil)
+	vault := vaultNameFromRequest(req)
+	if vault != "" {
+		t.Errorf("expected empty, got %q", vault)
+	}
+}
+
+func TestVaultRouting_ContextRoundTrip(t *testing.T) {
+	// vaultFromContext is used by handlers after withVault middleware sets it
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	if got := vaultFromContext(ctx); got != "docs" {
+		t.Errorf("expected docs, got %q", got)
 	}
 }

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -415,5 +416,197 @@ func TestValidate_ZeroChunkMaxTokens(t *testing.T) {
 	errs := cfg.Validate()
 	if len(errs) != 0 {
 		t.Errorf("zero chunk max tokens should be valid, got: %v", errs)
+	}
+}
+
+// ── Multi-tenancy tests ───────────────────────────────────────────────────────
+
+func TestIsMultiTenant(t *testing.T) {
+	cfg := &Config{}
+	if cfg.IsMultiTenant() {
+		t.Error("IsMultiTenant() = true with nil Vaults")
+	}
+
+	cfg.Vaults = map[string]*VaultConfig{}
+	if cfg.IsMultiTenant() {
+		t.Error("IsMultiTenant() = true with empty Vaults")
+	}
+
+	cfg.Vaults["docs"] = &VaultConfig{Path: "/opt/docs"}
+	if !cfg.IsMultiTenant() {
+		t.Error("IsMultiTenant() = false with one vault")
+	}
+}
+
+func TestLoad_MultiTenant(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s,code:%s", dir1, dir2))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_CHUNK_STRATEGY", "heading")
+	os.Setenv("RAGAMUFFIN_VAULT_CODE_CHUNK_FIXED_SIZE", "500")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_VAULT_DOCS_CHUNK_STRATEGY")
+		os.Unsetenv("RAGAMUFFIN_VAULT_CODE_CHUNK_FIXED_SIZE")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	if !cfg.IsMultiTenant() {
+		t.Fatal("expected multi-tenant mode")
+	}
+
+	docs, ok := cfg.Vaults["docs"]
+	if !ok {
+		t.Fatal("expected vault 'docs'")
+	}
+	if docs.Path != dir1 {
+		t.Errorf("docs path = %q, want %q", docs.Path, dir1)
+	}
+	if docs.ChunkStrategy != "heading" {
+		t.Errorf("docs ChunkStrategy = %q, want heading", docs.ChunkStrategy)
+	}
+
+	code, ok := cfg.Vaults["code"]
+	if !ok {
+		t.Fatal("expected vault 'code'")
+	}
+	if code.Path != dir2 {
+		t.Errorf("code path = %q, want %q", code.Path, dir2)
+	}
+	if code.ChunkFixedSize != 500 {
+		t.Errorf("code ChunkFixedSize = %d, want 500", code.ChunkFixedSize)
+	}
+}
+
+func TestLoad_InvalidVaultEntry(t *testing.T) {
+	tests := []string{
+		"badentry",                        // no colon
+		":/path",                           // empty name
+		"docs:",                            // empty path
+		"docs:/opt/docs,finance:",           // second entry empty path
+	}
+
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+
+	for _, entry := range tests {
+		os.Setenv("RAGAMUFFIN_VAULTS", entry)
+		_, err := Load()
+		if err == nil {
+			t.Errorf("expected error for vault entry %q", entry)
+		}
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+	}
+}
+
+func TestLoad_DuplicateVaultName(t *testing.T) {
+	os.Setenv("RAGAMUFFIN_VAULTS", "docs:/opt/a,test:/opt/b,test:/opt/c")
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "duplicate vault name") {
+		t.Errorf("expected duplicate vault name error, got: %v", err)
+	}
+}
+
+func TestValidate_MutuallyExclusive(t *testing.T) {
+	cfg := &Config{
+		VaultPath: "/opt/vault",
+		Vaults:    map[string]*VaultConfig{"docs": {Path: "/opt/docs"}},
+		QdrantURL: "http://localhost:6334",
+	}
+	errs := cfg.Validate()
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "mutually exclusive") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected mutually exclusive error, got: %v", errs)
+	}
+}
+
+func TestValidate_NeitherPathNorVaults(t *testing.T) {
+	cfg := &Config{QdrantURL: "http://localhost:6334"}
+	errs := cfg.Validate()
+	found := false
+	for _, e := range errs {
+		if strings.Contains(e, "must set either") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected 'must set either' error, got: %v", errs)
+	}
+}
+
+func TestValidVaultName(t *testing.T) {
+	tests := []struct {
+		name  string
+		valid bool
+	}{
+		{"docs", true},
+		{"my-vault", true},
+		{"vault123", true},
+		{"a", true},
+		{"a-b", true},
+		{"Docs", false},           // uppercase
+		{"my_vault", false},       // underscore
+		{"-docs", false},          // leading hyphen
+		{"docs-", false},          // trailing hyphen
+		{"", false},               // empty
+		{"a", true},               // single char
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 33 chars
+		{"a-b-c-d-e-f-g", true},  // 13 chars, multiple hyphens
+		{"no spaces", false},      // space
+		{"docs!", false},          // special char
+	}
+
+	for _, tt := range tests {
+		got := validVaultName(tt.name)
+		if got != tt.valid {
+			t.Errorf("validVaultName(%q) = %v, want %v", tt.name, got, tt.valid)
+		}
+	}
+}
+
+func TestValidate_MultiTenantVaultPaths(t *testing.T) {
+	existingDir := t.TempDir()
+
+	cfg := &Config{
+		QdrantURL: "http://localhost:6334",
+		Vaults: map[string]*VaultConfig{
+			"good":    {Path: existingDir},
+			"missing": {Path: "/nonexistent/path/xyz789"},
+		},
+	}
+	errs := cfg.Validate()
+	foundMissing := false
+	foundGood := true
+	for _, e := range errs {
+		if strings.Contains(e, "missing") && strings.Contains(e, "does not exist") {
+			foundMissing = true
+		}
+		if strings.Contains(e, "good") {
+			foundGood = false
+		}
+	}
+	if !foundMissing {
+		t.Errorf("expected error for missing vault path, got: %v", errs)
+	}
+	if !foundGood {
+		t.Errorf("unexpected error for valid vault path: %v", errs)
 	}
 }

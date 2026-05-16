@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
@@ -42,23 +43,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("starting ragamuffin", "vault", cfg.VaultPath, "qdrant", cfg.QdrantURL)
-
-	// ── Connect to Qdrant ────────────────────────────────────────────────────
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	qc, err := qdrant.New(ctx, cfg.QdrantURL, cfg.QdrantCollection, 1536) // 1536 = text-embedding-3-small dims
-	cancel()
-	if err != nil {
-		logger.Error("failed to connect to Qdrant", "error", err)
-		os.Exit(1)
+	if cfg.IsMultiTenant() {
+		logger.Info("multi-tenant mode active", "vaults", len(cfg.Vaults))
+	} else {
+		logger.Info("single-tenant mode active", "vault", cfg.VaultPath)
 	}
-	defer qc.Close()
-	logger.Info("qdrant connected", "collection", cfg.QdrantCollection)
 
-	// Connect to facts collection (separate collection with smaller vector size)
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-	factsQc, err := qdrant.New(ctx2, cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize)
-	cancel2()
+	logger.Info("starting ragamuffin", "qdrant", cfg.QdrantURL)
+
+	// ── Connect to Qdrant facts collection ───────────────────────────────────
+	ctxFacts, cancelFacts := context.WithTimeout(context.Background(), 10*time.Second)
+	factsQc, err := qdrant.New(ctxFacts, cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize)
+	cancelFacts()
 	if err != nil {
 		logger.Error("failed to connect to facts Qdrant", "error", err)
 		os.Exit(1)
@@ -66,7 +62,7 @@ func main() {
 	defer factsQc.Close()
 	logger.Info("qdrant facts collection ready", "collection", cfg.FactsCollection)
 
-	// ── Initialize embedding client (optional) ──────────────────────────────
+	// ── Initialize embedding client (shared, optional) ──────────────────────
 	var ec *embedding.Client
 	if cfg.EmbeddingAPIKey != "" {
 		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
@@ -84,32 +80,137 @@ func main() {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")
 	}
 
-	// ── Initialize indexer ───────────────────────────────────────────────────
-	idx := indexer.New(cfg.VaultPath, qc, ec, logger)
-	idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
-	logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
+	// ── Build vault indexers ─────────────────────────────────────────────────
+	idxManager := indexer.NewManager()
+	logPath := ""
 
-	// ── Start watcher ────────────────────────────────────────────────────────
-	interval, err := time.ParseDuration(cfg.WatchInterval)
-	if err != nil {
-		logger.Warn("invalid watch interval, using 60s", "value", cfg.WatchInterval)
-		interval = 60 * time.Second
+	if cfg.IsMultiTenant() {
+		// Multi-tenant: one indexer + Qdrant connection per vault
+		logger.Info("configuring vault indexers", "count", len(cfg.Vaults))
+
+		var readyChans []chan struct{}
+		var idxCancelFuncs []context.CancelFunc
+
+		for name, vc := range cfg.Vaults {
+			collectionName := fmt.Sprintf("ragamuffin_%s", name)
+
+			ctxQ, cancelQ := context.WithTimeout(context.Background(), 10*time.Second)
+			qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, 1536)
+			cancelQ()
+			if err != nil {
+				logger.Error("failed to connect to Qdrant for vault", "vault", name, "error", err)
+				os.Exit(1)
+			}
+			defer qc.Close()
+
+			idx := indexer.New(vc.Path, qc, ec, logger.With("vault", name))
+			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+
+			if err := idxManager.Add(name, idx, qc); err != nil {
+				logger.Error("failed to register vault indexer", "vault", name, "error", err)
+				os.Exit(1)
+			}
+
+			// Start watcher for this vault
+			interval, err := time.ParseDuration(cfg.WatchInterval)
+			if err != nil {
+				interval = 60 * time.Second
+			}
+			w := watcher.New(vc.Path, interval, logger.With("vault", name), cfg.WatcherMode)
+			events := make(chan watcher.Event, 100)
+			watcherDone := make(chan struct{})
+
+			go w.Watch(events, watcherDone)
+
+			// Start indexer for this vault
+			idxCtx, idxCancel := context.WithCancel(context.Background())
+			idxCancelFuncs = append(idxCancelFuncs, idxCancel)
+			initialDone := make(chan struct{})
+			readyChans = append(readyChans, initialDone)
+
+			go idx.ProcessEvents(idxCtx, events, initialDone)
+			logger.Info("vault indexer started", "vault", name, "path", vc.Path, "collection", collectionName)
+
+			// Use first vault's log path
+			if logPath == "" {
+				logPath = vc.Path + "/.ragamuffin/logs.db"
+			}
+		}
+
+		// Wait for all vaults to complete initial indexing
+		for _, ch := range readyChans {
+			<-ch
+		}
+		logger.Info("all vaults initial indexing complete")
+
+		// Schedule cleanup on shutdown
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			for _, cancel := range idxCancelFuncs {
+				cancel()
+			}
+		}()
+
+	} else {
+		// Single-tenant: one indexer, one Qdrant connection
+		ctxQ, cancelQ := context.WithTimeout(context.Background(), 10*time.Second)
+		qc, err := qdrant.New(ctxQ, cfg.QdrantURL, cfg.QdrantCollection, 1536)
+		cancelQ()
+		if err != nil {
+			logger.Error("failed to connect to Qdrant", "error", err)
+			os.Exit(1)
+		}
+		defer qc.Close()
+		logger.Info("qdrant connected", "collection", cfg.QdrantCollection)
+
+		idx := indexer.New(cfg.VaultPath, qc, ec, logger)
+		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+		logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
+
+		if err := idxManager.Add("default", idx, qc); err != nil {
+			logger.Error("failed to register default indexer", "error", err)
+			os.Exit(1)
+		}
+
+		// Start watcher
+		interval, err := time.ParseDuration(cfg.WatchInterval)
+		if err != nil {
+			logger.Warn("invalid watch interval, using 60s", "value", cfg.WatchInterval)
+			interval = 60 * time.Second
+		}
+		w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
+		events := make(chan watcher.Event, 100)
+		watcherDone := make(chan struct{})
+
+		go w.Watch(events, watcherDone)
+		logger.Info("watcher started", "interval", interval)
+
+		// Start indexer
+		idxCtx, idxCancel := context.WithCancel(context.Background())
+		defer idxCancel()
+		initialDone := make(chan struct{})
+
+		go idx.ProcessEvents(idxCtx, events, initialDone)
+		<-initialDone // Wait for initial indexing to complete
+		logger.Info("initial indexing complete")
+
+		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
+
+		// Graceful shutdown for single-tenant
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			logger.Info("shutting down...")
+			close(watcherDone)
+			idxCancel()
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutdownCancel()
+			httpServer.Shutdown(shutdownCtx)
+		}()
 	}
-	w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
-	events := make(chan watcher.Event, 100)
-	watcherDone := make(chan struct{})
-
-	go w.Watch(events, watcherDone)
-	logger.Info("watcher started", "interval", interval)
-
-	// ── Start indexer ─────────────────────────────────────────────────────────
-	idxCtx, idxCancel := context.WithCancel(context.Background())
-	defer idxCancel()
-	initialDone := make(chan struct{})
-
-	go idx.ProcessEvents(idxCtx, events, initialDone)
-	<-initialDone // Wait for initial indexing to complete
-	logger.Info("initial indexing complete")
 
 	// ── Initialize git provider (optional) ───────────────────────────────────
 	var gp git.Provider
@@ -126,9 +227,7 @@ func main() {
 		"recall_rpm", cfg.RateLimitRecall, "ask_rpm", cfg.RateLimitAsk,
 		"draft_rpm", cfg.RateLimitDraft, "audit_rpm", cfg.RateLimitAudit)
 
-	// ── Start HTTP server ────────────────────────────────────────────────────
 	// ── Initialize log store ──────────────────────────────────────────────────
-	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
 	logStore, err := logstore.Open(logPath)
 	if err != nil {
 		logger.Error("failed to open log store", "error", err)
@@ -137,31 +236,48 @@ func main() {
 	defer logStore.Close()
 	logger.Info("log store ready", "path", logPath)
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idx, gp, rl, w, logStore, logger)
+	// ── Start HTTP server ────────────────────────────────────────────────────
+	// Pass qc = first vault's Qdrant client for backward-compat /health checks
+	var qc *qdrant.Client
+	if cfg.IsMultiTenant() {
+		// Use first vault's client for shared Qdrant health check
+		for _, name := range idxManager.VaultNames() {
+			qc = idxManager.GetClient(name)
+			break
+		}
+	} else {
+		qc = idxManager.GetClient("default")
+	}
+
+	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
+	// Wrap with auth middleware (public paths like /health and /version bypass)
+	authMw := auth.Middleware(authenticator)
+
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
-		Handler:           srv.Recovery(mux),
+		Handler:           authMw(srv.Recovery(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0, // 0 = no timeout — MaxBytesReader + per-handler context timeouts protect; 30s would kill slow /draft uploads
 		WriteTimeout:      0, // 0 = no timeout — needed for streaming /v1/snapshot
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Graceful shutdown
-	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-		<-sigCh
-		logger.Info("shutting down...")
-		close(watcherDone)
-		idxCancel()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer shutdownCancel()
-		httpServer.Shutdown(shutdownCtx)
-	}()
+	// Single-tenant already has a shutdown goroutine registered above.
+	// Multi-tenant needs one too (after httpServer is initialized).
+	if cfg.IsMultiTenant() {
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			logger.Info("shutting down...")
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer shutdownCancel()
+			httpServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	logger.Info("listening", "addr", httpServer.Addr)
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {

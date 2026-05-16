@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ragamuffin</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<nav id="topnav">
+  <span class="logo">ragamuffin</span>
+  <div class="tabs">
+    <button data-page="search" class="active">Search</button>
+    <button data-page="browse">Browse</button>
+    <button data-page="audit">Audit</button>
+    <button data-page="graph">Graph</button>
+  </div>
+  <span id="vault-select"></span>
+</nav>
+
+<main id="page-search" class="page active">
+  <h2>Search</h2>
+  <form id="search-form">
+    <input type="text" id="search-query" placeholder="Ask a question or search...">
+    <select id="search-vault"></select>
+    <button type="submit">Search</button>
+  </form>
+  <div id="search-results"></div>
+</main>
+
+<main id="page-browse" class="page">
+  <h2>Browse</h2>
+  <select id="browse-vault"></select>
+  <div id="browse-tree"></div>
+</main>
+
+<main id="page-audit" class="page">
+  <h2>Audit Dashboard</h2>
+  <select id="audit-vault"></select>
+  <div id="audit-summary" class="card-grid"></div>
+  <div id="audit-detail"></div>
+</main>
+
+<main id="page-graph" class="page">
+  <h2>Graph Explorer</h2>
+  <div class="graph-controls">
+    <select id="graph-vault"></select>
+    <input type="text" id="graph-entity" placeholder="Entity name (optional)">
+    <label>Depth <select id="graph-depth">
+      <option value="0">0</option>
+      <option value="1" selected>1</option>
+      <option value="2">2</option>
+      <option value="3">3</option>
+    </select></label>
+    <button id="graph-load">Load</button>
+  </div>
+  <div id="graph-viz"></div>
+  <div id="graph-legend"></div>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
