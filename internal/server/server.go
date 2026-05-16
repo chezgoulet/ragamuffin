@@ -13,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/git"
@@ -145,6 +146,30 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
 	mux.Handle("/mcp", s.mcpHandler)
+}
+
+// authMiddleware returns the auth authenticator based on config.
+func (s *Server) BuildAuth() auth.Authenticator {
+	m, err := auth.ParseMode(s.cfg.AuthMode)
+	if err != nil {
+		s.logger.Warn("invalid auth mode, falling back to none", "mode", s.cfg.AuthMode, "error", err)
+		return &auth.NoneAuthenticator{}
+	}
+
+	switch m {
+	case auth.ModeNone:
+		return &auth.NoneAuthenticator{}
+	case auth.ModeAPIKey:
+		// Issue #101: implement API key authenticator
+		s.logger.Warn("api_key auth not yet implemented, falling back to none")
+		return &auth.NoneAuthenticator{}
+	case auth.ModeJWT:
+		// Issue #102: implement JWT authenticator
+		s.logger.Warn("jwt auth not yet implemented, falling back to none")
+		return &auth.NoneAuthenticator{}
+	default:
+		return &auth.NoneAuthenticator{}
+	}
 }
 
 // ── Request ID middleware ──────────────────────────────────────────────────────

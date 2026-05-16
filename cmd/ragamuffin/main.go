@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
@@ -248,13 +249,16 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, logger)
+	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
+	// Wrap with auth middleware (public paths like /health and /version bypass)
+	authMw := auth.Middleware(authenticator)
+
 	httpServer := &http.Server{
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
-		Handler:           srv.Recovery(mux),
+		Handler:           authMw(srv.Recovery(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       0, // 0 = no timeout — MaxBytesReader + per-handler context timeouts protect; 30s would kill slow /draft uploads
 		WriteTimeout:      0, // 0 = no timeout — needed for streaming /v1/snapshot
