@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
