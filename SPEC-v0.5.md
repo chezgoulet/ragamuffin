@@ -361,25 +361,43 @@ its dependencies are missing is correct behavior. ConflictScan also requires
 an embedder; if the embedder is nil, it logs `"conflict_scan skipped: no
 embedder configured"` at `WARN` level and skips.
 
+**Re-flagging and the dismiss mechanism:** `conflict_resolved=true` is the
+operator's dismissal — it means "I have reviewed this contradiction and it
+is acceptable." Facts with `conflict_resolved=true && status=active` are
+skipped by ConflictScan. Without this check, an operator who confirms a
+stale+contradictory fact (because staleness was the issue, not the
+contradiction) would see it re-flagged on every subsequent conflict scan
+cycle until the contradiction was resolved. The field gives the operator
+an explicit way to break that loop.
+
+If a previously-conflicting fact is later superseded or rejected, the
+operator can manually re-run ConflictScan via `POST /v1/pruner/rerun`
+or set `conflict_resolved=false` on the dismissed fact to trigger
+a fresh check on the next scheduled scan.
+
 ```
 Scan logic:
 1. Check HasLLM() and HasEmbedder() — if either is missing, log warning and return
-2. Load all active facts by scrolling facts collection (batch_size = 1000)
+2. Load active facts by scrolling facts collection (batch_size = 1000).
+   Filter out facts where conflict_resolved=true — these have been
+   explicitly reviewed and dismissed by the operator.
 3. For facts with source_type=manual or source_type=agent_observation:
    a. Read fact values in EmbeddingBatchSize batches
    b. Call embedder.Embed() on each batch (on-the-fly, not stored)
    c. Compare real embedding vectors in-memory (cosine sim)
    d. For near pairs above threshold (top ConflictSampleSize):
-      - Send to LLM Compare()
+      - Skip pairs where either fact already has the other in contradicts[]
+        and conflict_resolved=true (already reviewed and dismissed)
+      - Send remaining pairs to LLM Compare()
       - If conflict detected:
         - Set status=needs_review on the newer/lower-confidence fact
         - Add the other fact's key to contradicts[] (write-once)
         - Set conflict_resolved=false on the flagged fact
-3. For facts that reference vault paths in source field:
+4. For facts that reference vault paths in source field:
    a. Recall related vault chunks (Qdrant search on main collection)
    b. Compare fact value against chunk content
    c. Flag if mismatch found
-4. Log results and LLM call count
+5. Log results and LLM call count
 ```
 
 #### SupersedeScan
@@ -549,6 +567,12 @@ scheduled scan will re-flag it. Specifically:
 - **ConflictScan re-flag:** If `conflict_resolved=false` and the semantic
   conflict still exists, the fact will be re-flagged on the next conflict
   scan cycle.
+- **Dismissing a known contradiction:** If the operator has reviewed the
+  contradiction and considers it acceptable, they can set
+  `conflict_resolved=true` (via the `reclassify` action or PATCH).
+  ConflictScan skips facts with `conflict_resolved=true && status=active`.
+  The operator can always re-open by setting `conflict_resolved=false` or
+  running `POST /v1/pruner/rerun`.
 
 This is intentional — the Pruner is eventually consistent about re-flagging.
 The operator should see the fact again if an unresolved condition persists.
