@@ -156,6 +156,7 @@ gains a new optional filter parameter:
 | `prefix` | string | Key prefix filter (existing) |
 | `tag` | string | Tag filter (existing) |
 | `status` | string | Filter by lifecycle status: `active`, `needs_review`, `superseded`, `rejected`. Default: all statuses (backward compatible). |
+| `conflict_resolved` | bool | Filter by dismissal status: `true` (operator-dismissed), `false` (unresolved). Ignored if status filter is not also set. |
 
 ```bash
 # Get all active facts (exclude superseded/rejected from agent context)
