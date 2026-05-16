@@ -74,7 +74,7 @@ func main() {
 	// ── Initialize LLM client (optional) ─────────────────────────────────────
 	var lm *llm.Client
 	if cfg.HasLLM() {
-		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel)
+		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout)
 		logger.Info("LLM client ready", "model", cfg.LLMModel)
 	} else {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")

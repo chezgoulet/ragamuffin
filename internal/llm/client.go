@@ -21,7 +21,7 @@ type Client struct {
 }
 
 // New creates an LLM client. Returns nil if provider is empty.
-func New(provider, baseURL, apiKey, model string) *Client {
+func New(provider, baseURL, apiKey, model string, timeout time.Duration) *Client {
 	if provider == "" {
 		return nil
 	}
@@ -31,7 +31,7 @@ func New(provider, baseURL, apiKey, model string) *Client {
 		apiKey:   apiKey,
 		model:    model,
 		client: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }
