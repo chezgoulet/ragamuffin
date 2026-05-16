@@ -528,7 +528,8 @@ curl -s -X POST 'http://ragamuffin:8000/v1/review?key=org/prefer-rust-cli' \
   -d '{
     "action": "confirm",
     "confidence": 0.95,
-    "note": "Confirmed in team sync — still current"
+    "note": "Confirmed in team sync — still current",
+    "conflict_resolved": true
   }'
 ```
 
@@ -536,7 +537,7 @@ Actions:
 
 | Action | Effect |
 |---|---|
-| `confirm` | Sets `status=active`, increments `confirmation_count`, updates `last_confirmed_at`, clears review reasons |
+| `confirm` | Sets `status=active`, increments `confirmation_count`, updates `last_confirmed_at`, clears review reasons. Optional `conflict_resolved: true` sets the flag to dismiss any known contradiction — the next ConflictScan will skip this fact until the flag is cleared manually. Default `false` — fact stays eligible for re-flagging on next conflict scan. |
 | `supersede` | Sets `status=superseded`, sets `supersedes` to new key (provided in `new_key` field), creates new fact if `new_value` provided |
 | `reject` | Sets `status=rejected`, sets rejection timestamp |
 | `reclassify` | Adjusts `confidence`, `ttl_days`, `tags`, `source_type` without changing status |
