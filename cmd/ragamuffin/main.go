@@ -42,7 +42,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	logger.Info("starting ragamuffin", "vault", cfg.VaultPath, "qdrant", cfg.QdrantURL)
+	// Determine vault path for single-tenant or first vault for multi-tenant
+	var vaultPath string
+	if cfg.IsMultiTenant() {
+		logger.Info("multi-tenant mode active", "vaults", len(cfg.Vaults))
+		// Use first vault for now — per-vault indexers and routing come in v0.4 issues
+		for name, vc := range cfg.Vaults {
+			vaultPath = vc.Path
+			logger.Info("configured vault", "name", name, "path", vc.Path)
+			break // just pick the first
+		}
+	} else {
+		vaultPath = cfg.VaultPath
+	}
+
+	logger.Info("starting ragamuffin", "vault", vaultPath, "qdrant", cfg.QdrantURL)
 
 	// ── Connect to Qdrant ────────────────────────────────────────────────────
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -85,7 +99,7 @@ func main() {
 	}
 
 	// ── Initialize indexer ───────────────────────────────────────────────────
-	idx := indexer.New(cfg.VaultPath, qc, ec, logger)
+	idx := indexer.New(vaultPath, qc, ec, logger)
 	idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
 	logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
 
@@ -95,7 +109,7 @@ func main() {
 		logger.Warn("invalid watch interval, using 60s", "value", cfg.WatchInterval)
 		interval = 60 * time.Second
 	}
-	w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
+	w := watcher.New(vaultPath, interval, logger, cfg.WatcherMode)
 	events := make(chan watcher.Event, 100)
 	watcherDone := make(chan struct{})
 
@@ -128,7 +142,7 @@ func main() {
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// ── Initialize log store ──────────────────────────────────────────────────
-	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
+	logPath := vaultPath + "/.ragamuffin/logs.db"
 	logStore, err := logstore.Open(logPath)
 	if err != nil {
 		logger.Error("failed to open log store", "error", err)
