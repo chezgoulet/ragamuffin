@@ -114,6 +114,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
 	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
 	mux.HandleFunc("/vaults", s.withRequestID(s.handleVaults))
+	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
 
 	if s.cfg.IsMultiTenant() {
 		// Vault-prefixed routes (multi-tenant mode)
@@ -125,6 +126,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/logs", s.withRequestID(s.withVaultRateLimit("/v1/logs", s.handleVaultLogs)))
 		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot)))
 		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withVault(s.handleReindex)))
+		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
 	} else {
 		// Single-tenant routes (v0.1–v0.3 behavior)
 		mux.HandleFunc("/recall", s.withRequestID(s.withRateLimit("/recall", s.handleRecall)))
