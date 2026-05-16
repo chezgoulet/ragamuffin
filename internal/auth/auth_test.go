@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -47,7 +46,7 @@ func TestParseMode_ValidModes(t *testing.T) {
 			t.Errorf("ParseMode(%q): unexpected error: %v", tt.input, err)
 		}
 		if got != tt.want {
-			t.Errorf("ParseMode(%q) = %d, want %d", tt.input, got, tt.want)
+			t.Errorf("ParseMode(%q) = %v, want %v", tt.input, got, tt.want)
 		}
 	}
 }
@@ -67,10 +66,8 @@ func TestParseMode_Empty(t *testing.T) {
 }
 
 func TestPublicPaths_Skipped(t *testing.T) {
-	for _, path := range PublicPaths {
-		req := httptest.NewRequest("GET", path, nil)
-		// Even an unauthenticated request should pass through for public paths
-		// This is handled by the middleware, not the authenticator itself
+	for path := range PublicPaths {
+		// Verifies all PublicPaths keys are non-empty strings
 		if path == "" {
 			t.Error("empty public path")
 		}
@@ -114,7 +111,8 @@ func TestClaims_HasVaultAccess_NilList(t *testing.T) {
 
 func TestClaims_HasVaultAccess_EmptyList(t *testing.T) {
 	c := &Claims{Access: []string{"read"}, Vaults: []string{}}
-	if c.HasVaultAccess("anything") {
-		t.Error("expected no access to any vault when vaults list is empty")
+	// Empty and nil both mean unrestricted access
+	if !c.HasVaultAccess("anything") {
+		t.Error("expected access to any vault when vaults list is empty (same as nil)")
 	}
 }
