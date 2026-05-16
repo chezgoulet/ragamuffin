@@ -253,7 +253,13 @@ RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1  # Embedding base URL (i
 # URL convention: LLM appends /v1/chat/completions, embedding appends /embeddings
 # LiteLLM proxy (http://litellm:4000):
 #   LLM_BASE_URL=http://litellm:4000  EMBEDDING_BASE_URL=http://litellm:4000/v1
+RAGAMUFFIN_LLM_TIMEOUT=120s                    # LLM request timeout (optional)
 RAGAMUFFIN_GIT_TOKEN=ghp_...                        # For PR mode (optional)
+
+# v0.4 Events — subscribe to vault changes via CloudEvents v1.0 webhook
+# When set, Ragamuffin emits vault.file.changed, vault.file.deleted, and
+# ragamuffin.started events as HTTP POST with Content-Type: application/cloudevents+json
+RAGAMUFFIN_EVENT_WEBHOOK_URL=http://listener:8080/events
 
 # v0.4 Multi-tenancy & Auth
 RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code   # Multi-tenant vaults
@@ -301,3 +307,19 @@ curl -s http://ragamuffin:8000/stats
 # /v1/snapshot /health /stats /version /metrics /mcp
 # /vaults /graph /reindex /vault/{name}/... (v0.4)
 ```
+
+## Events (CloudEvents v0.4)
+
+When `RAGAMUFFIN_EVENT_WEBHOOK_URL` is configured, Ragamuffin pushes
+CloudEvents v1.0 structured JSON events to the webhook URL. Use this to
+react to vault changes without polling.
+
+| Event | Payload | When |
+|---|---|---|
+| `vault.file.changed` | `{"path":"...", "action":"created|modified"}` | After successful file index |
+| `vault.file.deleted` | `{"path":"..."}` | After file removed from index |
+| `ragamuffin.started` | `{"version":"...", "commit":"...", "host":"...", "port":"..."}` | Server boot, before listen |
+
+Delivery is HTTP POST with `Content-Type: application/cloudevents+json`.
+Fire-and-forget — no retry, no persistence. Message consumers are responsible
+for durability.

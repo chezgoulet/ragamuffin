@@ -23,6 +23,10 @@ import (
 // Chunk is an alias for chunker.Chunk (backward compat).
 type Chunk = chunker.Chunk
 
+// FileEventCallback is called after a file is indexed or deleted.
+// action is "created", "modified", or "deleted".
+type FileEventCallback func(action, path string)
+
 // Indexer processes file events and maintains the Qdrant index.
 type Indexer struct {
 	vaultPath     string
@@ -41,6 +45,9 @@ type Indexer struct {
 	knownFiles map[string]struct{} // set of indexed files for dedup counting
 
 	reindexCh chan struct{} // buffered channel (cap 1) for re-index requests
+
+	// Optional callback for file change events
+	onFileEvent FileEventCallback
 }
 
 // New creates an Indexer.
@@ -53,6 +60,11 @@ func New(vaultPath string, qc *qdrant.Client, ec *embedding.Client, logger *slog
 		knownFiles: make(map[string]struct{}),
 		reindexCh:  make(chan struct{}, 1),
 	}
+}
+
+// OnFileEvent registers a callback for file change events.
+func (idx *Indexer) OnFileEvent(cb FileEventCallback) {
+	idx.onFileEvent = cb
 }
 
 // SetChunkMaxTokens configures the maximum tokens per chunk (0 = unlimited).
@@ -114,12 +126,20 @@ func (idx *Indexer) ProcessEvents(ctx context.Context, events <-chan watcher.Eve
 			}
 			switch evt.Action {
 			case watcher.ActionAdd, watcher.ActionModify:
+				action := "modified"
+				if evt.Action == watcher.ActionAdd {
+					action = "created"
+				}
 				if err := idx.indexFile(ctx, evt.AbsPath, evt.Path); err != nil {
 					idx.logger.Error("indexer: failed to index file", "path", evt.Path, "error", err)
+				} else if idx.onFileEvent != nil {
+					idx.onFileEvent(action, evt.Path)
 				}
 			case watcher.ActionDelete:
 				if err := idx.qdrant.DeleteBySource(ctx, evt.Path); err != nil {
 					idx.logger.Error("indexer: failed to delete chunks", "path", evt.Path, "error", err)
+				} else if idx.onFileEvent != nil {
+					idx.onFileEvent("deleted", evt.Path)
 				}
 			}
 		}
