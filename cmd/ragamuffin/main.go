@@ -74,7 +74,7 @@ func main() {
 	// ── Initialize LLM client (optional) ─────────────────────────────────────
 	var lm *llm.Client
 	if cfg.HasLLM() {
-		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel)
+		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout)
 		logger.Info("LLM client ready", "model", cfg.LLMModel)
 	} else {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")
@@ -198,17 +198,15 @@ func main() {
 
 		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
 
-		// Graceful shutdown for single-tenant
+		// Single-tenant shutdown: close watcher + cancel indexer on signal
+		// httpServer shutdown is handled below (after server creation)
 		go func() {
 			sigCh := make(chan os.Signal, 1)
 			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 			<-sigCh
-			logger.Info("shutting down...")
+			logger.Info("shutting down watcher/indexer...")
 			close(watcherDone)
 			idxCancel()
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer shutdownCancel()
-			httpServer.Shutdown(shutdownCtx)
 		}()
 	}
 
@@ -249,6 +247,8 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, logger)
+
 	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
@@ -265,19 +265,16 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Single-tenant already has a shutdown goroutine registered above.
-	// Multi-tenant needs one too (after httpServer is initialized).
-	if cfg.IsMultiTenant() {
-		go func() {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
-			logger.Info("shutting down...")
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer shutdownCancel()
-			httpServer.Shutdown(shutdownCtx)
-		}()
-	}
+	// Graceful httpServer shutdown (works for single-tenant and multi-tenant)
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		logger.Info("shutting down...")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutdownCancel()
+		httpServer.Shutdown(shutdownCtx)
+	}()
 
 	logger.Info("listening", "addr", httpServer.Addr)
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {

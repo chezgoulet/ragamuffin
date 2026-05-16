@@ -80,7 +80,7 @@ func (s *Server) fullGraph(w http.ResponseWriter, r *http.Request, vaultName str
 
 	qc := s.indexers.GetClient(vaultName)
 	if qc == nil {
-		writeJSON(w, 200, graphResponse{Nodes: nil, Edges: nil})
+		writeJSON(w, 200, graphResponse{Nodes: []graphNode{}, Edges: []graphEdge{}})
 		return
 	}
 
@@ -171,8 +171,20 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 	defer cancel()
 
 	qc := s.indexers.GetClient(vaultName)
+
+	// Depth 0 doesn't need any backend — just return the entity node
+	if depth == 0 {
+		writeJSON(w, 200, graphResponse{
+			Nodes: []graphNode{{
+				ID: "entity:" + entity, Type: "entity", Label: entity,
+			}},
+			Edges: []graphEdge{},
+		})
+		return
+	}
+
 	if qc == nil {
-		writeJSON(w, 200, graphResponse{Nodes: nil, Edges: nil})
+		writeJSON(w, 200, graphResponse{Nodes: []graphNode{}, Edges: []graphEdge{}})
 		return
 	}
 
@@ -185,14 +197,6 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 		ID:    entityID,
 		Type:  "entity",
 		Label: entity,
-	}
-
-	if depth == 0 {
-		writeJSON(w, 200, graphResponse{
-			Nodes: []graphNode{nodes[entityID]},
-			Edges: nil,
-		})
-		return
 	}
 
 	// Find files containing this entity from facts collection

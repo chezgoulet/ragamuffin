@@ -71,6 +71,7 @@ type Config struct {
 	LLMBaseURL  string
 	LLMModel    string
 	LLMAPIKey   string
+	LLMTimeout  time.Duration
 
 	// Optional — Git
 	GitProviderEnabled bool
@@ -277,6 +278,7 @@ func Load() (*Config, error) {
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
 		LLMModel:    os.Getenv("RAGAMUFFIN_LLM_MODEL"),
 		LLMAPIKey:   os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
+		LLMTimeout:  envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
 
 		GitProviderEnabled: envBool("RAGAMUFFIN_GIT_PROVIDER_ENABLED"),
 		GitProvider:        envOrDefault("RAGAMUFFIN_GIT_PROVIDER", "github"),
@@ -383,6 +385,16 @@ func requireEnv(key string) (string, error) {
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return def
+}
+
+func envDuration(key string, def time.Duration) time.Duration {
+	if v := os.Getenv(key); v != "" {
+		d, err := time.ParseDuration(v)
+		if err == nil {
+			return d
+		}
 	}
 	return def
 }

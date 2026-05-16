@@ -187,8 +187,9 @@ func TestHandleAsk_NoLLMConfigured(t *testing.T) {
 func TestHandleAsk_MissingQuery(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
-	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
+	idxm := indexer.NewManager()
+	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
 	body := bytes.NewBufferString(`{"top_k": 8}`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -202,8 +203,9 @@ func TestHandleAsk_MissingQuery(t *testing.T) {
 func TestHandleAsk_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
-	idx := indexer.New("/test/vault", nil, nil, nil)
-	srv := New(cfg, nil, nil, nil, nil, idx, nil, rl, nil, nil, nil)
+	idxm := indexer.NewManager()
+	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
 	body := bytes.NewBufferString(`bad`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -576,6 +578,7 @@ func TestHandleGraph_InvalidLimitClamped(t *testing.T) {
 
 func TestVaultRouting_ExtractsVaultName(t *testing.T) {
 	req := httptest.NewRequest("GET", "/vault/docs/recall?query=test", nil)
+	req.SetPathValue("name", "docs")
 	vault := vaultNameFromRequest(req)
 	if vault != "docs" {
 		t.Errorf("expected docs, got %q", vault)

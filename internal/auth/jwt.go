@@ -66,7 +66,7 @@ func (j *JWTAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	}
 
 	tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-	if tokenStr == authHeader {
+	if tokenStr == authHeader || tokenStr == "" {
 		return nil, ErrUnauthenticated
 	}
 
