@@ -532,6 +532,28 @@ triggered — fact updates are not file-system events. The new fact inherits
 `source`, `source_type`, `tags` from the original unless overridden in the
 request body.
 
+**needs_review and the re-flagging cycle.** A fact with `status=needs_review`
+may have multiple independent reasons (stale + contradiction). The
+`review_reasons` array in the GET /v1/review response shows all active
+reasons. When an operator resolves via POST /v1/review (e.g. `confirm`),
+the action sets `status=active`, which clears the fact from the review
+queue entirely — regardless of how many reasons were attached.
+
+If a resolved fact still has an underlying issue (e.g. it was confirmed
+out of staleness but still has an unresolved contradiction), the next
+scheduled scan will re-flag it. Specifically:
+
+- **StaleScan re-flag:** If the fact was re-confirmed but its `ttl_days`
+  has not changed, the new `last_confirmed_at` resets the expiry clock.
+  It will not be re-flagged until the new expiry passes.
+- **ConflictScan re-flag:** If `conflict_resolved=false` and the semantic
+  conflict still exists, the fact will be re-flagged on the next conflict
+  scan cycle.
+
+This is intentional — the Pruner is eventually consistent about re-flagging.
+The operator should see the fact again if an unresolved condition persists.
+No single action needs to address all reasons at once.
+
 ### GET /v1/review/stats — Review Queue Summary
 
 Quick dashboard endpoint for agents and operators:
@@ -764,6 +786,13 @@ ragamuffin_pruner_facts_flagged{reason="low_confidence"} 1
 # TYPE ragamuffin_pruner_llm_calls_total counter
 ragamuffin_pruner_llm_calls_total 312
 
+# HELP ragamuffin_pruner_watcher_events_dropped_total Watcher events
+#     dropped by the pruner due to non-blocking fan-out backpressure.
+#     A sustained non-zero rate means the pruner cannot keep up with
+#     the watcher — reduce conflict interval or increase batch sizes.
+# TYPE ragamuffin_pruner_watcher_events_dropped_total counter
+ragamuffin_pruner_watcher_events_dropped_total 0
+
 # HELP ragamuffin_review_queue_size Number of facts pending review.
 # TYPE ragamuffin_review_queue_size gauge
 ragamuffin_review_queue_size 3
@@ -830,7 +859,26 @@ advantage (newer, higher source_type authority, confirmed by more agents),
 the Pruner could auto-resolve without human review. v0.5 requires human
 review for all flags.
 
+### Confidence Decay Curve
+
+The current model uses a hard TTL boundary: facts are `active` until
+expires_at, then `needs_review`. A future version should compute
+`effective_confidence = raw_confidence × decay(time_since_last_confirmed,
+ttl_days)` at query time. This would let agents express both how sure they
+are and how quickly that certainty erodes — independently. The decay curve
+could also influence the review queue sort order ("these facts are closest
+to the edge"). The field structure (ttl_days, expires_at, last_confirmed_at)
+is already in place for this; v0.5 just does not compute the decay.
+
 ### Learning Feedback Loop
+
+When the operator accepts or rejects a flag, that decision could be used
+to tune the Pruner's thresholds. If the operator keeps confirming facts
+with confidence 0.3, the threshold should drift downward. The expected
+feedback path: `confirm`/`reject` action ratios feed back into scan
+parameters (LowConfidenceThreshold, scan intervals) via config reload
+or online adjustment. Not needed for v0.5, but worth documenting so the
+config does not harden around static defaults.
 
 When the operator accepts or rejects a flag, that decision could be used
 to tune the Pruner's thresholds. If the operator keeps confirming facts
