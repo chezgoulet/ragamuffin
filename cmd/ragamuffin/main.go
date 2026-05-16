@@ -213,7 +213,7 @@ func main() {
 
 		// Start indexer
 		idxCtx, idxCancel := context.WithCancel(context.Background())
-		defer idxCancel()
+		idxCancelFuncs = append(idxCancelFuncs, idxCancel)
 		initialDone := make(chan struct{})
 
 		go idx.ProcessEvents(idxCtx, events, initialDone)

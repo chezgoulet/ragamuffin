@@ -414,7 +414,8 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 
 	// Security: prevent path traversal — verify resolved path stays under vault root
 	cleanPath := filepath.Clean(req.TargetPath)
-	fullPath, err := safeVaultPath(s.cfg.VaultPath, cleanPath)
+	vaultPath := s.vaultPathFromContext(r.Context())
+	fullPath, err := safeVaultPath(vaultPath, cleanPath)
 	if err != nil {
 		writeError(w, 400, "INVALID_REQUEST", err.Error())
 		return
@@ -440,7 +441,8 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Direct mode: write to filesystem
-	fullPath = filepath.Join(s.cfg.VaultPath, cleanPath)
+	vaultPath = s.vaultPathFromContext(r.Context())
+	fullPath = filepath.Join(vaultPath, cleanPath)
 
 	if req.Delete {
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
@@ -568,6 +570,12 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+		return
+	}
+
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
 		return
 	}
 

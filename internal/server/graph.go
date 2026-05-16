@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -210,22 +209,27 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 	visited := make(map[string]bool)
 	var queue []fileEntry
 
+	// Single scroll pass: build entity match queue and link map simultaneously
+	fileLinks := make(map[string][]string) // source_file → linked files
 	{
 		var scrollOffset *pb.PointId
 		for {
-			factScrollCtx, factScrollCancel := context.WithTimeout(ctx, 10*time.Second)
-			factPoints, nextOffset, err := qc.Scroll(factScrollCtx, 100, scrollOffset)
-			factScrollCancel()
+			scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
+			points, nextOffset, err := qc.Scroll(scrollCtx, 500, scrollOffset)
+			scrollCancel()
 			if err != nil {
 				break
 			}
-			for _, p := range factPoints {
+			for _, p := range points {
 				if p.GetPayload() == nil {
 					continue
 				}
-				raw, _ := json.Marshal(p.GetPayload())
-				if strings.Contains(string(raw), entity) {
-					if src := p.GetPayload()["source_file"].GetStringValue(); src != "" && !visited[src] {
+
+				src := p.GetPayload()["source_file"].GetStringValue()
+
+				// Entity match: check the text payload field directly
+				if src != "" && !visited[src] {
+					if text := p.GetPayload()["text"].GetStringValue(); text != "" && strings.Contains(text, entity) {
 						visited[src] = true
 						queue = append(queue, fileEntry{path: src, hop: 0})
 						fileID := "file:" + src
@@ -242,38 +246,15 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 						}
 					}
 				}
-			}
-			if nextOffset == nil {
-				break
-			}
-			scrollOffset = nextOffset
-		}
-	}
 
-	// Pre-load source_file → links_to mapping from vault collection (one scroll)
-	fileLinks := make(map[string][]string) // source_file → linked files
-	{
-		var scrollOffset *pb.PointId
-		for {
-			scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
-			points, nextOffset, err := qc.Scroll(scrollCtx, 500, scrollOffset)
-			scrollCancel()
-			if err != nil {
-				break
-			}
-			for _, p := range points {
-				if p.GetPayload() == nil {
-					continue
-				}
-				src := p.GetPayload()["source_file"].GetStringValue()
-				if src == "" {
-					continue
-				}
-				if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
-					for _, linkVal := range linksVal.GetListValue().GetValues() {
-						tgt := linkVal.GetStringValue()
-						if tgt != "" {
-							fileLinks[src] = append(fileLinks[src], tgt)
+				// Link map: collect cross-file references
+				if src != "" {
+					if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
+						for _, linkVal := range linksVal.GetListValue().GetValues() {
+							tgt := linkVal.GetStringValue()
+							if tgt != "" {
+								fileLinks[src] = append(fileLinks[src], tgt)
+							}
 						}
 					}
 				}
@@ -347,7 +328,7 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 
 func displayName(path string) string {
 	ext := filepath.Ext(path)
-	if ext != "" {
+	if ext != "" && ext != path {
 		path = strings.TrimSuffix(path, ext)
 	}
 	path = strings.ReplaceAll(path, "/", " / ")
