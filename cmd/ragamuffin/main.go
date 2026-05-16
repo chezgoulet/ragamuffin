@@ -12,6 +12,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -80,6 +81,12 @@ func main() {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")
 	}
 
+	// ── Initialize event emitter (optional) ──────────────────────────────────
+	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger)
+	if cfg.EventWebhookURL != "" {
+		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
+	}
+
 	// ── Build vault indexers ─────────────────────────────────────────────────
 	idxManager := indexer.NewManager()
 	logPath := ""
@@ -105,6 +112,17 @@ func main() {
 
 			idx := indexer.New(vc.Path, qc, ec, logger.With("vault", name))
 			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+
+			idx.OnFileEvent(func(action, path string) {
+				switch action {
+				case "deleted":
+					emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
+				default:
+					emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+						Path: path, Action: action,
+					})
+				}
+			})
 
 			if err := idxManager.Add(name, idx, qc); err != nil {
 				logger.Error("failed to register vault indexer", "vault", name, "error", err)
@@ -167,6 +185,16 @@ func main() {
 
 		idx := indexer.New(cfg.VaultPath, qc, ec, logger)
 		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+		idx.OnFileEvent(func(action, path string) {
+			switch action {
+			case "deleted":
+				emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
+			default:
+				emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+					Path: path, Action: action,
+				})
+			}
+		})
 		logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
 
 		if err := idxManager.Add("default", idx, qc); err != nil {
@@ -275,6 +303,15 @@ func main() {
 		defer shutdownCancel()
 		httpServer.Shutdown(shutdownCtx)
 	}()
+
+	// Emit startup event
+	emitter.Emit(events.TypeServerStarted, events.ServerStartedData{
+		Version:  server.Version,
+		Commit:   server.Commit,
+		GoVersion: server.GoVersion,
+		Host:     cfg.Host,
+		Port:     cfg.Port,
+	})
 
 	logger.Info("listening", "addr", httpServer.Addr)
 	if err := httpServer.ListenAndServe(); err != http.ErrServerClosed {
