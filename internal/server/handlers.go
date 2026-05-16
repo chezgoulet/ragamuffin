@@ -538,3 +538,35 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, resp)
 }
+
+// ── /reindex ───────────────────────────────────────────────────────────────────
+
+func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+		return
+	}
+
+	// Vault name comes from context (set by withVault middleware)
+	vaultName := vaultFromContext(r.Context())
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	ok := s.indexers.Reindex(vaultName)
+	if !ok {
+		// Check if vault doesn't exist (distinct from already indexing)
+		if s.indexers.Get(vaultName) == nil {
+			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+			return
+		}
+		writeError(w, 409, "CONFLICT", fmt.Sprintf("vault %q is already indexing", vaultName))
+		return
+	}
+
+	writeJSON(w, 202, map[string]interface{}{
+		"status":  "accepted",
+		"vault":   vaultName,
+		"message": "Re-index started. Monitor progress via /health.",
+	})
+}
