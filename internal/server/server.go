@@ -21,6 +21,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
@@ -115,6 +116,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
 	mux.HandleFunc("/vaults", s.withRequestID(s.handleVaults))
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
+
+	// Static file server (catch-all for web UI)
+	staticHandler := http.FileServer(http.FS(web.FS))
+	mux.Handle("/static/", staticHandler)
+	mux.Handle("/", staticHandler)
 
 	if s.cfg.IsMultiTenant() {
 		// Vault-prefixed routes (multi-tenant mode)
