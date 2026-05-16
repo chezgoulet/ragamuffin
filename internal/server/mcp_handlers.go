@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
 
 // ── MCP Tools ──────────────────────────────────────────────────────────────────
@@ -273,6 +274,14 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 		sampleSize = int(v)
 	}
 
+	// Resolve vault path and Qdrant client from context (MCP is global, no vault context)
+	vaultPath := s.vaultPathFromContext(ctx)
+	vaultName := vaultFromContext(ctx)
+	var qc *qdrant.Client
+	if vaultName != "" {
+		qc = s.indexers.GetClient(vaultName)
+	}
+
 	resp := map[string]interface{}{
 		"checks_run": checks,
 	}
@@ -283,7 +292,7 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 	}
 
 	if checkSet["stale"] {
-		staleFiles, err := s.checkStaleness(staleDays)
+		staleFiles, err := s.checkStaleness(vaultPath, staleDays)
 		if err != nil {
 			s.log(ctx).Error("MCP audit: staleness check failed", "error", err)
 		}
@@ -291,12 +300,12 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 	}
 
 	if checkSet["gap"] {
-		gaps := s.checkGaps()
+		gaps := s.checkGaps(vaultPath)
 		resp["gaps"] = gaps
 	}
 
 	if checkSet["duplicate"] {
-		dupes := s.checkDuplicates()
+		dupes := s.checkDuplicates(vaultPath)
 		resp["duplicates"] = dupes
 	}
 
@@ -306,7 +315,7 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 		} else {
 			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 			defer cancel()
-			conflicts, llmCalls := s.checkSemanticConflicts(ctx, sampleSize)
+			conflicts, llmCalls := s.checkSemanticConflicts(ctx, qc, sampleSize)
 			resp["semantic_conflicts"] = conflicts
 			resp["semantic_conflict_llm_calls"] = llmCalls
 		}

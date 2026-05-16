@@ -65,13 +65,14 @@ type Config struct {
 	RateLimitFacts    int
 	RateLimitLogs     int
 	RateLimitSnapshot int
+	RateLimitReindex   int
 
 	// Optional — LLM
 	LLMProvider string
 	LLMBaseURL  string
 	LLMModel    string
 	LLMAPIKey   string
-	LLMTimeout       time.Duration
+	LLMTimeout      time.Duration
 	EventWebhookURL string
 
 	// Optional — Git
@@ -214,6 +215,9 @@ func (c *Config) Validate() []string {
 	if c.RateLimitSnapshot < 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT must be non-negative, got %d", c.RateLimitSnapshot))
 	}
+	if c.RateLimitReindex < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REINDEX must be non-negative, got %d", c.RateLimitReindex))
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -274,13 +278,14 @@ func Load() (*Config, error) {
 		RateLimitFacts:    envInt("RAGAMUFFIN_RATE_LIMIT_FACTS", 30),
 		RateLimitLogs:     envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
+		RateLimitReindex:   envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
 		LLMModel:    os.Getenv("RAGAMUFFIN_LLM_MODEL"),
 		LLMAPIKey:   os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
-		LLMTimeout:       envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
-	EventWebhookURL: os.Getenv("RAGAMUFFIN_EVENT_WEBHOOK_URL"),
+		LLMTimeout:      envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
+		EventWebhookURL: os.Getenv("RAGAMUFFIN_EVENT_WEBHOOK_URL"),
 
 		GitProviderEnabled: envBool("RAGAMUFFIN_GIT_PROVIDER_ENABLED"),
 		GitProvider:        envOrDefault("RAGAMUFFIN_GIT_PROVIDER", "github"),

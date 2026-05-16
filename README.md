@@ -274,6 +274,11 @@ curl -s http://localhost:8000/stats
 
 Returns vault path, indexed file count, total chunks (from Qdrant, authoritative), last indexed time, embedding provider, uptime.
 
+> **Multi-tenant note:** In multi-tenant mode `/v1/facts`, `/v1/logs`, and `/v1/snapshot` are **global** endpoints — they operate on the
+> first-configured vault, not per-vault. Use the vault-prefixed routes
+> (`/vault/{name}/v1/facts`, `/vault/{name}/v1/logs`, `/vault/{name}/v1/snapshot`)
+> for per-vault access.
+
 #### `GET /version` — Build info
 
 ```bash
@@ -405,6 +410,7 @@ Per-endpoint rate limiting via environemnt variables. Disabled by default; enabl
 | `/v1/facts` | `RAGAMUFFIN_RATE_LIMIT_FACTS` | 30 |
 | `/v1/logs` | `RAGAMUFFIN_RATE_LIMIT_LOGS` | 60 |
 | `/v1/snapshot` | `RAGAMUFFIN_RATE_LIMIT_SNAPSHOT` | 5 |
+| `/reindex` | `RAGAMUFFIN_RATE_LIMIT_REINDEX` | 30 |
 
 When rate-limited, responds with `429 Too Many Requests` and a `Retry-After` header.
 

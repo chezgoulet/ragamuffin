@@ -91,12 +91,15 @@ func main() {
 	idxManager := indexer.NewManager()
 	logPath := ""
 
+	// Shutdown control
+	var idxCancelFuncs []context.CancelFunc
+	var watcherDoneChs []chan struct{}
+
 	if cfg.IsMultiTenant() {
 		// Multi-tenant: one indexer + Qdrant connection per vault
 		logger.Info("configuring vault indexers", "count", len(cfg.Vaults))
 
 		var readyChans []chan struct{}
-		var idxCancelFuncs []context.CancelFunc
 
 		for name, vc := range cfg.Vaults {
 			collectionName := fmt.Sprintf("ragamuffin_%s", name)
@@ -136,9 +139,10 @@ func main() {
 			}
 			w := watcher.New(vc.Path, interval, logger.With("vault", name), cfg.WatcherMode)
 			events := make(chan watcher.Event, 100)
-			watcherDone := make(chan struct{})
+			vwDone := make(chan struct{})
+			watcherDoneChs = append(watcherDoneChs, vwDone)
 
-			go w.Watch(events, watcherDone)
+			go w.Watch(events, vwDone)
 
 			// Start indexer for this vault
 			idxCtx, idxCancel := context.WithCancel(context.Background())
@@ -161,15 +165,6 @@ func main() {
 		}
 		logger.Info("all vaults initial indexing complete")
 
-		// Schedule cleanup on shutdown
-		go func() {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
-			for _, cancel := range idxCancelFuncs {
-				cancel()
-			}
-		}()
 
 	} else {
 		// Single-tenant: one indexer, one Qdrant connection
@@ -210,9 +205,10 @@ func main() {
 		}
 		w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
 		events := make(chan watcher.Event, 100)
-		watcherDone := make(chan struct{})
+		swDone := make(chan struct{})
+		watcherDoneChs = append(watcherDoneChs, swDone)
 
-		go w.Watch(events, watcherDone)
+		go w.Watch(events, swDone)
 		logger.Info("watcher started", "interval", interval)
 
 		// Start indexer
@@ -225,17 +221,6 @@ func main() {
 		logger.Info("initial indexing complete")
 
 		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
-
-		// Single-tenant shutdown: close watcher + cancel indexer on signal
-		// httpServer shutdown is handled below (after server creation)
-		go func() {
-			sigCh := make(chan os.Signal, 1)
-			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-			<-sigCh
-			logger.Info("shutting down watcher/indexer...")
-			close(watcherDone)
-			idxCancel()
-		}()
 	}
 
 	// ── Initialize git provider (optional) ───────────────────────────────────
@@ -293,12 +278,24 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Graceful httpServer shutdown (works for single-tenant and multi-tenant)
+	// Unified signal handler — sequences: cancel indexers → close watchers → shutdown HTTP server
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		sigCh := make(chan os.Signal, 1)
-		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
 		logger.Info("shutting down...")
+
+		// 1. Cancel all indexers (stopping in-flight indexing)
+		for _, cancel := range idxCancelFuncs {
+			cancel()
+		}
+
+		// 2. Close all watcher event channels (no new events)
+		for _, ch := range watcherDoneChs {
+			close(ch)
+		}
+
+		// 3. Graceful HTTP server drain
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		httpServer.Shutdown(shutdownCtx)

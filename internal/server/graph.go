@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -199,11 +200,8 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 		Label: entity,
 	}
 
-	// Find files containing this entity from facts collection
-	factScrollCtx, factScrollCancel := context.WithTimeout(ctx, 10*time.Second)
-	factPoints, _, err := s.facts.Scroll(factScrollCtx, 100, nil)
-	factScrollCancel()
-
+	// Find files containing this entity from vault collection
+	// Scroll entire vault collection, search payload for entity match
 	type fileEntry struct {
 		path string
 		hop  int
@@ -212,34 +210,82 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 	visited := make(map[string]bool)
 	var queue []fileEntry
 
-	if err == nil {
-		for _, p := range factPoints {
-			if p.GetPayload() == nil {
-				continue
+	{
+		var scrollOffset *pb.PointId
+		for {
+			factScrollCtx, factScrollCancel := context.WithTimeout(ctx, 10*time.Second)
+			factPoints, nextOffset, err := qc.Scroll(factScrollCtx, 100, scrollOffset)
+			factScrollCancel()
+			if err != nil {
+				break
 			}
-			raw, _ := json.Marshal(p.GetPayload())
-			if strings.Contains(string(raw), entity) {
-				if src := p.GetPayload()["source_file"].GetStringValue(); src != "" && !visited[src] {
-					visited[src] = true
-					queue = append(queue, fileEntry{path: src, hop: 0})
-					fileID := "file:" + src
-					nodes[fileID] = graphNode{
-						ID:    fileID,
-						Type:  "file",
-						Label: displayName(src),
-					}
-					k := edgeKey(entityID, fileID, "contains")
-					edges[k] = graphEdge{
-						Source:       fileID,
-						Target:       entityID,
-						Relationship: "contains",
+			for _, p := range factPoints {
+				if p.GetPayload() == nil {
+					continue
+				}
+				raw, _ := json.Marshal(p.GetPayload())
+				if strings.Contains(string(raw), entity) {
+					if src := p.GetPayload()["source_file"].GetStringValue(); src != "" && !visited[src] {
+						visited[src] = true
+						queue = append(queue, fileEntry{path: src, hop: 0})
+						fileID := "file:" + src
+						nodes[fileID] = graphNode{
+							ID:    fileID,
+							Type:  "file",
+							Label: displayName(src),
+						}
+						k := edgeKey(entityID, fileID, "contains")
+						edges[k] = graphEdge{
+							Source:       fileID,
+							Target:       entityID,
+							Relationship: "contains",
+						}
 					}
 				}
 			}
+			if nextOffset == nil {
+				break
+			}
+			scrollOffset = nextOffset
 		}
 	}
 
-	// BFS traversal up to depth
+	// Pre-load source_file → links_to mapping from vault collection (one scroll)
+	fileLinks := make(map[string][]string) // source_file → linked files
+	{
+		var scrollOffset *pb.PointId
+		for {
+			scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
+			points, nextOffset, err := qc.Scroll(scrollCtx, 500, scrollOffset)
+			scrollCancel()
+			if err != nil {
+				break
+			}
+			for _, p := range points {
+				if p.GetPayload() == nil {
+					continue
+				}
+				src := p.GetPayload()["source_file"].GetStringValue()
+				if src == "" {
+					continue
+				}
+				if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
+					for _, linkVal := range linksVal.GetListValue().GetValues() {
+						tgt := linkVal.GetStringValue()
+						if tgt != "" {
+							fileLinks[src] = append(fileLinks[src], tgt)
+						}
+					}
+				}
+			}
+			if nextOffset == nil {
+				break
+			}
+			scrollOffset = nextOffset
+		}
+	}
+
+	// BFS traversal up to depth using pre-loaded map
 	for len(queue) > 0 && len(nodes) < limit {
 		current := queue[0]
 		queue = queue[1:]
@@ -248,53 +294,33 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 			continue
 		}
 
-		scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
-		points, _, err := qc.Scroll(scrollCtx, 100, nil)
-		scrollCancel()
-		if err != nil {
-			continue
-		}
-
-		for _, p := range points {
-			if p.GetPayload() == nil {
+		for _, targetPath := range fileLinks[current.path] {
+			if targetPath == "" || visited[targetPath] {
 				continue
 			}
-			sourceFile := p.GetPayload()["source_file"].GetStringValue()
-			if sourceFile != current.path {
-				continue
+			visited[targetPath] = true
+
+			targetID := "file:" + targetPath
+			nodes[targetID] = graphNode{
+				ID:    targetID,
+				Type:  "file",
+				Label: displayName(targetPath),
 			}
 
-			if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
-				for _, linkVal := range linksVal.GetListValue().GetValues() {
-					targetPath := linkVal.GetStringValue()
-					if targetPath == "" || visited[targetPath] {
-						continue
-					}
-					visited[targetPath] = true
+			currentFileID := "file:" + current.path
+			k := edgeKey(currentFileID, targetID, "links_to")
+			edges[k] = graphEdge{
+				Source:       currentFileID,
+				Target:       targetID,
+				Relationship: "links_to",
+			}
 
-					targetID := "file:" + targetPath
-					nodes[targetID] = graphNode{
-						ID:    targetID,
-						Type:  "file",
-						Label: displayName(targetPath),
-					}
+			if current.hop+1 < depth {
+				queue = append(queue, fileEntry{path: targetPath, hop: current.hop + 1})
+			}
 
-					currentFileID := "file:" + current.path
-					k := edgeKey(currentFileID, targetID, "links_to")
-					edges[k] = graphEdge{
-						Source:       currentFileID,
-						Target:       targetID,
-						Relationship: "links_to",
-					}
-
-					if current.hop+1 < depth {
-						queue = append(queue, fileEntry{path: targetPath, hop: current.hop + 1})
-					}
-
-					if len(nodes) >= limit {
-						break
-					}
-				}
+			if len(nodes) >= limit {
+				break
 			}
 		}
 	}
@@ -320,8 +346,9 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
 
 func displayName(path string) string {
-	if idx := strings.LastIndex(path, "."); idx >= 0 {
-		path = path[:idx]
+	ext := filepath.Ext(path)
+	if ext != "" {
+		path = strings.TrimSuffix(path, ext)
 	}
 	path = strings.ReplaceAll(path, "/", " / ")
 	path = strings.ReplaceAll(path, "_", " ")

@@ -111,5 +111,8 @@ func Middleware(auth Authenticator) func(http.Handler) http.Handler {
 type NoneAuthenticator struct{}
 
 func (a *NoneAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
+	if r == nil {
+		return nil, fmt.Errorf("nil *http.Request passed to NoneAuthenticator")
+	}
 	return &Claims{Access: []string{"read", "write"}}, nil
 }

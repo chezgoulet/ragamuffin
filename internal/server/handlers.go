@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
@@ -70,9 +72,17 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		fileCount, _, lastIndexed, _, _, _ = idx.Stats()
 	}
 
-	// Get accurate chunk count from Qdrant (not in-process counter)
+	// Get accurate chunk count from per-vault Qdrant client
+	vaultName := vaultFromContext(r.Context())
+	var qc *qdrant.Client
+	if vaultName != "" {
+		qc = s.indexers.GetClient(vaultName)
+	}
+	if qc == nil {
+		qc = s.qdrant
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	chunkCount, err := s.qdrant.Count(ctx)
+	chunkCount, err := qc.Count(ctx)
 	cancel()
 	chunkReliable := true
 	if err != nil {
@@ -374,6 +384,12 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
 	var req draftRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10 MB for draft
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -503,9 +519,11 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		checkSet[c] = true
 	}
 
+	vaultPath := s.vaultPathFromContext(r.Context())
+
 	// ── Staleness check ──
 	if checkSet["stale"] {
-		staleFiles, err := s.checkStaleness(req.StaleDays)
+		staleFiles, err := s.checkStaleness(vaultPath, req.StaleDays)
 		if err != nil {
 			s.log(ctx).Error("audit: staleness check failed", "error", err)
 		}
@@ -514,13 +532,13 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 	// ── Gap check ──
 	if checkSet["gap"] {
-		gaps := s.checkGaps()
+		gaps := s.checkGaps(vaultPath)
 		resp["gaps"] = gaps
 	}
 
 	// ── Duplicate check ──
 	if checkSet["duplicate"] {
-		dupes := s.checkDuplicates()
+		dupes := s.checkDuplicates(vaultPath)
 		resp["duplicates"] = dupes
 	}
 
@@ -530,7 +548,13 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			resp["semantic_conflicts"] = []interface{}{}
 			resp["llm_calls"] = 0
 		} else {
-			conflicts, llmCalls := s.checkSemanticConflicts(ctx, req.SampleSize)
+			// Use vault-specific Qdrant client
+			vaultName := vaultFromContext(r.Context())
+			var auditQc *qdrant.Client
+			if vaultName != "" {
+				auditQc = s.indexers.GetClient(vaultName)
+			}
+			conflicts, llmCalls := s.checkSemanticConflicts(ctx, auditQc, req.SampleSize)
 			resp["semantic_conflicts"] = conflicts
 			resp["semantic_conflict_llm_calls"] = llmCalls
 		}
