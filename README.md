@@ -303,6 +303,95 @@ The MCP tools mirror the REST endpoints above. Client disconnect cancels in-flig
 
 ---
 
+### v0.4 Endpoints
+
+#### `GET /vaults` — List configured vaults (v0.4)
+
+```bash
+curl -s http://localhost:8000/vaults
+```
+
+In single-tenant mode, returns a single "default" vault. In multi-tenant mode, returns all configured vaults with status.
+
+#### `GET /graph` — Knowledge graph (v0.4)
+
+```bash
+# Full graph
+curl -s http://localhost:8000/graph
+
+# Entity-focused
+curl -s 'http://localhost:8000/graph?entity=Qdrant&depth=2'
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `entity` | string | — | Focus on a specific entity |
+| `depth` | int | 1 | Graph traversal depth (0–3) |
+| `limit` | int | 50 | Max nodes to return (1–200) |
+
+Returns nodes (files and entities) and edges (contains, links_to).
+
+#### `POST /reindex` — Full reindex (v0.4)
+
+```bash
+curl -s -X POST http://localhost:8000/reindex
+```
+
+Triggers a full re-index of the vault. Non-blocking — returns immediately and reindex runs asynchronously.
+
+### Multi-tenant Mode (v0.4)
+
+When `RAGAMUFFIN_VAULTS` is set, all content endpoints are prefixed with `/vault/{name}/`:
+
+```bash
+curl -s 'http://localhost:8000/vault/docs/recall?query=deploy'
+curl -s 'http://localhost:8000/vault/docs/graph'
+```
+
+Available vault-prefixed endpoints:
+- `/vault/{name}/recall`
+- `/vault/{name}/ask`
+- `/vault/{name}/draft`
+- `/vault/{name}/audit`
+- `/vault/{name}/v1/facts`
+- `/vault/{name}/v1/logs`
+- `/vault/{name}/v1/snapshot`
+- `/vault/{name}/reindex`
+- `/vault/{name}/graph`
+
+### Authentication (v0.4)
+
+Three modes controlled by `RAGAMUFFIN_AUTH_MODE`:
+
+| Mode | Description |
+|---|---|
+| `none` | No authentication (default) |
+| `api_key` | Static API keys from environment variables |
+| `jwt` | JWT tokens validated via JWKS endpoint |
+
+**API Key mode:**
+- `RAGAMUFFIN_AUTH_READ_KEY` — global read key
+- `RAGAMUFFIN_AUTH_WRITE_KEY` — global write key
+- `RAGAMUFFIN_AUTH_READ_KEY_{VAULT}` — per-vault scoped read key
+- `RAGAMUFFIN_AUTH_WRITE_KEY_{VAULT}` — per-vault scoped write key
+
+**JWT mode:**
+- `RAGAMUFFIN_AUTH_JWT_ISSUER` — expected JWT issuer
+- `RAGAMUFFIN_AUTH_JWT_AUDIENCE` — expected audience
+- `RAGAMUFFIN_AUTH_JWT_JWKS_URL` — JWKS endpoint for key discovery
+
+JWT must include a `ragamuffin` claim with an `access` field (`read` or `read_write`).
+
+### Web UI (v0.4)
+
+Ragamuffin ships an embedded web UI served at the root path:
+- `GET /` — SPA dashboard with Search, Browse, Audit, and Graph pages
+- `GET /static/*` — Static assets (CSS, JS)
+
+API routes take priority over static file serving.
+
+---
+
 ## Rate Limits
 
 Per-endpoint rate limiting via environemnt variables. Disabled by default; enable with `RAGAMUFFIN_RATE_LIMIT_ENABLED=true`.

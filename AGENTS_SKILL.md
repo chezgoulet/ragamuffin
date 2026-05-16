@@ -169,6 +169,75 @@ Returns stale files, semantic conflicts (requires LLM), gaps, and duplicates.
 2. Call `/v1/snapshot` to back up the vault
 3. For git-backed vaults, use `/draft` with `mode: "pr"` for human review
 
+## v0.4 Endpoints
+
+### Multi-Tenant Vault Routing
+
+In multi-tenant mode (set `RAGAMUFFIN_VAULTS`), all content endpoints are
+prefixed with `/vault/{name}/`:
+
+```bash
+curl -s 'http://ragamuffin:8000/vault/docs/recall?query=deploy'
+curl -s 'http://ragamuffin:8000/vault/docs/audit'
+```
+
+Available vault-prefixed endpoints:
+- `/vault/{name}/recall` — semantic search in a specific vault
+- `/vault/{name}/ask` — synthesized answer from a specific vault
+- `/vault/{name}/draft` — write files to a specific vault
+- `/vault/{name}/audit` — check health of a specific vault
+- `/vault/{name}/v1/facts` — structured facts per vault
+- `/vault/{name}/v1/logs` — log entries per vault
+- `/vault/{name}/v1/snapshot` — download a vault as tarball
+- `/vault/{name}/reindex` — trigger re-index of a vault
+- `/vault/{name}/graph` — knowledge graph for a vault
+
+### Vault Discovery
+
+```bash
+curl -s http://ragamuffin:8000/vaults | jq .
+# Returns list of vaults with name, status, and file counts
+```
+
+### Knowledge Graph
+
+```bash
+# Full graph
+curl -s http://ragamuffin:8000/graph | jq .
+
+# Entity-focused with traversal depth
+curl -s 'http://ragamuffin:8000/graph?entity=Qdrant&depth=2'
+```
+
+Returns nodes (files and entities) and edges (contains, links_to).
+
+### Reindex
+
+```bash
+curl -s -X POST http://ragamuffin:8000/reindex
+# Returns immediately — reindex runs asynchronously
+```
+
+For multi-tenant mode:
+```bash
+curl -s -X POST http://ragamuffin:8000/vault/docs/reindex
+```
+
+### Authentication
+
+Set `RAGAMUFFIN_AUTH_MODE` to one of:
+- `none` — no auth (default)
+- `api_key` — static keys via `RAGAMUFFIN_AUTH_READ_KEY` / `RAGAMUFFIN_AUTH_WRITE_KEY`
+- `jwt` — JWT with JWKS verification
+
+When auth is enabled, agents must include an `Authorization: Bearer <key>` header.
+
+### Web UI
+
+A web dashboard is served at the root path:
+- `GET /` — SPA dashboard with Search, Browse, Audit, Graph pages
+- Search, Browse, Audit, and Graph pages all functional via REST API calls
+
 ## Configuration for Agents
 
 The following env vars are available to agents composing Ragamuffin deployment:
@@ -185,6 +254,15 @@ RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1  # Embedding base URL (i
 # LiteLLM proxy (http://litellm:4000):
 #   LLM_BASE_URL=http://litellm:4000  EMBEDDING_BASE_URL=http://litellm:4000/v1
 RAGAMUFFIN_GIT_TOKEN=ghp_...                        # For PR mode (optional)
+
+# v0.4 Multi-tenancy & Auth
+RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code   # Multi-tenant vaults
+RAGAMUFFIN_AUTH_MODE=none                                   # none | api_key | jwt
+RAGAMUFFIN_AUTH_READ_KEY=sk-...                             # Global read key
+RAGAMUFFIN_AUTH_WRITE_KEY=sk-...                            # Global write key
+RAGAMUFFIN_AUTH_JWT_ISSUER=https://auth.example.com         # JWT issuer
+RAGAMUFFIN_AUTH_JWT_AUDIENCE=ragamuffin                     # Expected audience
+RAGAMUFFIN_AUTH_JWT_JWKS_URL=https://auth.example.com/.well-known/jwks.json  # JWKS endpoint
 ```
 
 ## Error Handling
@@ -221,4 +299,5 @@ curl -s http://ragamuffin:8000/stats
 # Ragamuffin doesn't have a discovery endpoint — this document IS the discovery.
 # The full API surface is: /recall /ask /draft /audit /v1/facts /v1/logs
 # /v1/snapshot /health /stats /version /metrics /mcp
+# /vaults /graph /reindex /vault/{name}/... (v0.4)
 ```
