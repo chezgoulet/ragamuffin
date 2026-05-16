@@ -44,7 +44,7 @@ type Server struct {
 	facts       *qdrant.Client
 	embedder    *embedding.Client
 	llm         *llm.Client
-	indexer     *indexer.Indexer
+	indexers    *indexer.Manager
 	gitProvider git.Provider
 	ratelimit   *ratelimit.Limiter
 	watcher     watcher.Watcher
@@ -57,14 +57,14 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idx *indexer.Indexer, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
 		facts:         factsQc,
 		embedder:      ec,
 		llm:           lm,
-		indexer:       idx,
+		indexers:      idxm,
 		gitProvider:   gp,
 		ratelimit:     rl,
 		watcher:       w,
@@ -212,6 +212,26 @@ func newRequestID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// indexerFor returns the indexer for the vault in context, or the first/only
+// indexer in single-tenant mode. Returns nil if no indexer is available.
+func (s *Server) indexerFor(ctx context.Context) *indexer.Indexer {
+	if s.indexers == nil {
+		return nil
+	}
+	name := vaultFromContext(ctx)
+	if name != "" {
+		if idx := s.indexers.Get(name); idx != nil {
+			return idx
+		}
+		return nil
+	}
+	// Single-tenant or no vault context: use first registered indexer
+	for _, name := range s.indexers.VaultNames() {
+		return s.indexers.Get(name)
+	}
+	return nil
+}
+
 // log returns a logger with the request ID from ctx attached.
 func (s *Server) log(ctx context.Context) *slog.Logger {
 	if id := requestID(ctx); id != "" {
@@ -321,11 +341,18 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Multi-tenant: list all configured vaults with live stats
-	fileCount, chunkCount, _, lastIndexed, indexing, _ := s.indexer.Stats()
+	idx := s.indexerFor(r.Context())
+	var fileCount, chunkCount int
+	var lastIndexed time.Time
+	var indexing bool
+	if idx != nil {
+		fileCount, chunkCount, lastIndexed, indexing, _, _ = idx.Stats()
+	}
 
 	var lastIndexedStr *string
-	if lastIndexed != "" {
-		lastIndexedStr = &lastIndexed
+	if !lastIndexed.IsZero() {
+		formatted := lastIndexed.Format(time.RFC3339)
+		lastIndexedStr = &formatted
 	}
 
 	var vaults []map[string]interface{}
@@ -413,7 +440,11 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	fileCount, chunkCount, _, _, _, _ := s.indexer.Stats()
+	idx := s.indexerFor(r.Context())
+	var fileCount, chunkCount int
+	if idx != nil {
+		fileCount, chunkCount, _, _, _, _ = idx.Stats()
+	}
 
 	var b strings.Builder
 
