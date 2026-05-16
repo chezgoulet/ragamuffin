@@ -100,3 +100,13 @@ func (m *Manager) Stats(name string) VaultStats {
 		Indexing:    ing,
 	}
 }
+
+// Reindex triggers a full re-index for a vault. Returns false if already queued
+// or the vault does not exist.
+func (m *Manager) Reindex(name string) bool {
+	idx := m.Get(name)
+	if idx == nil {
+		return false
+	}
+	return idx.Reindex()
+}
