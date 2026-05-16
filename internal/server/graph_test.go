@@ -68,8 +68,16 @@ func TestDisplayName_EmptyString(t *testing.T) {
 
 func TestDisplayName_Dotfile(t *testing.T) {
 	got := displayName(".gitignore")
-	// filepath.Ext(".gitignore") returns ".gitignore", so displayName strips it
-	want := ""
+	// Dotfiles are returned as-is (guard prevents stripping entire filename as extension)
+	want := ".gitignore"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestDisplayName_DotEnv(t *testing.T) {
+	got := displayName(".env")
+	want := ".env"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

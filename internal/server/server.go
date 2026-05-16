@@ -120,7 +120,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
-	mux.Handle("/static/", staticHandler)
+	mux.Handle("/static/", s.with404Check(staticHandler))
 	mux.Handle("/", s.with404Check(staticHandler))
 
 	if s.cfg.IsMultiTenant() {
