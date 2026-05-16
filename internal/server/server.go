@@ -160,13 +160,21 @@ func (s *Server) BuildAuth() auth.Authenticator {
 	case auth.ModeNone:
 		return &auth.NoneAuthenticator{}
 	case auth.ModeAPIKey:
-		// Issue #101: implement API key authenticator
-		s.logger.Warn("api_key auth not yet implemented, falling back to none")
-		return &auth.NoneAuthenticator{}
+		s.logger.Info("api_key auth enabled")
+		return auth.NewAPIKeyAuthenticator(
+			s.cfg.AuthReadKey,
+			s.cfg.AuthWriteKey,
+			s.indexers.VaultNames(),
+			s.cfg.IsMultiTenant(),
+		)
 	case auth.ModeJWT:
-		// Issue #102: implement JWT authenticator
-		s.logger.Warn("jwt auth not yet implemented, falling back to none")
-		return &auth.NoneAuthenticator{}
+		s.logger.Info("jwt auth enabled", "issuer", s.cfg.AuthJWTIssuer)
+		return auth.NewJWTAuthenticator(
+			s.cfg.AuthJWTIssuer,
+			s.cfg.AuthJWTAudience,
+			s.cfg.AuthJWKSURL,
+			s.logger,
+		)
 	default:
 		return &auth.NoneAuthenticator{}
 	}

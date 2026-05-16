@@ -85,7 +85,12 @@ type Config struct {
 	AutoThreshold   float64
 
 	// Optional — Auth
-	AuthMode string
+	AuthMode        string
+	AuthReadKey     string
+	AuthWriteKey    string
+	AuthJWTIssuer   string
+	AuthJWTAudience string
+	AuthJWKSURL     string
 
 	// Optional — Logging
 	LogLevel string
@@ -280,7 +285,12 @@ func Load() (*Config, error) {
 		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
-		AuthMode: envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
+		AuthMode:        envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
+		AuthReadKey:     os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
+		AuthWriteKey:    os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
+		AuthJWTIssuer:   os.Getenv("RAGAMUFFIN_AUTH_JWT_ISSUER"),
+		AuthJWTAudience: os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
+		AuthJWKSURL:     os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
