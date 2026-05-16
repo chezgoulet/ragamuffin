@@ -8,10 +8,28 @@ import (
 	"time"
 )
 
+// VaultConfig holds per-vault configuration, including overrides.
+type VaultConfig struct {
+	Path                 string
+	ChunkStrategy        string
+	ChunkMaxTokens       int
+	ChunkFixedSize       int
+	ChunkFixedOverlap    int
+	EmbeddingModel       string
+	EmbeddingDims        int
+	AuditEntityExtraction bool
+	AuditEntityLLM       string
+}
+
 // Config holds all Ragamuffin configuration, parsed from environment variables.
 type Config struct {
+	// Required (single-tenant mode)
+	VaultPath string
+
+	// Multi-tenancy — mutually exclusive with VaultPath
+	Vaults map[string]*VaultConfig // vault name → config (v0.4+)
+
 	// Required
-	VaultPath       string
 	QdrantURL       string
 	EmbeddingAPIKey string
 
@@ -22,7 +40,7 @@ type Config struct {
 
 	// Optional — Watcher
 	WatchInterval string
-	WatcherMode    string
+	WatcherMode   string
 
 	// Optional — Embedding
 	EmbeddingProvider string
@@ -31,6 +49,7 @@ type Config struct {
 	EmbeddingDims     int
 
 	// Optional — Chunking
+	ChunkStrategy  string
 	ChunkMaxTokens int
 
 	// Optional — Server
@@ -38,13 +57,13 @@ type Config struct {
 	Host string
 
 	// Optional — Rate Limiting
-	RateLimitEnabled bool
-	RateLimitRecall  int
-	RateLimitAsk     int
-	RateLimitDraft   int
-	RateLimitAudit   int
-	RateLimitFacts   int
-	RateLimitLogs    int
+	RateLimitEnabled  bool
+	RateLimitRecall   int
+	RateLimitAsk      int
+	RateLimitDraft    int
+	RateLimitAudit    int
+	RateLimitFacts    int
+	RateLimitLogs     int
 	RateLimitSnapshot int
 
 	// Optional — LLM
@@ -63,10 +82,15 @@ type Config struct {
 
 	// Optional — Audit / Tuning
 	AuditSampleSize int
-	AutoThreshold  float64
+	AutoThreshold   float64
 
 	// Optional — Logging
 	LogLevel string
+}
+
+// IsMultiTenant returns true when multi-tenancy is active (RAGAMUFFIN_VAULTS set).
+func (c *Config) IsMultiTenant() bool {
+	return len(c.Vaults) > 0
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -79,16 +103,55 @@ func (c *Config) HasGit() bool {
 	return c.GitProviderEnabled && c.GitToken != ""
 }
 
+func validVaultName(name string) bool {
+	if len(name) == 0 || len(name) > 32 {
+		return false
+	}
+	for i, r := range name {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '-' && i > 0 && i < len(name)-1 {
+			continue // hyphens allowed, but not leading or trailing
+		}
+		return false
+	}
+	return true
+}
+
 // Validate checks configuration and returns a list of fatal errors.
 // Returns nil if the configuration is valid.
 func (c *Config) Validate() []string {
 	var errs []string
 
-	// Vault path must exist
-	if info, err := os.Stat(c.VaultPath); err != nil {
-		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VAULT_PATH %q does not exist or is not readable", c.VaultPath))
-	} else if !info.IsDir() {
-		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VAULT_PATH %q is not a directory", c.VaultPath))
+	// Single-tenant vs multi-tenant: must pick one
+	if c.VaultPath != "" && c.IsMultiTenant() {
+		errs = append(errs, "RAGAMUFFIN_VAULT_PATH and RAGAMUFFIN_VAULTS are mutually exclusive — set one or the other")
+	} else if c.IsMultiTenant() {
+		// Multi-tenant: validate all vault paths exist
+		for name, vc := range c.Vaults {
+			if !validVaultName(name) {
+				errs = append(errs, fmt.Sprintf("invalid vault name %q: must be lowercase alphanumeric with hyphens, max 32 chars", name))
+				continue
+			}
+			if info, err := os.Stat(vc.Path); err != nil {
+				errs = append(errs, fmt.Sprintf("vault %q path %q does not exist or is not readable", name, vc.Path))
+			} else if !info.IsDir() {
+				errs = append(errs, fmt.Sprintf("vault %q path %q is not a directory", name, vc.Path))
+			}
+		}
+	} else if c.VaultPath != "" {
+		// Single-tenant: vault path must exist
+		if info, err := os.Stat(c.VaultPath); err != nil {
+			errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VAULT_PATH %q does not exist or is not readable", c.VaultPath))
+		} else if !info.IsDir() {
+			errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VAULT_PATH %q is not a directory", c.VaultPath))
+		}
+	} else {
+		errs = append(errs, "must set either RAGAMUFFIN_VAULT_PATH (single-tenant) or RAGAMUFFIN_VAULTS (multi-tenant)")
 	}
 
 	// Qdrant URL must be parseable
@@ -96,8 +159,8 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_QDRANT_URL %q is not a valid URL: %v", c.QdrantURL, err))
 	}
 
-	// Embedding dims must be positive
-	if c.EmbeddingDims <= 0 {
+	// Embedding dims must be positive (only valid for single-tenant or instance-level)
+	if !c.IsMultiTenant() && c.EmbeddingDims <= 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_EMBEDDING_DIMS must be positive, got %d", c.EmbeddingDims))
 	}
 
@@ -129,7 +192,7 @@ func (c *Config) Validate() []string {
 	if c.RateLimitAudit < 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_AUDIT must be non-negative, got %d", c.RateLimitAudit))
 	}
-		if c.FactsVectorSize == 0 {
+	if c.FactsVectorSize == 0 {
 		errs = append(errs, "RAGAMUFFIN_FACTS_VECTOR_SIZE must be positive, got 0")
 	}
 	if c.RateLimitFacts < 0 {
@@ -157,19 +220,15 @@ func parseURL(raw string) (interface{}, error) {
 }
 
 // Load reads configuration from environment variables with defaults.
-// Returns an error if any required variable is unset.
+// RAGAMUFFIN_VAULT_PATH (single-tenant) and RAGAMUFFIN_VAULTS (multi-tenant)
+// are mutually exclusive. One must be set.
 func Load() (*Config, error) {
-	vaultPath, err := requireEnv("RAGAMUFFIN_VAULT_PATH")
-	if err != nil {
-		return nil, err
-	}
 	qdrantURL, err := requireEnv("RAGAMUFFIN_QDRANT_URL")
 	if err != nil {
 		return nil, err
 	}
 
-	return &Config{
-		VaultPath:       vaultPath,
+	cfg := &Config{
 		QdrantURL:       qdrantURL,
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
 
@@ -189,13 +248,13 @@ func Load() (*Config, error) {
 		Port: envOrDefault("RAGAMUFFIN_PORT", "8000"),
 		Host: envOrDefault("RAGAMUFFIN_HOST", "0.0.0.0"),
 
-		RateLimitEnabled: envBool("RAGAMUFFIN_RATE_LIMIT_ENABLED"),
-		RateLimitRecall:  envInt("RAGAMUFFIN_RATE_LIMIT_RECALL", 60),
-		RateLimitAsk:     envInt("RAGAMUFFIN_RATE_LIMIT_ASK", 10),
-		RateLimitDraft:   envInt("RAGAMUFFIN_RATE_LIMIT_DRAFT", 30),
-		RateLimitAudit:   envInt("RAGAMUFFIN_RATE_LIMIT_AUDIT", 5),
-		RateLimitFacts:   envInt("RAGAMUFFIN_RATE_LIMIT_FACTS", 30),
-		RateLimitLogs:    envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
+		RateLimitEnabled:  envBool("RAGAMUFFIN_RATE_LIMIT_ENABLED"),
+		RateLimitRecall:   envInt("RAGAMUFFIN_RATE_LIMIT_RECALL", 60),
+		RateLimitAsk:      envInt("RAGAMUFFIN_RATE_LIMIT_ASK", 10),
+		RateLimitDraft:    envInt("RAGAMUFFIN_RATE_LIMIT_DRAFT", 30),
+		RateLimitAudit:    envInt("RAGAMUFFIN_RATE_LIMIT_AUDIT", 5),
+		RateLimitFacts:    envInt("RAGAMUFFIN_RATE_LIMIT_FACTS", 30),
+		RateLimitLogs:     envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
@@ -213,7 +272,81 @@ func Load() (*Config, error) {
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
 		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
-	}, nil
+	}
+
+	// Parse multi-tenancy if RAGAMUFFIN_VAULTS is set
+	vaultsRaw := os.Getenv("RAGAMUFFIN_VAULTS")
+	if vaultsRaw != "" {
+		vaults := make(map[string]*VaultConfig)
+		for _, entry := range strings.Split(vaultsRaw, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry == "" {
+				continue
+			}
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return nil, fmt.Errorf("invalid vault entry %q in RAGAMUFFIN_VAULTS: expected name:path", entry)
+			}
+			name := strings.TrimSpace(parts[0])
+			path := strings.TrimSpace(parts[1])
+			if _, exists := vaults[name]; exists {
+				return nil, fmt.Errorf("duplicate vault name %q in RAGAMUFFIN_VAULTS", name)
+			}
+			vc := &VaultConfig{Path: path}
+
+			// Parse per-vault overrides: RAGAMUFFIN_VAULT_{NAME}_{SETTING}
+			prefix := fmt.Sprintf("RAGAMUFFIN_VAULT_%s_", strings.ToUpper(name))
+			for _, e := range os.Environ() {
+				if !strings.HasPrefix(e, prefix) {
+					continue
+				}
+				kv := strings.SplitN(e, "=", 2)
+				if len(kv) != 2 {
+					continue
+				}
+				key := strings.TrimPrefix(kv[0], prefix)
+				val := kv[1]
+				switch key {
+				case "CHUNK_STRATEGY":
+					vc.ChunkStrategy = val
+				case "CHUNK_MAX_TOKENS":
+					if n, err := strconv.Atoi(val); err == nil {
+						vc.ChunkMaxTokens = n
+					}
+				case "CHUNK_FIXED_SIZE":
+					if n, err := strconv.Atoi(val); err == nil {
+						vc.ChunkFixedSize = n
+					}
+				case "CHUNK_FIXED_OVERLAP":
+					if n, err := strconv.Atoi(val); err == nil {
+						vc.ChunkFixedOverlap = n
+					}
+				case "EMBEDDING_MODEL":
+					vc.EmbeddingModel = val
+				case "EMBEDDING_DIMS":
+					if n, err := strconv.Atoi(val); err == nil {
+						vc.EmbeddingDims = n
+					}
+				case "AUDIT_ENTITY_EXTRACTION":
+					vc.AuditEntityExtraction = val == "true" || val == "1"
+				case "AUDIT_ENTITY_LLM":
+					vc.AuditEntityLLM = val
+				}
+			}
+
+			vaults[name] = vc
+		}
+		cfg.Vaults = vaults
+	} else {
+		// Single-tenant mode
+		vaultPath, err := requireEnv("RAGAMUFFIN_VAULT_PATH")
+		if err != nil {
+			return nil, err
+		}
+		cfg.VaultPath = vaultPath
+	}
+
+	return cfg, nil
 }
 
 func requireEnv(key string) (string, error) {
