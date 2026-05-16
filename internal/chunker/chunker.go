@@ -15,6 +15,7 @@ type Chunk struct {
 	Header     string
 	ChunkIndex int
 	UpdatedAt  time.Time
+	LinksTo    []string // wikilinks [[path]] and markdown links [text](path) within this chunk
 }
 
 // Options configures chunking behavior.
@@ -58,6 +59,7 @@ func chunkMarkdown(content, sourcePath string, modTime time.Time) []Chunk {
 				Header:     currentHeader,
 				ChunkIndex: chunkIndex,
 				UpdatedAt:  modTime,
+				LinksTo:    extractLinks(text),
 			})
 			chunkIndex++
 		}
@@ -236,4 +238,83 @@ func splitSentences(text string) []string {
 		result = append(result, text)
 	}
 	return result
+}
+
+// extractLinks parses wikilinks and local markdown links from text.
+// Returns deduplicated, cleaned link targets.
+// External URLs (http://, https://) are excluded.
+func extractLinks(text string) []string {
+	seen := make(map[string]struct{})
+	var links []string
+
+	// Parse wikilinks: [[path/to/file]]
+	runes := []rune(text)
+	for i := 0; i < len(runes)-1; i++ {
+		if runes[i] == '[' && i+1 < len(runes) && runes[i+1] == '[' {
+			// Find the closing ]] 
+			end := i + 2
+			for end < len(runes)-1 && !(runes[end] == ']' && runes[end+1] == ']') {
+				end++
+			}
+			if end+1 < len(runes) && runes[end] == ']' && runes[end+1] == ']' {
+				content := string(runes[i+2 : end])
+				// Support aliases: [[target|display]]
+				if pipeIdx := strings.Index(content, "|"); pipeIdx >= 0 {
+					content = content[:pipeIdx]
+				}
+				// Support anchors: [[path/to/file#section]]
+				if hashIdx := strings.Index(content, "#"); hashIdx >= 0 {
+					content = content[:hashIdx]
+				}
+				content = strings.TrimSpace(content)
+				if content != "" && !isExternalURL(content) {
+					if _, ok := seen[content]; !ok {
+						seen[content] = struct{}{}
+						links = append(links, content)
+					}
+				}
+				i = end + 1
+			}
+		}
+	}
+
+	// Parse markdown links: [text](path) where path is not external
+	for i := 0; i < len(runes)-1; i++ {
+		if runes[i] == '[' {
+			// Find the closing bracket
+			closeBracket := i + 1
+			for closeBracket < len(runes) && runes[closeBracket] != ']' {
+				closeBracket++
+			}
+			if closeBracket+1 < len(runes) && runes[closeBracket+1] == '(' {
+				// Find the closing paren
+				closeParen := closeBracket + 2
+				for closeParen < len(runes) && runes[closeParen] != ')' {
+					closeParen++
+				}
+				if closeParen < len(runes) && runes[closeParen] == ')' {
+					url := string(runes[closeBracket+2 : closeParen])
+					url = strings.TrimSpace(url)
+					if url != "" && !isExternalURL(url) {
+						// Strip anchor from local links
+						if hashIdx := strings.Index(url, "#"); hashIdx >= 0 {
+							url = url[:hashIdx]
+						}
+						if _, ok := seen[url]; !ok {
+							seen[url] = struct{}{}
+							links = append(links, url)
+						}
+					}
+					i = closeParen
+				}
+			}
+		}
+	}
+
+	return links
+}
+
+// isExternalURL checks if a URL is external (http:// or https://).
+func isExternalURL(url string) bool {
+	return strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")
 }
