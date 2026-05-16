@@ -84,6 +84,9 @@ type Config struct {
 	AuditSampleSize int
 	AutoThreshold   float64
 
+	// Optional — Auth
+	AuthMode string
+
 	// Optional — Logging
 	LogLevel string
 }
@@ -205,6 +208,14 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT must be non-negative, got %d", c.RateLimitSnapshot))
 	}
 
+	// Auth mode must be valid
+	switch strings.ToLower(c.AuthMode) {
+	case "none", "api_key", "jwt":
+		// valid
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_AUTH_MODE must be 'none', 'api_key', or 'jwt', got %q", c.AuthMode))
+	}
+
 	return errs
 }
 
@@ -268,6 +279,8 @@ func Load() (*Config, error) {
 		GitBaseBranch:      envOrDefault("RAGAMUFFIN_GIT_BASE_BRANCH", "main"),
 		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
+
+		AuthMode: envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
