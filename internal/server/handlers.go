@@ -164,7 +164,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Search Qdrant
-	results, err := s.qdrant.Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter)
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter)
 	if err != nil {
 		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
 		return
@@ -222,7 +222,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
-		results, err := s.qdrant.Search(ctx, vector, uint64(topK), 0.0, "")
+		results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "")
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
@@ -261,7 +261,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
-		results, err := s.qdrant.Search(ctx, vector, 50, 0.0, "")
+		results, err := s.qdrantFor(ctx).Search(ctx, vector, 50, 0.0, "")
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
@@ -286,7 +286,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			if tokenutil.EstTokens(b.String()) > 8000 { // conservative context limit
 				break
 			}
-			fileResults, err := s.qdrant.Search(ctx, vector, 100, 0.0, file)
+			fileResults, err := s.qdrantFor(ctx).Search(ctx, vector, 100, 0.0, file)
 			if err != nil {
 				continue
 			}

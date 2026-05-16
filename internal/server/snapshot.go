@@ -36,7 +36,7 @@ func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	tw := tar.NewWriter(gw)
 	defer tw.Close()
 
-	vaultRoot := filepath.Clean(s.cfg.VaultPath)
+	vaultRoot := filepath.Clean(s.vaultPathFromContext(r.Context()))
 
 	err = filepath.WalkDir(vaultRoot, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
