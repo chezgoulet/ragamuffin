@@ -11,6 +11,14 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// nv wraps qdrant.NewValue, panicking on error.
+func nv(v any) *qdrant.Value {
+	r, err := qdrant.NewValue(v)
+	if err != nil {
+		panic("NewValue: " + err.Error())
+	}
+	return r
+}
 // ── Request/Response types ────────────────────────────────────────────────────
 
 type reviewResponse struct {
@@ -306,28 +314,28 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Action {
 	case "confirm":
-		payload["status"] = qdrant.NewValue("active")
-		payload["last_confirmed_at"] = qdrant.NewValue(now)
+		payload["status"] = nv("active")
+		payload["last_confirmed_at"] = nv(now)
 		// Increment confirmation_count
 		cc := getPayloadIntValue(payload, "confirmation_count") + 1
-		payload["confirmation_count"] = qdrant.NewValue(float64(cc))
+		payload["confirmation_count"] = nv(float64(cc))
 		if req.Confidence != nil {
-			payload["confidence"] = qdrant.NewValue(*req.Confidence)
+			payload["confidence"] = nv(*req.Confidence)
 		}
 		if req.ConflictResolved != nil {
-			payload["conflict_resolved"] = qdrant.NewValue(*req.ConflictResolved)
+			payload["conflict_resolved"] = nv(*req.ConflictResolved)
 		}
 
 	case "supersede":
-		payload["status"] = qdrant.NewValue("superseded")
+		payload["status"] = nv("superseded")
 		if req.NewKey != "" {
-			payload["supersedes"] = qdrant.NewValue(req.NewKey)
+			payload["supersedes"] = nv(req.NewKey)
 		}
 		if req.NewValue != "" {
 			// Create a new fact via implicit POST
 			s.handleReviewSupersedeCreate(w, r, req.NewKey, req.NewValue, payload, now)
 			// Then write updated status to the OLD fact
-			payload["updated_at"] = qdrant.NewValue(now)
+			payload["updated_at"] = nv(now)
 			oldPoint := &qdrant.PointStruct{
 				Id: &qdrant.PointId{
 					PointIdOptions: &qdrant.PointId_Uuid{
@@ -352,23 +360,23 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "reject":
-		payload["status"] = qdrant.NewValue("rejected")
+		payload["status"] = nv("rejected")
 
 	case "reclassify":
 		// Keep existing status, adjust fields
 		if req.Confidence != nil {
-			payload["confidence"] = qdrant.NewValue(*req.Confidence)
+			payload["confidence"] = nv(*req.Confidence)
 		}
 		if req.TTLDays != nil {
 			ttl := *req.TTLDays
-			payload["ttl_days"] = qdrant.NewValue(float64(ttl))
+			payload["ttl_days"] = nv(float64(ttl))
 			if ttl > 0 {
 				expiresAt := time.Now().UTC().AddDate(0, 0, ttl).Format(time.RFC3339)
-				payload["expires_at"] = qdrant.NewValue(expiresAt)
-				payload["expires_at_unix"] = qdrant.NewValue(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
+				payload["expires_at"] = nv(expiresAt)
+				payload["expires_at_unix"] = nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
 			} else {
-				payload["expires_at"] = qdrant.NewValue("")
-				payload["expires_at_unix"] = qdrant.NewValue(float64(0))
+				payload["expires_at"] = nv("")
+				payload["expires_at_unix"] = nv(float64(0))
 			}
 		}
 		if req.Tags != nil {
@@ -378,13 +386,13 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if req.Source != "" {
-			payload["source"] = qdrant.NewValue(req.Source)
+			payload["source"] = nv(req.Source)
 		}
 		if req.SourceType != "" {
-			payload["source_type"] = qdrant.NewValue(req.SourceType)
+			payload["source_type"] = nv(req.SourceType)
 		}
 		if req.ConflictResolved != nil {
-			payload["conflict_resolved"] = qdrant.NewValue(*req.ConflictResolved)
+			payload["conflict_resolved"] = nv(*req.ConflictResolved)
 		}
 
 	default:
@@ -392,7 +400,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload["updated_at"] = qdrant.NewValue(now)
+	payload["updated_at"] = nv(now)
 
 	point := &qdrant.PointStruct{
 		Id: &qdrant.PointId{

@@ -14,6 +14,16 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
+// nv wraps qdrant.NewValue, panicking on error.
+// All call sites pass primitive types (string, bool, float64) that cannot
+// produce NewValue errors at runtime. Go's type system forces error capture.
+func nv(v any) *qdrant.Value {
+	r, err := qdrant.NewValue(v)
+	if err != nil {
+		panic("NewValue: " + err.Error())
+	}
+	return r
+}
 // ── Fact Data Model ──────────────────────────────────────────────────────
 
 // Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
@@ -241,10 +251,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		setPayloadTags(payload, fp.Tags)
 	}
 	if fp.Source != "" {
-		payload["source"] = qdrant.NewValue(fp.Source)
+		payload["source"] = nv(fp.Source)
 	}
 	if fp.SourceType != "" {
-		payload["source_type"] = qdrant.NewValue(fp.SourceType)
+		payload["source_type"] = nv(fp.SourceType)
 	}
 
 	point := &qdrant.PointStruct{
@@ -359,8 +369,8 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 					Field: &qdrant.FieldCondition{
 						Key: "conflict_resolved",
 						Match: &qdrant.Match{
-							MatchValue: &qdrant.Match_Bool{
-								Bool: cr,
+							MatchValue: &qdrant.Match_Boolean{
+								Boolean: cr,
 							},
 						},
 					},
@@ -463,26 +473,26 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 	applyFieldUpdate(payload, "supersedes", req.Supersedes)
 
 	if req.Confidence != nil {
-		payload["confidence"] = qdrant.NewValue(*req.Confidence)
+		payload["confidence"] = nv(*req.Confidence)
 	}
 	if req.ConflictResolved != nil {
-		payload["conflict_resolved"] = qdrant.NewValue(*req.ConflictResolved)
+		payload["conflict_resolved"] = nv(*req.ConflictResolved)
 	}
 	if req.ConfirmationCount != nil {
-		payload["confirmation_count"] = qdrant.NewValue(float64(*req.ConfirmationCount))
+		payload["confirmation_count"] = nv(float64(*req.ConfirmationCount))
 	}
 	if req.LastConfirmedAt != nil {
-		payload["last_confirmed_at"] = qdrant.NewValue(*req.LastConfirmedAt)
+		payload["last_confirmed_at"] = nv(*req.LastConfirmedAt)
 	}
 	if req.TTLDays != nil {
 		ttl := *req.TTLDays
-		payload["ttl_days"] = qdrant.NewValue(float64(ttl))
+		payload["ttl_days"] = nv(float64(ttl))
 		if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
-			payload["expires_at"] = qdrant.NewValue(expiresAt)
-			payload["expires_at_unix"] = qdrant.NewValue(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
+			payload["expires_at"] = nv(expiresAt)
+			payload["expires_at_unix"] = nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
 		} else {
-			payload["expires_at"] = qdrant.NewValue("")
-			payload["expires_at_unix"] = qdrant.NewValue(float64(0))
+			payload["expires_at"] = nv("")
+			payload["expires_at_unix"] = nv(float64(0))
 		}
 	}
 	if req.Tags != nil {
@@ -493,7 +503,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	payload["updated_at"] = qdrant.NewValue(now)
+	payload["updated_at"] = nv(now)
 
 	point := &qdrant.PointStruct{
 		Id: &qdrant.PointId{
@@ -572,24 +582,24 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 		applyFieldUpdate(payload, "supersedes", req.Updates.Supersedes)
 
 		if req.Updates.Confidence != nil {
-			payload["confidence"] = qdrant.NewValue(*req.Updates.Confidence)
+			payload["confidence"] = nv(*req.Updates.Confidence)
 		}
 		if req.Updates.ConflictResolved != nil {
-			payload["conflict_resolved"] = qdrant.NewValue(*req.Updates.ConflictResolved)
+			payload["conflict_resolved"] = nv(*req.Updates.ConflictResolved)
 		}
 		if req.Updates.ConfirmationCount != nil {
-			payload["confirmation_count"] = qdrant.NewValue(float64(*req.Updates.ConfirmationCount))
+			payload["confirmation_count"] = nv(float64(*req.Updates.ConfirmationCount))
 		}
 		if req.Updates.LastConfirmedAt != nil {
-			payload["last_confirmed_at"] = qdrant.NewValue(*req.Updates.LastConfirmedAt)
+			payload["last_confirmed_at"] = nv(*req.Updates.LastConfirmedAt)
 		}
 		if req.Updates.TTLDays != nil {
 			ttl := *req.Updates.TTLDays
-			payload["ttl_days"] = qdrant.NewValue(float64(ttl))
+			payload["ttl_days"] = nv(float64(ttl))
 			if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
-				payload["expires_at"] = qdrant.NewValue(expiresAt)
+				payload["expires_at"] = nv(expiresAt)
 			} else {
-				payload["expires_at"] = qdrant.NewValue("")
+				payload["expires_at"] = nv("")
 			}
 		}
 		if req.Updates.Tags != nil {
@@ -599,7 +609,7 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		payload["updated_at"] = qdrant.NewValue(now)
+		payload["updated_at"] = nv(now)
 
 		point := &qdrant.PointStruct{
 			Id: &qdrant.PointId{
@@ -697,50 +707,50 @@ func (s *Server) migrateFacts() {
 
 			// status: default "active"
 			if _, ok := payload["status"]; !ok {
-				payload["status"] = qdrant.NewValue("active")
+				payload["status"] = nv("active")
 				needsUpdate = true
 			}
 			// confidence: default 1.0
 			if _, ok := payload["confidence"]; !ok {
-				payload["confidence"] = qdrant.NewValue(1.0)
+				payload["confidence"] = nv(1.0)
 				needsUpdate = true
 			}
 			// source_type: default "manual"
 			if _, ok := payload["source_type"]; !ok {
-				payload["source_type"] = qdrant.NewValue("manual")
+				payload["source_type"] = nv("manual")
 				needsUpdate = true
 			}
 			// conflict_resolved: default true
 			if _, ok := payload["conflict_resolved"]; !ok {
-				payload["conflict_resolved"] = qdrant.NewValue(true)
+				payload["conflict_resolved"] = nv(true)
 				needsUpdate = true
 			}
 			// confirmation_count: default 1
 			if _, ok := payload["confirmation_count"]; !ok {
-				payload["confirmation_count"] = qdrant.NewValue(float64(1))
+				payload["confirmation_count"] = nv(float64(1))
 				needsUpdate = true
 			}
 			// created_at: default to updated_at or now
 			if _, ok := payload["created_at"]; !ok {
 				if ua, ok := payload["updated_at"]; ok && ua.GetStringValue() != "" {
-					payload["created_at"] = qdrant.NewValue(ua.GetStringValue())
+					payload["created_at"] = nv(ua.GetStringValue())
 				} else {
-					payload["created_at"] = qdrant.NewValue(now)
+					payload["created_at"] = nv(now)
 				}
 				needsUpdate = true
 			}
 			// last_confirmed_at: default to updated_at or now
 			if _, ok := payload["last_confirmed_at"]; !ok {
 				if ua, ok := payload["updated_at"]; ok && ua.GetStringValue() != "" {
-					payload["last_confirmed_at"] = qdrant.NewValue(ua.GetStringValue())
+					payload["last_confirmed_at"] = nv(ua.GetStringValue())
 				} else {
-					payload["last_confirmed_at"] = qdrant.NewValue(now)
+					payload["last_confirmed_at"] = nv(now)
 				}
 				needsUpdate = true
 			}
 			// supersedes: default ""
 			if _, ok := payload["supersedes"]; !ok {
-				payload["supersedes"] = qdrant.NewValue("")
+				payload["supersedes"] = nv("")
 				needsUpdate = true
 			}
 			// contradicts: default empty list
@@ -754,22 +764,22 @@ func (s *Server) migrateFacts() {
 			}
 			// source: default ""
 			if _, ok := payload["source"]; !ok {
-				payload["source"] = qdrant.NewValue("")
+				payload["source"] = nv("")
 				needsUpdate = true
 			}
 			// ttl_days: default 0
 			if _, ok := payload["ttl_days"]; !ok {
-				payload["ttl_days"] = qdrant.NewValue(float64(0))
+				payload["ttl_days"] = nv(float64(0))
 				needsUpdate = true
 			}
 			// expires_at: default ""
 			if _, ok := payload["expires_at"]; !ok {
-				payload["expires_at"] = qdrant.NewValue("")
+				payload["expires_at"] = nv("")
 				needsUpdate = true
 			}
 			// expires_at_unix: default 0
 			if _, ok := payload["expires_at_unix"]; !ok {
-				payload["expires_at_unix"] = qdrant.NewValue(float64(0))
+				payload["expires_at_unix"] = nv(float64(0))
 				needsUpdate = true
 			}
 
@@ -876,10 +886,10 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	return fr
 }
 
-// applyFieldUpdate sets payload[key] = qdrant.NewValue(*val) when val is non-nil.
+// applyFieldUpdate sets payload[key] = nv(*val) when val is non-nil.
 func applyFieldUpdate(payload map[string]*qdrant.Value, key string, val *string) {
 	if val != nil {
-		payload[key] = qdrant.NewValue(*val)
+		payload[key] = nv(*val)
 	}
 }
 
@@ -887,12 +897,7 @@ func applyFieldUpdate(payload map[string]*qdrant.Value, key string, val *string)
 func setPayloadTags(payload map[string]*qdrant.Value, tags []string) {
 	tagVals := make([]*qdrant.Value, len(tags))
 	for i, t := range tags {
-		v, err := qdrant.NewValue(t)
-		if err != nil {
-			// Should never happen for strings, but skip if it does
-			continue
-		}
-		tagVals[i] = v
+		tagVals[i] = nv(t)
 	}
 	payload["fact_tags"] = &qdrant.Value{
 		Kind: &qdrant.Value_ListValue{

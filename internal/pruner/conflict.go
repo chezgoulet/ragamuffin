@@ -9,6 +9,14 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
+// nv wraps pb.NewValue, panicking on error.
+func nv(v any) *pb.Value {
+	r, err := pb.NewValue(v)
+	if err != nil {
+		panic("NewValue: " + err.Error())
+	}
+	return r
+}
 // conflictScan samples active facts, computes their embeddings, and checks
 // pairwise cosine similarity. Pairs above the threshold (0.85) are flagged
 // as contradicting each other if they are semantically different.
@@ -50,8 +58,8 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 					Field: &pb.FieldCondition{
 						Key: "conflict_resolved",
 						Match: &pb.Match{
-							MatchValue: &pb.Match_Bool{
-								Bool: true,
+							MatchValue: &pb.Match_Boolean{
+								Boolean: true,
 							},
 						},
 					},
@@ -221,8 +229,8 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 			ListValue: &pb.ListValue{Values: tagVals},
 		},
 	}
-	payload["conflict_resolved"] = pb.NewValue(false)
-	payload["status"] = pb.NewValue("needs_review")
+	payload["conflict_resolved"] = nv(false)
+	payload["status"] = nv("needs_review")
 
 	return p.updateFactPayload(ctx, pointID, payload)
 }

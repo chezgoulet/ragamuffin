@@ -28,6 +28,15 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
+
+// nv wraps pb.NewValue, panicking on error.
+func nv(v any) *pb.Value {
+	r, err := pb.NewValue(v)
+	if err != nil {
+		panic("NewValue: " + err.Error())
+	}
+	return r
+}
 // ── Config ────────────────────────────────────────────────────────────────────
 
 // PrunerConfig controls the Pruner's scan intervals and thresholds.
@@ -351,8 +360,8 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 			},
 		},
 		Payload: map[string]*pb.Value{
-			"status":     pb.NewValue(status),
-			"updated_at": pb.NewValue(now),
+			"status":     nv(status),
+			"updated_at": nv(now),
 		},
 		Vectors: &pb.Vectors{
 			VectorsOptions: &pb.Vectors_Vector{
@@ -368,7 +377,7 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 // updateFactPayload applies a map of payload updates to a fact point.
 func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, payload map[string]*pb.Value) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	payload["updated_at"] = pb.NewValue(now)
+	payload["updated_at"] = nv(now)
 
 	point := &pb.PointStruct{
 		Id: &pb.PointId{
