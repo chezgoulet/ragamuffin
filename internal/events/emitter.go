@@ -36,7 +36,7 @@ func NewEmitter(webhookURL, source string, logger *slog.Logger) *Emitter {
 
 // Emit sends a CloudEvent of the given type with data. Non-blocking —
 // delivery is best-effort in a background goroutine.
-func (e *Emitter) Emit(eventType string, data interface{}) {
+func (e *Emitter) Emit(eventType string, data any) {
 	if e == nil || e.webhookURL == "" {
 		return // no-op when not configured
 	}
@@ -54,7 +54,7 @@ func (e *Emitter) Emit(eventType string, data interface{}) {
 
 // EmitSync sends a CloudEvent and blocks until delivery succeeds or fails.
 // Used for startup events where we want to log the result.
-func (e *Emitter) EmitSync(ctx context.Context, eventType string, data interface{}) error {
+func (e *Emitter) EmitSync(ctx context.Context, eventType string, data any) error {
 	if e == nil || e.webhookURL == "" {
 		return nil
 	}

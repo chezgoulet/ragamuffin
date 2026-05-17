@@ -130,7 +130,7 @@ func (s *Store) List(ctx context.Context, f Filter) (entries []LogEntry, nextTok
 	}
 
 	var conditions []string
-	var args []interface{}
+	var args []any
 
 	if f.Agent != "" {
 		conditions = append(conditions, "agent = ?")

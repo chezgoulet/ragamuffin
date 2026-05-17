@@ -154,7 +154,7 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respBody := map[string]interface{}{
+	respBody := map[string]any{
 		"entries": entries,
 		"total":   len(entries),
 	}
@@ -277,7 +277,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
 	var req reviewResolveRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
