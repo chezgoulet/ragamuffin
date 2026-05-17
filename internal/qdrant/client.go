@@ -57,34 +57,36 @@ func New(ctx context.Context, url, collection string, vectorSize uint64) (*Clien
 
 // CreatePayloadIndex creates a payload field index on the specified collection.
 // fieldType maps from string names ("keyword", "float", "bool") to pb.FieldType.
+// The PointsClient service manages payload field indexes in this version of the API.
 func (c *Client) CreatePayloadIndex(ctx context.Context, collection, field, fieldType string) error {
 	var ft pb.FieldType
 	switch fieldType {
 	case "keyword":
-		ft = pb.FieldType_FIELD_TYPE_KEYWORD
+		ft = pb.FieldType_FieldTypeKeyword
 	case "integer":
-		ft = pb.FieldType_FIELD_TYPE_INTEGER
+		ft = pb.FieldType_FieldTypeInteger
 	case "float":
-		ft = pb.FieldType_FIELD_TYPE_FLOAT
+		ft = pb.FieldType_FieldTypeFloat
 	case "geo":
-		ft = pb.FieldType_FIELD_TYPE_GEO
+		ft = pb.FieldType_FieldTypeGeo
 	case "text":
-		ft = pb.FieldType_FIELD_TYPE_TEXT
+		ft = pb.FieldType_FieldTypeText
 	case "bool":
-		ft = pb.FieldType_FIELD_TYPE_BOOL
+		ft = pb.FieldType_FieldTypeBool
 	case "datetime":
-		ft = pb.FieldType_FIELD_TYPE_DATETIME
+		ft = pb.FieldType_FieldTypeDatetime
 	case "uuid":
-		ft = pb.FieldType_FIELD_TYPE_UUID
+		ft = pb.FieldType_FieldTypeUuid
 	default:
-		ft = pb.FieldType_FIELD_TYPE_KEYWORD
+		ft = pb.FieldType_FieldTypeKeyword
 	}
-	_, err := c.collections.CreateFieldIndex(ctx, &pb.CreateFieldIndexRequest{
+	_, err := c.points.CreateFieldIndex(ctx, &pb.CreateFieldIndexRequest{
 		CollectionName: collection,
 		FieldName:      field,
 		FieldType:      &ft,
 	})
 	return err
+}
 
 func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error {
 	// Check if collection exists
