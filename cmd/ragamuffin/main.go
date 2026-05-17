@@ -25,6 +25,113 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
+// vaultSetup holds the components created for a single vault during startup.
+type vaultSetup struct {
+	Qc           *qdrant.Client
+	DoneCh       chan struct{}   // close to signal watcher shutdown
+	PrunerEventCh chan watcher.Event // fed events for the pruner
+	InitialDone  chan struct{}   // closed when initial indexing completes
+}
+
+// buildVault creates a Qdrant client, indexer, watcher (with fan-out), and
+// starts the indexer event processor for one vault. Returns the assembled
+// components or an error. The caller must defer cancelIdx() to stop the
+// indexer goroutine, and use setup.DoneCh for watcher shutdown.
+func buildVault(
+	ctx context.Context,
+	logger *slog.Logger,
+	cfg *config.Config,
+	name, vaultPath, collectionName string,
+	idxManager *indexer.Manager,
+	ec *embedding.Client,
+	lm *llm.Client,
+	emitter *events.Emitter,
+	idxCancelFuncs *[]context.CancelFunc,
+	watcherDoneChs *[]chan struct{},
+	prunerEventChs *[]chan watcher.Event,
+) (*vaultSetup, error) {
+	// ── Connect to Qdrant ──────────────────────────────────────────────
+	ctxQ, cancelQ := context.WithTimeout(ctx, 10*time.Second)
+	qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, 1536)
+	cancelQ()
+	if err != nil {
+		return nil, fmt.Errorf("qdrant connect for vault %q: %w", name, err)
+	}
+
+	// ── Create indexer ─────────────────────────────────────────────────
+	l := logger.With("vault", name)
+	idx := indexer.New(vaultPath, qc, ec, l)
+	idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+	idx.OnFileEvent(func(action, path string) {
+		switch action {
+		case "deleted":
+			emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
+		default:
+			emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+				Path: path, Action: action,
+			})
+		}
+	})
+
+	if err := idxManager.Add(name, idx, qc); err != nil {
+		qc.Close()
+		return nil, fmt.Errorf("register vault %q: %w", name, err)
+	}
+
+	// ── Start watcher with fan-out ─────────────────────────────────────
+	interval, err := time.ParseDuration(cfg.WatchInterval)
+	if err != nil {
+		interval = 60 * time.Second
+	}
+	w := watcher.New(vaultPath, interval, l, cfg.WatcherMode)
+
+	rawEvents := make(chan watcher.Event, 100)
+	idxEvents := make(chan watcher.Event, 100)
+	prunevents := make(chan watcher.Event, 100)
+	doneCh := make(chan struct{})
+	*watcherDoneChs = append(*watcherDoneChs, doneCh)
+	*prunerEventChs = append(*prunerEventChs, prunevents)
+
+	go w.Watch(rawEvents, doneCh)
+	go func() {
+		for {
+			select {
+			case e, ok := <-rawEvents:
+				if !ok {
+					return
+				}
+				select {
+				case idxEvents <- e:
+				default:
+					l.Warn("indexer event channel full, dropping event")
+				}
+				select {
+				case prunevents <- e:
+				default:
+					l.Debug("pruner event channel full, dropping event")
+				}
+			case <-doneCh:
+				return
+			}
+		}
+	}()
+	l.Info("watcher started", "interval", interval)
+
+	// ── Start indexer event processor ──────────────────────────────────
+	idxCtx, idxCancel := context.WithCancel(context.Background())
+	*idxCancelFuncs = append(*idxCancelFuncs, idxCancel)
+	initialDone := make(chan struct{})
+
+	go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
+
+	return &vaultSetup{
+		Qc:            qc,
+		DoneCh:        doneCh,
+		PrunerEventCh: prunevents,
+		InitialDone:   initialDone,
+	}, nil
+}
+
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slogLevel(),
@@ -73,7 +180,7 @@ func main() {
 		logger.Warn("EMBEDDING_API_KEY not set — indexing and /recall disabled")
 	}
 
-	// ── Initialize LLM client (optional) ─────────────────────────────────────
+	// ── Initialize LLM client (shared, optional) ─────────────────────────────
 	var lm *llm.Client
 	if cfg.HasLLM() {
 		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout)
@@ -91,61 +198,43 @@ func main() {
 	// ── Build vault indexers ─────────────────────────────────────────────────
 	idxManager := indexer.NewManager()
 	logPath := ""
+	ctx := context.Background()
 
-	// Shutdown control
+	// Collections for shutdown tracking
 	var idxCancelFuncs []context.CancelFunc
 	var watcherDoneChs []chan struct{}
 	var prunerEventChs []chan watcher.Event
 
 	if cfg.IsMultiTenant() {
-		// Multi-tenant: one indexer + Qdrant connection per vault
 		logger.Info("configuring vault indexers", "count", len(cfg.Vaults))
 
 		var readyChans []chan struct{}
 
 		for name, vc := range cfg.Vaults {
 			collectionName := fmt.Sprintf("ragamuffin_%s", name)
+			vlog := logger.With("vault", name)
 
-			ctxQ, cancelQ := context.WithTimeout(context.Background(), 10*time.Second)
-			qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, 1536)
-			cancelQ()
+			setup, err := buildVault(ctx, vlog, cfg, name, vc.Path, collectionName,
+				idxManager, ec, lm, emitter,
+				&idxCancelFuncs, &watcherDoneChs, &prunerEventChs)
 			if err != nil {
-				logger.Error("failed to connect to Qdrant for vault", "vault", name, "error", err)
+				logger.Error("failed to build vault", "vault", name, "error", err)
 				os.Exit(1)
 			}
-			defer qc.Close()
+			defer setup.Qc.Close()
 
-			idx := indexer.New(vc.Path, qc, ec, logger.With("vault", name))
-			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
-
-			idx.OnFileEvent(func(action, path string) {
-				switch action {
-				case "deleted":
-					emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
-				default:
-					emitter.Emit(events.TypeFileChanged, events.FileChangedData{
-						Path: path, Action: action,
-					})
+			// Per-vault LLM client (optional override)
+			if vc.HasLLM() {
+				provider := vc.LLMProvider
+				if provider == "" {
+					provider = cfg.LLMProvider
 				}
-			})
-
-			if err := idxManager.Add(name, idx, qc); err != nil {
-				logger.Error("failed to register vault indexer", "vault", name, "error", err)
-				os.Exit(1)
+				vlm := llm.New(provider, vc.LLMEndpoint, vc.LLMApiKey, vc.LLMModel, vc.LLMTimeout)
+				if vlm != nil {
+					idxManager.SetLLM(name, vlm)
+					logger.Info("per-vault LLM client configured", "vault", name, "model", vc.LLMModel)
+				}
 			}
-
-		// Per-vault LLM client (optional override)
-		if vc.HasLLM() {
-			provider := vc.LLMProvider
-			if provider == "" {
-				provider = cfg.LLMProvider
-			}
-			vlm := llm.New(provider, vc.LLMEndpoint, vc.LLMApiKey, vc.LLMModel, vc.LLMTimeout)
-			if vlm != nil {
-				idxManager.SetLLM(name, vlm)
-				logger.Info("per-vault LLM client configured", "vault", name, "model", vc.LLMModel)
-			}
-		}
 
 			// Per-vault embedding client (optional override)
 			if vc.HasEmbedding() {
@@ -154,55 +243,9 @@ func main() {
 				logger.Info("per-vault embedding client configured", "vault", name, "model", vc.EmbeddingModel)
 			}
 
-			// Start watcher for this vault
-			interval, err := time.ParseDuration(cfg.WatchInterval)
-			if err != nil {
-				interval = 60 * time.Second
-			}
-			w := watcher.New(vc.Path, interval, logger.With("vault", name), cfg.WatcherMode)
-
-			// Fan-out: watcher events → indexer + pruner (non-blocking send)
-			rawEvents := make(chan watcher.Event, 100)
-			idxEvents := make(chan watcher.Event, 100)
-			prunevents := make(chan watcher.Event, 100)
-			vwDone := make(chan struct{})
-			watcherDoneChs = append(watcherDoneChs, vwDone)
-			prunerEventChs = append(prunerEventChs, prunevents)
-
-			go w.Watch(rawEvents, vwDone)
-			go func() {
-				for {
-					select {
-					case e, ok := <-rawEvents:
-						if !ok {
-							return
-						}
-						select {
-						case idxEvents <- e:
-						default:
-							logger.With("vault", name).Warn("indexer event channel full, dropping event")
-						}
-						select {
-						case prunevents <- e:
-						default:
-							logger.With("vault", name).Debug("pruner event channel full, dropping event")
-						}
-					case <-vwDone:
-						return
-					}
-				}
-			}()
-
-			// Start indexer for this vault
-			idxCtx, idxCancel := context.WithCancel(context.Background())
-			idxCancelFuncs = append(idxCancelFuncs, idxCancel)
-			initialDone := make(chan struct{})
-			readyChans = append(readyChans, initialDone)
-
-			go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
 			logger.Info("vault indexer started", "vault", name, "path", vc.Path, "collection", collectionName)
+			readyChans = append(readyChans, setup.InitialDone)
 
-			// Use first vault's log path
 			if logPath == "" {
 				logPath = vc.Path + "/.ragamuffin/logs.db"
 			}
@@ -214,86 +257,19 @@ func main() {
 		}
 		logger.Info("all vaults initial indexing complete")
 
-
 	} else {
 		// Single-tenant: one indexer, one Qdrant connection
-		ctxQ, cancelQ := context.WithTimeout(context.Background(), 10*time.Second)
-		qc, err := qdrant.New(ctxQ, cfg.QdrantURL, cfg.QdrantCollection, 1536)
-		cancelQ()
+		setup, err := buildVault(ctx, logger, cfg, "default", cfg.VaultPath, cfg.QdrantCollection,
+			idxManager, ec, lm, emitter,
+			&idxCancelFuncs, &watcherDoneChs, &prunerEventChs)
 		if err != nil {
-			logger.Error("failed to connect to Qdrant", "error", err)
+			logger.Error("failed to build vault", "error", err)
 			os.Exit(1)
 		}
-		defer qc.Close()
-		logger.Info("qdrant connected", "collection", cfg.QdrantCollection)
+		defer setup.Qc.Close()
 
-		idx := indexer.New(cfg.VaultPath, qc, ec, logger)
-		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
-		idx.OnFileEvent(func(action, path string) {
-			switch action {
-			case "deleted":
-				emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
-			default:
-				emitter.Emit(events.TypeFileChanged, events.FileChangedData{
-					Path: path, Action: action,
-				})
-			}
-		})
-		logger.Info("chunk max tokens", "limit", cfg.ChunkMaxTokens)
-
-		if err := idxManager.Add("default", idx, qc); err != nil {
-			logger.Error("failed to register default indexer", "error", err)
-			os.Exit(1)
-		}
-
-		// Start watcher
-		interval, err := time.ParseDuration(cfg.WatchInterval)
-		if err != nil {
-			logger.Warn("invalid watch interval, using 60s", "value", cfg.WatchInterval)
-			interval = 60 * time.Second
-		}
-		w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
-
-		// Fan-out: watcher events → indexer + pruner (non-blocking send)
-		rawEvents := make(chan watcher.Event, 100)
-		idxEvents := make(chan watcher.Event, 100)
-		prunevents := make(chan watcher.Event, 100)
-		swDone := make(chan struct{})
-		watcherDoneChs = append(watcherDoneChs, swDone)
-		prunerEventChs = append(prunerEventChs, prunevents)
-
-		go w.Watch(rawEvents, swDone)
-		go func() {
-			for {
-				select {
-				case e, ok := <-rawEvents:
-					if !ok {
-						return
-					}
-					select {
-					case idxEvents <- e:
-					default:
-						logger.Warn("indexer event channel full, dropping event")
-					}
-					select {
-					case prunevents <- e:
-					default:
-						logger.Debug("pruner event channel full, dropping event")
-					}
-				case <-swDone:
-					return
-				}
-			}
-		}()
-		logger.Info("watcher started", "interval", interval)
-
-		// Start indexer
-		idxCtx, idxCancel := context.WithCancel(context.Background())
-		idxCancelFuncs = append(idxCancelFuncs, idxCancel)
-		initialDone := make(chan struct{})
-
-		go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
-		<-initialDone // Wait for initial indexing to complete
+		// Wait for initial indexing to complete
+		<-setup.InitialDone
 		logger.Info("initial indexing complete")
 
 		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
@@ -339,7 +315,7 @@ func main() {
 		}
 		logStore.Append(context.Background(), "pruner", "scan", body, []string{"pruner", scanName, "scan"}, time.Now())
 	}
-	p := pruner.New(factsQc, qc, ec, lm, logger.With("component", "pruner"), prunerCfg)
+	p := pruner.New(factsQc, nil, ec, lm, logger.With("component", "pruner"), prunerCfg)
 	ctxPruner, cancelPruner := context.WithCancel(context.Background())
 	defer cancelPruner()
 	go p.Run(ctxPruner)
@@ -352,10 +328,9 @@ func main() {
 	logger.Info("pruner event processors started", "count", len(prunerEventChs))
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
-	// Pass qc = first vault's Qdrant client for backward-compat /health checks
+	// Use first vault's Qdrant client for shared Qdrant health check
 	var qc *qdrant.Client
 	if cfg.IsMultiTenant() {
-		// Use first vault's client for shared Qdrant health check
 		for _, name := range idxManager.VaultNames() {
 			qc = idxManager.GetClient(name)
 			break
@@ -407,11 +382,11 @@ func main() {
 
 	// Emit startup event
 	emitter.Emit(events.TypeServerStarted, events.ServerStartedData{
-		Version:  server.Version,
-		Commit:   server.Commit,
+		Version:   server.Version,
+		Commit:    server.Commit,
 		GoVersion: server.GoVersion,
-		Host:     cfg.Host,
-		Port:     cfg.Port,
+		Host:      cfg.Host,
+		Port:      cfg.Port,
 	})
 
 	logger.Info("listening", "addr", httpServer.Addr)
