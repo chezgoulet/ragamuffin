@@ -67,9 +67,11 @@ docs/
 - Test files live alongside the package: `internal/config/config_test.go`.
 - Pure functions are tested with table-driven tests.
 - Use `t.Run()` for subtests.
-- Do not mock Qdrant. Use `testcontainers-go` for integration tests that
-  need a real Qdrant instance. If testcontainers isn't available, write
-  the test with a `t.Skip("needs testcontainers")` guard.
+- Prefer `testcontainers-go` for integration tests that need a real Qdrant
+  instance. Where integration tests aren't practical, use function-pointer-
+  based mocks (see `internal/server/testutil/mock_qdrant.go`). Long-term
+  goal: extract interfaces from qdrant.Client, embedding.Client, and
+  llm.Client so any mock can be type-checked at compile time.
 - Every new endpoint needs a curl smoke test entry in `smoke_test.sh`.
 
 ### Docker
