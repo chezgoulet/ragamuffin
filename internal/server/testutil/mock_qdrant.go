@@ -20,7 +20,7 @@ import (
 // CallCounts are atomic.Int64 for safe use with t.Parallel().
 type MockQdrant struct {
 	ScrollFn          func(ctx context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error)
-	ScrollFilteredFn  func(ctx context.Context, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
+	ScrollFilteredFn  func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
 	UpsertFn          func(ctx context.Context, points []*qdrant.PointStruct) error
 	SearchFn          func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*qdrant.ScoredPoint, error)
 	DeleteBySourceFn  func(ctx context.Context, sourceFile string) error
@@ -52,10 +52,10 @@ func (m *MockQdrant) Scroll(ctx context.Context, limit uint32, offset *qdrant.Po
 	return []*qdrant.RetrievedPoint{}, nil, nil
 }
 
-func (m *MockQdrant) ScrollFiltered(ctx context.Context, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
+func (m *MockQdrant) ScrollFiltered(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
 	m.ScrollFilteredCallCount.Add(1)
 	if m.ScrollFilteredFn != nil {
-		return m.ScrollFilteredFn(ctx, filter, limit, offset)
+		return m.ScrollFilteredFn(ctx, collection, filter, limit, offset)
 	}
 	return []*qdrant.RetrievedPoint{}, nil
 }
