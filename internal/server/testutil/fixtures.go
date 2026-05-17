@@ -71,7 +71,7 @@ func FreshFact(key, value, source string) *qdrant.PointStruct {
 // ContradictoryPair creates two facts with different values for the same key.
 func ContradictoryPair(key, oldValue, newValue, source string) []*qdrant.PointStruct {
 	return []*qdrant.PointStruct{
-		NewFact(key, oldValue, newValue+" (old)", source, 30),
+		NewFact(key, oldValue, source, 30),
 		NewFact(key, newValue, source, 1),
 	}
 }
