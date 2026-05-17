@@ -29,14 +29,16 @@ func (b *Broker) Subscribe(ch chan CloudEvent) chan CloudEvent {
 	return ch
 }
 
-// Unsubscribe removes a channel from the subscriber set and closes it.
+// Unsubscribe removes a channel from the subscriber set.
+// The caller should close the channel after Unsubscribe returns.
+// Broker no longer closes the channel itself — that way Publish
+// never attempts a send on a closed channel (the close happens
+// after the channel is removed from the subscriber map, under
+// the write lock).
 func (b *Broker) Unsubscribe(ch chan CloudEvent) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if _, ok := b.subscribers[ch]; ok {
-		delete(b.subscribers, ch)
-		close(ch)
-	}
+	delete(b.subscribers, ch)
 }
 
 // Publish sends an event to all active subscribers. Non-blocking per

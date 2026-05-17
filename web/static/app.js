@@ -544,6 +544,8 @@ function renderGraphCanvas(data) {
     tt.style.display = 'block';
     tt.textContent = `${node.type === 'entity' ? '◆' : '📄'} ${node.label || node.id}`;
     // Position near cursor — update on mousemove
+    // Remove previous listener before re-adding to avoid accumulation
+    canvas.removeEventListener('mousemove', posTooltip);
     canvas.addEventListener('mousemove', posTooltip);
   }
 

@@ -533,7 +533,9 @@ func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
 			formatted := lastIndexed.Format(time.RFC3339)
 			lastIndexedStr = &formatted
 		}
+		s.mu.Lock()
 		vc := s.cfg.Vaults[name]
+		s.mu.Unlock()
 		path := ""
 		if vc != nil {
 			path = vc.Path
@@ -569,29 +571,43 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_REQUEST", "name and path are required")
 		return
 	}
+
+	// Check vault config access with lock — re-check inside lock to avoid TOCTOU
+	s.mu.Lock()
 	if s.cfg.Vaults == nil {
+		s.mu.Unlock()
 		writeError(w, 400, "INVALID_REQUEST", "not in multi-tenant mode")
 		return
 	}
 	if _, exists := s.cfg.Vaults[req.Name]; exists {
+		s.mu.Unlock()
 		writeError(w, 409, "CONFLICT", "vault already exists")
 		return
 	}
+	s.mu.Unlock()
+
 	if _, exists := s.indexers.Get(req.Name); exists {
 		writeError(w, 409, "CONFLICT", "vault index already exists")
 		return
 	}
 
-	// Create vault directory on disk
+	// Create vault directory on disk (I/O outside lock)
 	if err := os.MkdirAll(req.Path, 0755); err != nil {
 		writeError(w, 500, "INTERNAL", fmt.Sprintf("failed to create vault directory: %s", err))
 		return
 	}
 
-	// Register new vault config
+	// Register new vault config — re-check under lock to prevent double-create race
+	s.mu.Lock()
+	if _, exists := s.cfg.Vaults[req.Name]; exists {
+		s.mu.Unlock()
+		writeError(w, 409, "CONFLICT", "vault already exists (concurrent creation)")
+		return
+	}
 	s.cfg.Vaults[req.Name] = &config.VaultConfig{
 		Path: req.Path,
 	}
+	s.mu.Unlock()
 
 	s.logger.Info("vault created at runtime", "name", req.Name, "path", req.Path)
 
@@ -640,38 +656,24 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // ── Per-vault LLM / embedding resolution (#161) ──────────────────────────────
 
 // llmFor returns a per-vault LLM client based on vault name.
-// Falls through to the server default if the vault has no LLM override.
+// Uses the indexer manager's cached per-vault LLM clients.
+// Falls through to the server default if no per-vault override exists.
 func (s *Server) llmFor(ctx context.Context, vaultName string) *llm.Client {
-	if vaultName != "" && s.cfg.Vaults != nil {
-		if vc, ok := s.cfg.Vaults[vaultName]; ok && vc.HasLLM() {
-			timeout := 30 * time.Second
-			if vc.LLMTimeout > 0 {
-				timeout = vc.LLMTimeout
-			}
-			client := llm.New(vc.LLMProvider, vc.LLMEndpoint, vc.LLMApiKey, vc.LLMModel, timeout)
-			if client != nil {
-				return client
-			}
-			s.logger.Warn("llmFor: nil client for vault, falling through to default", "vault", vaultName)
+	if vaultName != "" {
+		if lm := s.indexers.GetLLM(vaultName); lm != nil {
+			return lm
 		}
 	}
 	return s.llm
 }
 
 // embeddingFor returns a per-vault embedding client based on vault name.
-// Falls through to the server default if the vault has no embedding override.
+// Uses the indexer manager's cached per-vault embedding clients.
+// Falls through to the server default if no per-vault override exists.
 func (s *Server) embeddingFor(ctx context.Context, vaultName string) *embedding.Client {
-	if vaultName != "" && s.cfg.Vaults != nil {
-		if vc, ok := s.cfg.Vaults[vaultName]; ok && vc.HasEmbedding() {
-			model := vc.EmbeddingModel
-			if model == "" {
-				model = "text-embedding-ada-002"
-			}
-			client := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, model)
-			if client != nil {
-				return client
-			}
-			s.logger.Warn("embeddingFor: nil client for vault, falling through to default", "vault", vaultName)
+	if vaultName != "" {
+		if ec := s.indexers.GetEmbedder(vaultName); ec != nil {
+			return ec
 		}
 	}
 	return s.embedder

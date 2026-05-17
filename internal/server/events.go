@@ -50,6 +50,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	defer func() {
 		s.broker.Unsubscribe(ch)
+		close(ch)
 		s.logger.Debug("events: SSE client disconnected", "id", id)
 	}()
 
