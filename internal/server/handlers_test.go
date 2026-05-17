@@ -20,7 +20,7 @@ func newTestServer() *Server {
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
 	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
-	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
+	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil)
 }
 
 func TestHandleHealth_MethodNotAllowed(t *testing.T) {
@@ -189,7 +189,7 @@ func TestHandleAsk_MissingQuery(t *testing.T) {
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
 	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
-	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil)
 	body := bytes.NewBufferString(`{"top_k": 8}`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -205,7 +205,7 @@ func TestHandleAsk_InvalidJSON(t *testing.T) {
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
 	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
-	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil)
 	body := bytes.NewBufferString(`bad`)
 	req := httptest.NewRequest("POST", "/ask", body)
 	w := httptest.NewRecorder()
@@ -428,7 +428,7 @@ func TestHandleVaults_MultiTenant(t *testing.T) {
 	idxm := indexer.NewManager()
 	idxm.Add("docs", indexer.New("/tmp/docs", nil, nil, nil), nil)
 	idxm.Add("code", indexer.New("/tmp/code", nil, nil, nil), nil)
-	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil)
+	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil)
 	req := httptest.NewRequest("GET", "/vaults", nil)
 	w := httptest.NewRecorder()
 	srv.handleVaults(w, req)
