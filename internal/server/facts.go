@@ -359,8 +359,8 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 					Field: &qdrant.FieldCondition{
 						Key: "conflict_resolved",
 						Match: &qdrant.Match{
-							MatchValue: &qdrant.Match_Bool{
-								Bool: cr,
+							MatchValue: &qdrant.Match_Boolean{
+								Boolean: cr,
 							},
 						},
 					},

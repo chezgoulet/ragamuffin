@@ -239,8 +239,8 @@ func (s *Server) checkFactConflicts(ctx context.Context) []map[string]any {
 					Field: &pb.FieldCondition{
 						Key: "conflict_resolved",
 						Match: &pb.Match{
-							MatchValue: &pb.Match_Bool{
-								Bool: false,
+							MatchValue: &pb.Match_Boolean{
+								Boolean: false,
 							},
 						},
 					},

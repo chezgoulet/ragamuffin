@@ -50,8 +50,8 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 					Field: &pb.FieldCondition{
 						Key: "conflict_resolved",
 						Match: &pb.Match{
-							MatchValue: &pb.Match_Bool{
-								Bool: true,
+							MatchValue: &pb.Match_Boolean{
+								Boolean: true,
 							},
 						},
 					},
@@ -221,8 +221,8 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 			ListValue: &pb.ListValue{Values: tagVals},
 		},
 	}
-	payload["conflict_resolved"] = pb.NewValue(false)
-	payload["status"] = pb.NewValue("needs_review")
+	payload["conflict_resolved"] = func() *pb.Value { v, _ := pb.NewValue(false); return v }()
+	payload["status"] = func() *pb.Value { v, _ := pb.NewValue("needs_review"); return v }()
 
 	return p.updateFactPayload(ctx, pointID, payload)
 }

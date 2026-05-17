@@ -351,8 +351,8 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 			},
 		},
 		Payload: map[string]*pb.Value{
-			"status":     pb.NewValue(status),
-			"updated_at": pb.NewValue(now),
+			"status":     func() *pb.Value { v, _ := pb.NewValue(status); return v }(),
+			"updated_at": func() *pb.Value { v, _ := pb.NewValue(now); return v }(),
 		},
 		Vectors: &pb.Vectors{
 			VectorsOptions: &pb.Vectors_Vector{
@@ -368,7 +368,7 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 // updateFactPayload applies a map of payload updates to a fact point.
 func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, payload map[string]*pb.Value) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	payload["updated_at"] = pb.NewValue(now)
+	payload["updated_at"] = func() *pb.Value { v, _ := pb.NewValue(now); return v }()
 
 	point := &pb.PointStruct{
 		Id: &pb.PointId{
