@@ -11,34 +11,46 @@ import (
 	"log/slog"
 )
 
-// Emitter sends CloudEvents to a configured webhook URL.
+// LogStorer is the subset of logstore.Store needed by Emitter.
+type LogStorer interface {
+	Append(ctx context.Context, agent, eventType, body string, tags []string, timestamp time.Time) (string, error)
+}
+
+// Emitter sends CloudEvents to a configured webhook URL and persists
+// them to a logstore if configured. Also broadcasts to SSE subscribers.
 type Emitter struct {
 	webhookURL string
 	source     string
 	client     *http.Client
 	logger     *slog.Logger
+	logStore   LogStorer      // optional — persists events
+	broker     *Broker        // optional — SSE fan-out
 	closed     bool
 	mu         sync.Mutex
 	queue      []CloudEvent
 }
 
 // NewEmitter creates an Emitter. If webhookURL is empty, Emit is a no-op.
-func NewEmitter(webhookURL, source string, logger *slog.Logger) *Emitter {
+func NewEmitter(webhookURL, source string, logger *slog.Logger, logStore LogStorer, broker *Broker) *Emitter {
 	return &Emitter{
 		webhookURL: webhookURL,
 		source:     source,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger: logger,
+		logger:   logger,
+		logStore: logStore,
+		broker:   broker,
 	}
 }
 
 // Emit sends a CloudEvent of the given type with data. Non-blocking —
 // delivery is best-effort in a background goroutine.
+// If a logStore is configured, the event is also persisted to SQLite.
+// If a broker is configured, the event is broadcast to SSE subscribers.
 func (e *Emitter) Emit(eventType string, data any) {
-	if e == nil || e.webhookURL == "" {
-		return // no-op when not configured
+	if e == nil {
+		return
 	}
 
 	e.mu.Lock()
@@ -49,17 +61,55 @@ func (e *Emitter) Emit(eventType string, data any) {
 	evt := New(eventType, e.source, data)
 	e.mu.Unlock()
 
+	// Persist to logstore if configured
+	if e.logStore != nil {
+		body, _ := evt.MarshalJSON()
+		_, err := e.logStore.Append(context.Background(), "system", eventType, string(body), nil, time.Now())
+		if err != nil {
+			e.logger.Warn("events: logstore append failed", "type", eventType, "error", err)
+		}
+	}
+
+	// Broadcast to SSE subscribers
+	if e.broker != nil {
+		e.broker.Publish(evt)
+	}
+
+	// Send to webhook if configured
+	if e.webhookURL == "" {
+		return
+	}
+
 	e.post(evt)
 }
 
 // EmitSync sends a CloudEvent and blocks until delivery succeeds or fails.
-// Used for startup events where we want to log the result.
+// Also persists to logstore and broadcasts to SSE subscribers.
 func (e *Emitter) EmitSync(ctx context.Context, eventType string, data any) error {
-	if e == nil || e.webhookURL == "" {
+	if e == nil {
 		return nil
 	}
 
 	evt := New(eventType, e.source, data)
+
+	// Persist to logstore
+	if e.logStore != nil {
+		body, _ := evt.MarshalJSON()
+		_, err := e.logStore.Append(ctx, "system", eventType, string(body), nil, time.Now())
+		if err != nil {
+			e.logger.Warn("events: logstore append failed", "type", eventType, "error", err)
+		}
+	}
+
+	// Broadcast to SSE subscribers
+	if e.broker != nil {
+		e.broker.Publish(evt)
+	}
+
+	if e.webhookURL == "" {
+		return nil
+	}
+
 	return e.postSync(ctx, evt)
 }
 

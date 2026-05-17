@@ -55,15 +55,9 @@ form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
 
 .graph-controls { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 1rem; }
 .graph-controls label { color: #8b949e; font-size: 0.85rem; }
-#graph-viz { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.graph-node {
-  background: #161b22; border: 1px solid #30363d; border-radius: 6px;
-  padding: 0.4rem 0.75rem; font-size: 0.85rem; display: inline-flex; align-items: center; gap: 0.3rem;
-}
-.graph-node.file { border-color: #1f6feb; }
-.graph-node.entity { border-color: #f0883e; }
-.graph-edge { font-size: 0.75rem; color: #8b949e; padding: 0.25rem 0; }
-#graph-legend { margin-top: 1rem; font-size: 0.8rem; color: #8b949e; }
+#graph-viz { position: relative; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; min-height: 500px; }
+#graph-viz canvas { display: block; }
+#graph-legend { margin-top: 0.5rem; font-size: 0.8rem; color: #8b949e; }
 
 pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; }
 .error { color: #f85149; }
