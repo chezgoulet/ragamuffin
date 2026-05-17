@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,21 +19,74 @@ import (
 // Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
 // Vector size defaults to 4 — a sentinel for payload-only storage (no embeddings).
 // The cost of 4-dim vectors is negligible while satisfying Qdrant's vector requirement.
+//
+// v0.5 extends the payload with lifecycle fields:
+//   - source, source_type, confidence, ttl_days — client-supplied, optional
+//   - status, supersedes, contradicts, conflict_resolved — server-managed
+//   - confirmation_count, last_confirmed_at, created_at, expires_at — server-managed
 
 // factPayload is the JSON body for upsert (POST /v1/facts).
+// Pointers distinguish zero-value from omitted for confidence/ttl_days.
 type factPayload struct {
-	Key   string   `json:"key"`
-	Value string   `json:"value"`
-	Tags  []string `json:"tags,omitempty"`
+	Key        string   `json:"key"`
+	Value      string   `json:"value"`
+	Tags       []string `json:"tags,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	SourceType string   `json:"source_type,omitempty"`
+
+	Confidence *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
+	TTLDays    *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
 }
 
-// factResponse is the JSON response for a single fact.
+// factResponse is the JSON response for a single fact (v0.5 lifecycle).
 type factResponse struct {
-	Key       string   `json:"key"`
-	Value     string   `json:"value"`
-	Tags      []string `json:"tags,omitempty"`
-	UpdatedAt string   `json:"updated_at"`
+	Key              string   `json:"key"`
+	Value            string   `json:"value"`
+	Tags             []string `json:"tags,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	SourceType       string   `json:"source_type,omitempty"`
+	Confidence       float64  `json:"confidence"`
+	Status           string   `json:"status"`
+	Supersedes       string   `json:"supersedes"`
+	Contradicts      []string `json:"contradicts,omitempty"`
+	ConflictResolved bool     `json:"conflict_resolved"`
+	ConfirmationCount int     `json:"confirmation_count"`
+	LastConfirmedAt  string   `json:"last_confirmed_at,omitempty"`
+	CreatedAt        string   `json:"created_at,omitempty"`
+	UpdatedAt        string   `json:"updated_at"`
+	ExpiresAt        string   `json:"expires_at,omitempty"`
 }
+
+// factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
+// Pointer fields distinguish "omitted" (nil) from "set to zero/empty" (non-nil).
+type factUpdateRequest struct {
+	Value            *string   `json:"value,omitempty"`
+	Tags             *[]string `json:"tags,omitempty"`
+	Source           *string   `json:"source,omitempty"`
+	SourceType       *string   `json:"source_type,omitempty"`
+	Status           *string   `json:"status,omitempty"`
+	Supersedes       *string   `json:"supersedes,omitempty"`
+	Confidence       *float64  `json:"confidence,omitempty"`
+	ConflictResolved *bool     `json:"conflict_resolved,omitempty"`
+	ConfirmationCount *int     `json:"confirmation_count,omitempty"`
+	LastConfirmedAt  *string   `json:"last_confirmed_at,omitempty"`
+	TTLDays          *int      `json:"ttl_days,omitempty"`
+}
+
+// factBulkUpdateRequest is the JSON body for PATCH /v1/facts (bulk update).
+type factBulkUpdateRequest struct {
+	Keys    []string          `json:"keys"`
+	Updates factUpdateRequest `json:"updates"`
+}
+
+// factBulkResult is one entry in the PATCH response.
+type factBulkResult struct {
+	Key   string `json:"key"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 // factKeyHash produces a deterministic 32-char hex ID from a fact key.
 // Used as the Qdrant point ID so upserting the same key replaces the point.
@@ -41,7 +95,7 @@ func factKeyHash(key string) string {
 	return hex.EncodeToString(h[:16]) // 32 hex chars
 }
 
-// factFilter builds a Qdrant filter for exact fact_key match.
+// factKeyFilter builds a Qdrant filter for exact fact_key match.
 func factKeyFilter(key string) *qdrant.Filter {
 	return &qdrant.Filter{
 		Must: []*qdrant.Condition{
@@ -59,6 +113,42 @@ func factKeyFilter(key string) *qdrant.Filter {
 			},
 		},
 	}
+}
+
+// factExists checks whether a fact with the given key exists.
+func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
+	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+	if err != nil {
+		return false, err
+	}
+	return len(points) > 0, nil
+}
+
+// computeExpiresAt returns an ISO8601 timestamp for (now + ttl_days), or "" if 0.
+func computeExpiresAt(ttlDays int) string {
+	if ttlDays <= 0 {
+		return ""
+	}
+	return time.Now().UTC().AddDate(0, 0, ttlDays).Format(time.RFC3339)
+}
+
+// defaultConfidence returns 1.0 if nil/0, otherwise clamps to [0,1].
+func defaultConfidence(c *float64) float64 {
+	if c == nil || *c <= 0 {
+		return 1.0
+	}
+	if *c > 1.0 {
+		return 1.0
+	}
+	return *c
+}
+
+// writableFields returns the set of field names that clients may update via PUT/PATCH.
+var writableFields = map[string]bool{
+	"value": true, "tags": true, "source": true, "source_type": true,
+	"status": true, "supersedes": true, "confidence": true,
+	"conflict_resolved": true, "confirmation_count": true,
+	"last_confirmed_at": true, "ttl_days": true,
 }
 
 // ── POST /v1/facts ───────────────────────────────────────────────────────
@@ -92,26 +182,64 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	pointID := factKeyHash(fp.Key)
 	now := time.Now().UTC().Format(time.RFC3339)
 
+	// Check if fact already exists → preserve created_at
+	var createdAt string
+	exists, err := s.factExists(r.Context(), fp.Key)
+	if err != nil {
+		s.log(r.Context()).Error("fact existence check failed", "error", err)
+		writeError(w, 500, "INTERNAL", "failed to check fact existence")
+		return
+	}
+	if exists {
+		// Read existing point to preserve created_at
+		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(fp.Key), 1, "")
+		if err != nil {
+			s.log(r.Context()).Error("fact read for created_at failed", "error", err)
+		} else if len(points) > 0 {
+			createdAt, _ = getPayloadString(points[0].GetPayload(), "created_at")
+			// Carry forward confirmation_count and last_confirmed_at
+			// Only updated explicitly via PUT — preserve existing value on upsert
+		}
+	}
+	if createdAt == "" {
+		createdAt = now
+	}
+
+	// Compute fields
+	confidence := defaultConfidence(fp.Confidence)
+	expiresAt := computeExpiresAt(intValue(fp.TTLDays))
+
 	payload := qdrant.NewValueMap(map[string]any{
-		"fact_key":   fp.Key,
-		"fact_value": fp.Value,
-		"updated_at": now,
+		"fact_key":          fp.Key,
+		"fact_value":        fp.Value,
+		"source":            fp.Source,
+		"source_type":       fp.SourceType,
+		"confidence":        confidence,
+		"status":            "active",
+		"supersedes":        "",
+		"conflict_resolved": true,
+		"confirmation_count": 1,
+		"last_confirmed_at": now,
+		"created_at":        createdAt,
+		"updated_at":        now,
+		"ttl_days":          intValue(fp.TTLDays),
+		"expires_at":        expiresAt,
 	})
+	// Contradicts: empty list (server-managed)
+	payload["contradicts"] = &qdrant.Value{
+		Kind: &qdrant.Value_ListValue{
+			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+		},
+	}
+
 	if len(fp.Tags) > 0 {
-		tagVals := make([]*qdrant.Value, len(fp.Tags))
-		for i, t := range fp.Tags {
-			v, err := qdrant.NewValue(t)
-			if err != nil {
-				writeError(w, 500, "INVALID_TAG", fmt.Sprintf("invalid tag value: %v", err))
-				return
-			}
-			tagVals[i] = v
-		}
-		payload["fact_tags"] = &qdrant.Value{
-			Kind: &qdrant.Value_ListValue{
-				ListValue: &qdrant.ListValue{Values: tagVals},
-			},
-		}
+		setPayloadTags(payload, fp.Tags)
+	}
+	if fp.Source != "" {
+		payload["source"] = qdrant.NewValue(fp.Source)
+	}
+	if fp.SourceType != "" {
+		payload["source_type"] = qdrant.NewValue(fp.SourceType)
 	}
 
 	point := &qdrant.PointStruct{
@@ -136,12 +264,8 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, factResponse{
-		Key:       fp.Key,
-		Value:     fp.Value,
-		Tags:      fp.Tags,
-		UpdatedAt: now,
-	})
+	resp := pointToFactResponse(point.Payload, fp.Key)
+	writeJSON(w, 200, resp)
 }
 
 // ── GET /v1/facts ────────────────────────────────────────────────────────
@@ -150,6 +274,8 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	prefix := r.URL.Query().Get("prefix")
 	tag := r.URL.Query().Get("tag")
+	status := r.URL.Query().Get("status")
+	conflictResolvedStr := r.URL.Query().Get("conflict_resolved")
 
 	// Exact key lookup
 	if key != "" {
@@ -172,11 +298,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build list filter from optional search text and tag.
-	// Note: ?prefix= performs Qdrant full-text / substring matching, not
-	// a true prefix match. A query for "user/" will also match "superuser/"
-	// due to Qdrant's tokenizer behavior. For exact prefix filtering, a
-	// payload index with a keyword tokenizer would be needed.
+	// Build list filter from optional search text, tag, status, and conflict_resolved
 	var conditions []*qdrant.Condition
 
 	if prefix != "" {
@@ -207,6 +329,39 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 		})
+	}
+
+	if status != "" {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "status",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{
+							Keyword: status,
+						},
+					},
+				},
+			},
+		})
+	}
+
+	if conflictResolvedStr != "" && status != "" {
+		cr, err := strconv.ParseBool(conflictResolvedStr)
+		if err == nil {
+			conditions = append(conditions, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "conflict_resolved",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Bool{
+								Bool: cr,
+							},
+						},
+					},
+				},
+			})
+		}
 	}
 
 	var filter *qdrant.Filter
@@ -256,6 +411,223 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, respBody)
 }
 
+// ── PUT /v1/facts ────────────────────────────────────────────────────────
+
+func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		writeError(w, 400, "MISSING_KEY", "key query parameter is required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	var req factUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+
+	// Read existing point
+	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+	if err != nil {
+		s.log(r.Context()).Error("facts scroll for update failed", "error", err)
+		writeError(w, 500, "SCROLL_FAILED", "failed to read fact")
+		return
+	}
+	if len(points) == 0 {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("fact not found: %s", key))
+		return
+	}
+
+	payload := make(map[string]*qdrant.Value)
+	for k, v := range points[0].GetPayload() {
+		payload[k] = v
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Apply partial updates
+	applyFieldUpdate(payload, "fact_value", req.Value)
+	applyFieldUpdate(payload, "source", req.Source)
+	applyFieldUpdate(payload, "source_type", req.SourceType)
+	applyFieldUpdate(payload, "status", req.Status)
+	applyFieldUpdate(payload, "supersedes", req.Supersedes)
+
+	if req.Confidence != nil {
+		payload["confidence"] = qdrant.NewValue(*req.Confidence)
+	}
+	if req.ConflictResolved != nil {
+		payload["conflict_resolved"] = qdrant.NewValue(*req.ConflictResolved)
+	}
+	if req.ConfirmationCount != nil {
+		payload["confirmation_count"] = qdrant.NewValue(float64(*req.ConfirmationCount))
+	}
+	if req.LastConfirmedAt != nil {
+		payload["last_confirmed_at"] = qdrant.NewValue(*req.LastConfirmedAt)
+	}
+	if req.TTLDays != nil {
+		ttl := *req.TTLDays
+		payload["ttl_days"] = qdrant.NewValue(float64(ttl))
+		if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
+			payload["expires_at"] = qdrant.NewValue(expiresAt)
+		} else {
+			payload["expires_at"] = qdrant.NewValue("")
+		}
+	}
+	if req.Tags != nil {
+		// Clear and re-set
+		delete(payload, "fact_tags")
+		if len(*req.Tags) > 0 {
+			setPayloadTags(payload, *req.Tags)
+		}
+	}
+
+	payload["updated_at"] = qdrant.NewValue(now)
+
+	point := &qdrant.PointStruct{
+		Id: &qdrant.PointId{
+			PointIdOptions: &qdrant.PointId_Uuid{
+				Uuid: factKeyHash(key),
+			},
+		},
+		Payload: payload,
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{
+					Data: []float32{0, 0, 0, 0},
+				},
+			},
+		},
+	}
+
+	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
+		s.log(r.Context()).Error("facts put failed", "error", err)
+		writeError(w, 500, "UPSERT_FAILED", "failed to update fact")
+		return
+	}
+
+	resp := pointToFactResponse(payload, key)
+	writeJSON(w, 200, resp)
+}
+
+// ── PATCH /v1/facts ──────────────────────────────────────────────────────
+
+func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
+	var req factBulkUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		return
+	}
+	if len(req.Keys) == 0 {
+		writeError(w, 400, "MISSING_KEYS", "keys array is required")
+		return
+	}
+
+	results := make([]factBulkResult, 0, len(req.Keys))
+	succeeded := 0
+	failed := 0
+
+	for _, key := range req.Keys {
+		// Perform a single-key update via read-modify-write
+		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		if err != nil {
+			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
+			failed++
+			continue
+		}
+		if len(points) == 0 {
+			results = append(results, factBulkResult{Key: key, OK: false, Error: "NOT_FOUND"})
+			failed++
+			continue
+		}
+
+		payload := make(map[string]*qdrant.Value)
+		for k, v := range points[0].GetPayload() {
+			payload[k] = v
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+
+		// Apply same updates to each key
+		applyFieldUpdate(payload, "fact_value", req.Updates.Value)
+		applyFieldUpdate(payload, "source", req.Updates.Source)
+		applyFieldUpdate(payload, "source_type", req.Updates.SourceType)
+		applyFieldUpdate(payload, "status", req.Updates.Status)
+		applyFieldUpdate(payload, "supersedes", req.Updates.Supersedes)
+
+		if req.Updates.Confidence != nil {
+			payload["confidence"] = qdrant.NewValue(*req.Updates.Confidence)
+		}
+		if req.Updates.ConflictResolved != nil {
+			payload["conflict_resolved"] = qdrant.NewValue(*req.Updates.ConflictResolved)
+		}
+		if req.Updates.ConfirmationCount != nil {
+			payload["confirmation_count"] = qdrant.NewValue(float64(*req.Updates.ConfirmationCount))
+		}
+		if req.Updates.LastConfirmedAt != nil {
+			payload["last_confirmed_at"] = qdrant.NewValue(*req.Updates.LastConfirmedAt)
+		}
+		if req.Updates.TTLDays != nil {
+			ttl := *req.Updates.TTLDays
+			payload["ttl_days"] = qdrant.NewValue(float64(ttl))
+			if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
+				payload["expires_at"] = qdrant.NewValue(expiresAt)
+			} else {
+				payload["expires_at"] = qdrant.NewValue("")
+			}
+		}
+		if req.Updates.Tags != nil {
+			delete(payload, "fact_tags")
+			if len(*req.Updates.Tags) > 0 {
+				setPayloadTags(payload, *req.Updates.Tags)
+			}
+		}
+
+		payload["updated_at"] = qdrant.NewValue(now)
+
+		point := &qdrant.PointStruct{
+			Id: &qdrant.PointId{
+				PointIdOptions: &qdrant.PointId_Uuid{
+					Uuid: factKeyHash(key),
+				},
+			},
+			Payload: payload,
+			Vectors: &qdrant.Vectors{
+				VectorsOptions: &qdrant.Vectors_Vector{
+					Vector: &qdrant.Vector{
+						Data: []float32{0, 0, 0, 0},
+					},
+				},
+			},
+		}
+
+		if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
+			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
+			failed++
+			continue
+		}
+
+		results = append(results, factBulkResult{Key: key, OK: true})
+		succeeded++
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"results":   results,
+		"total":     len(req.Keys),
+		"succeeded": succeeded,
+		"failed":    failed,
+	})
+}
+
 // ── DELETE /v1/facts ─────────────────────────────────────────────────────
 
 func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
@@ -285,41 +657,105 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 
 // ── Route dispatcher ─────────────────────────────────────────────────────
 
-// handleFacts dispatches to POST/GET/DELETE /v1/facts based on method.
+// handleFacts dispatches to POST/GET/PUT/PATCH/DELETE /v1/facts based on method.
 func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		s.handleFactsPost(w, r)
 	case http.MethodGet:
 		s.handleFactsGet(w, r)
+	case http.MethodPut:
+		s.handleFactsPut(w, r)
+	case http.MethodPatch:
+		s.handleFactsPatch(w, r)
 	case http.MethodDelete:
 		s.handleFactsDelete(w, r)
 	default:
-		w.Header().Set("Allow", "GET, POST, DELETE")
-		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET, POST, or DELETE")
+		w.Header().Set("Allow", "GET, POST, PUT, PATCH, DELETE")
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET, POST, PUT, PATCH, or DELETE")
 	}
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-// pointToFact converts a Qdrant RetrievedPoint to a factResponse.
+// pointToFact converts a Qdrant RetrievedPoint to a factResponse with all lifecycle fields.
 func pointToFact(p *qdrant.RetrievedPoint) *factResponse {
-	key, _ := getPayloadString(p.Payload, "fact_key")
-	value, _ := getPayloadString(p.Payload, "fact_value")
-	updatedAt, _ := getPayloadString(p.Payload, "updated_at")
-	if key == "" || value == "" {
+	if p == nil {
 		return nil
 	}
+	return pointToFactResponse(p.GetPayload(), "")
+}
 
-	tags := getPayloadStringList(p.Payload, "fact_tags")
+// pointToFactResponse builds a factResponse from a payload map and (optionally) a key.
+// If key is provided, it's used; otherwise reads from payload.
+func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *factResponse {
+	fr := &factResponse{}
 
-	return &factResponse{
-		Key:       key,
-		Value:     value,
-		Tags:      tags,
-		UpdatedAt: updatedAt,
+	if keyOverride != "" {
+		fr.Key = keyOverride
+	} else {
+		fr.Key, _ = getPayloadString(payload, "fact_key")
+	}
+
+	fr.Value, _ = getPayloadString(payload, "fact_value")
+	fr.Tags = getPayloadStringList(payload, "fact_tags")
+	fr.Source, _ = getPayloadString(payload, "source")
+	fr.SourceType, _ = getPayloadString(payload, "source_type")
+	fr.Confidence, _ = getPayloadFloat(payload, "confidence")
+	fr.Status, _ = getPayloadString(payload, "status")
+	fr.Supersedes, _ = getPayloadString(payload, "supersedes")
+	fr.Contradicts = getPayloadStringList(payload, "contradicts")
+	fr.ConflictResolved, _ = getPayloadBool(payload, "conflict_resolved")
+	fr.ConfirmationCount, _ = getPayloadInt(payload, "confirmation_count")
+	fr.LastConfirmedAt, _ = getPayloadString(payload, "last_confirmed_at")
+	fr.CreatedAt, _ = getPayloadString(payload, "created_at")
+	fr.UpdatedAt, _ = getPayloadString(payload, "updated_at")
+	fr.ExpiresAt, _ = getPayloadString(payload, "expires_at")
+
+	if fr.Status == "" {
+		fr.Status = "active"
+	}
+	if fr.Confidence == 0 {
+		fr.Confidence = 1.0
+	}
+
+	return fr
+}
+
+// applyFieldUpdate sets payload[key] = qdrant.NewValue(*val) when val is non-nil.
+func applyFieldUpdate(payload map[string]*qdrant.Value, key string, val *string) {
+	if val != nil {
+		payload[key] = qdrant.NewValue(*val)
 	}
 }
+
+// setPayloadTags writes fact_tags as a Qdrant list value into the payload map.
+func setPayloadTags(payload map[string]*qdrant.Value, tags []string) {
+	tagVals := make([]*qdrant.Value, len(tags))
+	for i, t := range tags {
+		v, err := qdrant.NewValue(t)
+		if err != nil {
+			// Should never happen for strings, but skip if it does
+			continue
+		}
+		tagVals[i] = v
+	}
+	payload["fact_tags"] = &qdrant.Value{
+		Kind: &qdrant.Value_ListValue{
+			ListValue: &qdrant.ListValue{Values: tagVals},
+		},
+	}
+}
+
+// intValue safely dereferences a *int, returning 0 for nil.
+func intValue(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// ── Payload extraction helpers ───────────────────────────────────────────
 
 // getPayloadString extracts a string value from a Qdrant payload map.
 func getPayloadString(payload map[string]*qdrant.Value, key string) (string, bool) {
@@ -355,4 +791,31 @@ func getPayloadStringList(payload map[string]*qdrant.Value, key string) []string
 		}
 	}
 	return result
+}
+
+// getPayloadFloat extracts a float64 from a Qdrant payload.
+func getPayloadFloat(payload map[string]*qdrant.Value, key string) (float64, bool) {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return 0, false
+	}
+	return v.GetDoubleValue(), true
+}
+
+// getPayloadBool extracts a bool from a Qdrant payload.
+func getPayloadBool(payload map[string]*qdrant.Value, key string) (bool, bool) {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return false, false
+	}
+	return v.GetBoolValue(), true
+}
+
+// getPayloadInt extracts an integer from a Qdrant payload (stored as double).
+func getPayloadInt(payload map[string]*qdrant.Value, key string) (int, bool) {
+	f, ok := getPayloadFloat(payload, key)
+	if !ok {
+		return 0, false
+	}
+	return int(f), true
 }

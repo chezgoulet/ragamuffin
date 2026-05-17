@@ -87,6 +87,9 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
 
+	// Ensure payload indexes for facts lifecycle queries
+	s.ensureFactIndexes()
+
 	return s
 }
 
@@ -346,6 +349,33 @@ func (s *Server) embeddingFor(ctx context.Context) *embedding.Client {
 		}
 	}
 	return s.embedder
+}
+
+// ensureFactIndexes creates Qdrant payload field indexes needed for fact
+// lifecycle queries (status filter, expiry scan, etc.). Errors are logged
+// but non-fatal — queries still work without indexes (just slower).
+func (s *Server) ensureFactIndexes() {
+	if s.facts == nil {
+		return
+	}
+	ctx := context.Background()
+	collection := s.cfg.FactsCollection
+
+	indexes := map[string]string{
+		"status":            "keyword",
+		"source_type":       "keyword",
+		"confidence":        "float",
+		"expires_at":        "keyword",
+		"fact_key":          "keyword",
+		"conflict_resolved": "bool",
+	}
+
+	for field, fieldType := range indexes {
+		if err := s.facts.CreatePayloadIndex(ctx, collection, field, fieldType); err != nil {
+			s.logger.Warn("facts payload index not created (may already exist)",
+				"field", field, "error", err)
+		}
+	}
 }
 
 // withVault wraps a handler to validate vault access. Extracts the vault name
