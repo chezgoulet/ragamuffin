@@ -14,15 +14,21 @@ import (
 // as contradicting each other if they are semantically different.
 //
 // The scan uses the embedder to get real embeddings for each fact's value,
-// then compares all pairs within the sample. Only pairs where both facts
-// are active and have no existing contradiction flag are considered.
+// then compares all pairs within the sample.
+//
+// Write-once rule: Only the newer/lower-confidence fact is marked with
+// contradicts set; the other is found at read time by scanning contradicts
+// arrays across all facts.
+//
+// Facts with conflict_resolved=true AND status=active are skipped
+// (operator has dismissed the contradiction).
 func (p *Pruner) conflictScan(ctx context.Context) {
 	if p.facts == nil || p.embedder == nil {
 		p.logger.Warn("conflictScan: facts client or embedder not available")
 		return
 	}
 
-	// Sample active facts
+	// Sample active facts, excluding those that have been explicitly dismissed
 	filter := &pb.Filter{
 		Must: []*pb.Condition{
 			{
@@ -32,6 +38,20 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 						Match: &pb.Match{
 							MatchValue: &pb.Match_Keyword{
 								Keyword: "active",
+							},
+						},
+					},
+				},
+			},
+		},
+		MustNot: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key: "conflict_resolved",
+						Match: &pb.Match{
+							MatchValue: &pb.Match_Bool{
+								Bool: true,
 							},
 						},
 					},
@@ -128,15 +148,12 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 				continue
 			}
 
-			// Check that both are still active (re-fetch to avoid TOCTOU)
-			if err := p.markContradiction(ctx, facts[i].id, facts[j].id); err != nil {
+			// Write-once: only mark the newer/lower-confidence fact with the
+			// contradiction. The other is found at read time by scanning
+			// contradicts arrays across all facts.
+			if err := p.markContradiction(ctx, facts[j].id, facts[i].key); err != nil {
 				p.logger.Error("conflictScan: marking contradiction failed",
 					"a", facts[i].key, "b", facts[j].key, "error", err)
-				continue
-			}
-			if err := p.markContradiction(ctx, facts[j].id, facts[i].id); err != nil {
-				p.logger.Error("conflictScan: marking reverse contradiction failed",
-					"a", facts[j].key, "b", facts[i].key, "error", err)
 				continue
 			}
 
@@ -148,7 +165,7 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 
 	p.logger.Info("conflictScan complete", "sampled", len(facts), "flagged_pairs", flagged)
 	if flagged > 0 {
-		p.RecordFlagged(flagged * 2) // two facts per pair
+		p.RecordFlagged(flagged) // one fact marked per pair (write-once rule)
 	}
 }
 
