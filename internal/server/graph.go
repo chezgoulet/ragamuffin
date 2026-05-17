@@ -32,6 +32,148 @@ type graphResponse struct {
 	Edges []graphEdge `json:"edges"`
 }
 
+// fileLinkEntry groups a file path with its BFS hop depth.
+type fileLinkEntry struct {
+	Path string
+	Hop  int
+}
+
+// entityBFS performs BFS traversal over file link relationships starting from
+// a root entity. Intended for building focused sub-graphs — testable without
+// a Qdrant backend by setting up nodes/links/matches directly.
+type entityBFS struct {
+	entityID string
+	depth    int
+	limit    int
+
+	nodes     map[string]graphNode
+	edges     map[string]graphEdge
+	visited   map[string]bool
+	fileLinks map[string][]string
+	queue     []fileLinkEntry
+	edgeKeyFn func(s, t, rel string) string
+}
+
+// newEntityBFS initialises a BFS struct rooted at the given entity name.
+func newEntityBFS(entity string, depth, limit int) *entityBFS {
+	entityID := "entity:" + entity
+	eb := &entityBFS{
+		entityID:  entityID,
+		depth:     depth,
+		limit:     limit,
+		nodes:     make(map[string]graphNode),
+		edges:     make(map[string]graphEdge),
+		visited:   make(map[string]bool),
+		fileLinks: make(map[string][]string),
+		queue:     nil,
+		edgeKeyFn: func(s, t, rel string) string { return s + "|" + t + "|" + rel },
+	}
+	// Root entity node
+	eb.nodes[entityID] = graphNode{
+		ID:    entityID,
+		Type:  "entity",
+		Label: entity,
+	}
+	return eb
+}
+
+// AddMatch registers a file that contains the entity, connecting it to the
+// root entity node via a "contains" edge. No-op if the file was already seen.
+func (eb *entityBFS) AddMatch(sourceFile string) {
+	if sourceFile == "" || eb.visited[sourceFile] {
+		return
+	}
+	eb.visited[sourceFile] = true
+	fileID := "file:" + sourceFile
+	eb.nodes[fileID] = graphNode{
+		ID:    fileID,
+		Type:  "file",
+		Label: displayName(sourceFile),
+	}
+	k := eb.edgeKeyFn(eb.entityID, fileID, "contains")
+	eb.edges[k] = graphEdge{
+		Source:       fileID,
+		Target:       eb.entityID,
+		Relationship: "contains",
+	}
+	eb.queue = append(eb.queue, fileLinkEntry{Path: sourceFile, Hop: 0})
+}
+
+// AddLink registers a cross-file reference from source to target.
+func (eb *entityBFS) AddLink(source, target string) {
+	if source == "" || target == "" {
+		return
+	}
+	eb.fileLinks[source] = append(eb.fileLinks[source], target)
+}
+
+// Run traverses the file link graph up to the configured depth and limit.
+// Call after all AddMatch / AddLink calls. May be called at most once.
+func (eb *entityBFS) Run() {
+	for len(eb.queue) > 0 && len(eb.nodes) < eb.limit {
+		current := eb.queue[0]
+		eb.queue = eb.queue[1:]
+
+		if current.Hop >= eb.depth {
+			continue
+		}
+
+		for _, targetPath := range eb.fileLinks[current.Path] {
+			if targetPath == "" || eb.visited[targetPath] {
+				continue
+			}
+			eb.visited[targetPath] = true
+
+			targetID := "file:" + targetPath
+			eb.nodes[targetID] = graphNode{
+				ID:    targetID,
+				Type:  "file",
+				Label: displayName(targetPath),
+			}
+
+			currentFileID := "file:" + current.Path
+			k := eb.edgeKeyFn(currentFileID, targetID, "links_to")
+			eb.edges[k] = graphEdge{
+				Source:       currentFileID,
+				Target:       targetID,
+				Relationship: "links_to",
+			}
+
+			if current.Hop+1 < eb.depth {
+				eb.queue = append(eb.queue, fileLinkEntry{Path: targetPath, Hop: current.Hop + 1})
+			}
+
+			if len(eb.nodes) >= eb.limit {
+				return
+			}
+		}
+	}
+}
+
+// Nodes returns the accumulated node list, capped at the configured limit.
+func (eb *entityBFS) Nodes() []graphNode {
+	list := make([]graphNode, 0, len(eb.nodes))
+	for _, n := range eb.nodes {
+		list = append(list, n)
+		if len(list) >= eb.limit {
+			break
+		}
+	}
+	return list
+}
+
+// Edges returns the accumulated edge list, capped at the configured limit.
+func (eb *entityBFS) Edges() []graphEdge {
+	list := make([]graphEdge, 0, len(eb.edges))
+	for _, e := range eb.edges {
+		list = append(list, e)
+		if len(list) >= eb.limit {
+			break
+		}
+	}
+	return list
+}
+
 // ── Handler ────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
@@ -170,47 +312,24 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	qc := s.indexers.GetClient(vaultName)
-
 	// Depth 0 doesn't need any backend — just return the entity node
 	if depth == 0 {
 		writeJSON(w, 200, graphResponse{
-			Nodes: []graphNode{{
-				ID: "entity:" + entity, Type: "entity", Label: entity,
-			}},
+			Nodes: newEntityBFS(entity, 0, limit).Nodes(),
 			Edges: []graphEdge{},
 		})
 		return
 	}
 
+	qc := s.indexers.GetClient(vaultName)
 	if qc == nil {
 		writeJSON(w, 200, graphResponse{Nodes: []graphNode{}, Edges: []graphEdge{}})
 		return
 	}
 
-	nodes := make(map[string]graphNode)
-	edges := make(map[string]graphEdge)
-	edgeKey := func(s, t, rel string) string { return s + "|" + t + "|" + rel }
-
-	entityID := "entity:" + entity
-	nodes[entityID] = graphNode{
-		ID:    entityID,
-		Type:  "entity",
-		Label: entity,
-	}
-
-	// Find files containing this entity from vault collection
-	// Scroll entire vault collection, search payload for entity match
-	type fileEntry struct {
-		path string
-		hop  int
-	}
-
-	visited := make(map[string]bool)
-	var queue []fileEntry
+	eb := newEntityBFS(entity, depth, limit)
 
 	// Single scroll pass: build entity match queue and link map simultaneously
-	fileLinks := make(map[string][]string) // source_file → linked files
 	{
 		var scrollOffset *pb.PointId
 		for {
@@ -227,101 +346,31 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 
 				src := p.GetPayload()["source_file"].GetStringValue()
 
-				// Entity match: check the text payload field directly
-				if src != "" && !visited[src] {
-					if text := p.GetPayload()["text"].GetStringValue(); text != "" && strings.Contains(text, entity) {
-						visited[src] = true
-						queue = append(queue, fileEntry{path: src, hop: 0})
-						fileID := "file:" + src
-						nodes[fileID] = graphNode{
-							ID:    fileID,
-							Type:  "file",
-							Label: displayName(src),
-						}
-						k := edgeKey(entityID, fileID, "contains")
-						edges[k] = graphEdge{
-							Source:       fileID,
-							Target:       entityID,
-							Relationship: "contains",
-						}
-					}
-				}
-
-				// Link map: collect cross-file references
 				if src != "" {
+					// Entity match: check the text payload field directly
+					if text := p.GetPayload()["text"].GetStringValue(); text != "" && strings.Contains(text, entity) {
+						eb.AddMatch(src)
+					}
+
+					// Link map: collect cross-file references
 					if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
 						for _, linkVal := range linksVal.GetListValue().GetValues() {
-							tgt := linkVal.GetStringValue()
-							if tgt != "" {
-								fileLinks[src] = append(fileLinks[src], tgt)
-							}
+							eb.AddLink(src, linkVal.GetStringValue())
 						}
 					}
 				}
 			}
-			if nextOffset == nil {
+			if nextOffset == nil || len(eb.Nodes()) >= limit {
 				break
 			}
 			scrollOffset = nextOffset
 		}
 	}
 
-	// BFS traversal up to depth using pre-loaded map
-	for len(queue) > 0 && len(nodes) < limit {
-		current := queue[0]
-		queue = queue[1:]
+	// BFS traversal up to depth using pre-loaded link map
+	eb.Run()
 
-		if current.hop >= depth {
-			continue
-		}
-
-		for _, targetPath := range fileLinks[current.path] {
-			if targetPath == "" || visited[targetPath] {
-				continue
-			}
-			visited[targetPath] = true
-
-			targetID := "file:" + targetPath
-			nodes[targetID] = graphNode{
-				ID:    targetID,
-				Type:  "file",
-				Label: displayName(targetPath),
-			}
-
-			currentFileID := "file:" + current.path
-			k := edgeKey(currentFileID, targetID, "links_to")
-			edges[k] = graphEdge{
-				Source:       currentFileID,
-				Target:       targetID,
-				Relationship: "links_to",
-			}
-
-			if current.hop+1 < depth {
-				queue = append(queue, fileEntry{path: targetPath, hop: current.hop + 1})
-			}
-
-			if len(nodes) >= limit {
-				break
-			}
-		}
-	}
-
-	nodeList := make([]graphNode, 0, len(nodes))
-	edgeList := make([]graphEdge, 0, len(edges))
-	for _, n := range nodes {
-		nodeList = append(nodeList, n)
-		if len(nodeList) >= limit {
-			break
-		}
-	}
-	for _, e := range edges {
-		edgeList = append(edgeList, e)
-		if len(edgeList) >= limit {
-			break
-		}
-	}
-
-	writeJSON(w, 200, graphResponse{Nodes: nodeList, Edges: edgeList})
+	writeJSON(w, 200, graphResponse{Nodes: eb.Nodes(), Edges: eb.Edges()})
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────────
