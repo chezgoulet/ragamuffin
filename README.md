@@ -130,6 +130,62 @@ from the agent itself.
 Both patterns can coexist: file-based vaults for shared knowledge, agent vaults
 for session memory, all on the same Ragamuffin instance.
 
+### Hybrid Pattern 3: Ragamuffin as Cross-Harness Bridge
+
+Keep your existing harness memory slots (claudemem in OpenClaw, Honcho in
+Hermes) while using Ragamuffin exclusively as a **cross-harness recall bridge**
+and **structured fact store**. Agents get two additional tools that call
+Ragamuffin's API directly — no plugin swap required.
+
+```
+┌──────────────────┐     ┌──────────────┐
+│  OpenClaw        │     │  Claudemem   │ ← per-turn auto-persist (unchanged)
+│  (dev agent)     │────▶│              │
+│                  │     └──────────────┘
+│  ragamuffin_     │
+│  recall/store    ├───▶┌──────────────┐
+│  (agent tools)   │     │  Ragamuffin  │ ← cross-harness bridge
+└──────────────────┘     │              │
+                          │  agent::dev │
+┌──────────────────┐     │  agent::robot│
+│  Hermes          │     │  agent::scout│
+│  (robot agent)   │────▶│              │
+│                  │     └──────────────┘
+│  ragamuffin_     │
+│  recall/store    ├───▶┌──────────────┐
+│  (agent tools)   │     │  Honcho      │ ← per-turn auto-persist (unchanged)
+└──────────────────┘     └──────────────┘
+```
+
+**Why run this way:**
+- Zero migration — your existing memory setup stays exactly as-is
+- Cross-harness recall works across the boundary: OpenClaw dev can ask what
+  Hermes robot found in the last scan
+- Agents write selectively — only important conclusions and shared facts go
+  to Ragamuffin, not every turn
+- Gentler operational path: validate Ragamuffin in production before committing
+  to a full slot swap
+
+**What it costs:**
+- No auto-persistence — agents must explicitly call their store tool to write
+- No auto-prefetch — Ragamuffin context won't appear in the system prompt
+  automatically; agents must use recall when they need it
+- Agent discipline is required — if the agent forgets to store something, it's
+  lost (mitigated by the existing slot backend catching everything per-turn)
+
+| Dimension | Full plugin (slot) | Hybrid (agent tools) |
+|---|---|---|
+| Harness slot | Swap to memory-ragamuffin | Keep claudemem/Honcho |
+| Turn persistence | Automatic | Slot handles this |
+| Cross-harness recall | Built-in | Via ragamuffin_recall tool |
+| Agent writes | Zero-touch | Explicit tool calls |
+| Migration risk | Swap and validate | Additive, zero-risk |
+| End state | Full Ragamuffin | Ragamuffin as bridge layer |
+
+All three patterns use the same Ragamuffin instance and the same per-agent
+Qdrant collections. The difference is who calls the API — the harness plugin
+or the agent itself.
+
 ---
 
 ## API Reference
@@ -659,6 +715,11 @@ Configure in `openclaw.json`:
 That's it. Restart OpenClaw and every agent's memory is automatically
 Ragamuffin-backed — per-agent Qdrant isolation, session persistence,
 and cross-agent recall. Agents write zero code.
+
+**Don't want to swap slots yet?** See [Hybrid: Ragamuffin as cross-harness
+bridge](#hybrid-pattern-3-ragamuffin-as-cross-harness-bridge) — you can add
+Ragamuffin as agent tools alongside your existing memory backend with zero
+migration.
 
 ### Hermes — `memory.provider: "ragamuffin"`
 

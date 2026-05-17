@@ -58,6 +58,42 @@ endpoint), because the harness authenticates and authorizes the request.
 - Write log entries → `POST /v1/logs` (for what you did, when)
 - Read shared vaults → `POST /recall` with `source_filter`
 
+### Hybrid mode: don't swap your slot, just add tools
+
+If your operator wants to keep claudemem or Honcho as the harness memory slot,
+you can still use Ragamuffin directly through two additional tools the operator
+gives you:
+
+| Tool | What it does | When to use it |
+|---|---|---|
+| `ragamuffin_store(vault, id, text, metadata)` | Write a fact or conclusion to your agent vault | After reaching an important conclusion, making a decision, or learning something cross-agent useful |
+| `ragamuffin_recall(vault, query, limit)` | Search any agent's vault for relevant context | When you need to know what another agent has been doing, or recall something you stored earlier |
+
+Your harness slot (claudemem / Honcho) still handles turn-by-turn memory
+automatically. You use the Ragamuffin tools **selectively** — only for things
+worth sharing across harness boundaries or persisting beyond the session.
+
+```
+# You (dev agent): reach a design decision
+# Store it so robot can reference it later
+ragamuffin_store(
+  vault="agent::dev",
+  id="decision-qdrant-isolation-2026-05-17",
+  text="Decision: use physical Qdrant collection isolation per agent, not metadata filters. Source: Reddit post on multi-tenant AI vector store risks.",
+  metadata={"type": "decision", "topic": "infrastructure"}
+)
+
+# Later, robot agent: what did dev decide?
+ragamuffin_recall(
+  vault="agent::dev",
+  query="Qdrant isolation decision",
+  limit=3
+)
+```
+
+**Don't store every turn** — your slot already handles that. Only store what
+you'd want another agent to find. Quality over quantity.
+
 ---
 
 ## Endpoints (Agent-Friendly Cheat Sheet)

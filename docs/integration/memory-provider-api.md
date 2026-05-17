@@ -8,6 +8,10 @@ harness.
 > **Who this is for:** Harness authors who want to write a `memory-ragamuffin`
 > adapter for a gateway, framework, or agent runtime that has a pluggable memory
 > backend interface.
+>
+> Also: operators who want to use Ragamuffin as a **cross-harness bridge**
+> alongside their existing memory slot (claudemem, Honcho, etc.) by giving
+> agents direct API tools rather than swapping the slot itself.
 
 ## Quick Reference
 
@@ -247,6 +251,77 @@ The harness adapter needs to know three things to derive the vault name:
 The harness should pass the agent identifier to `initialize()` or equivalent.
 If the harness does not expose the agent identity, the adapter can use a
 configurable static vault name.
+
+## Hybrid Deployment: Agents as API Clients
+
+If you're not ready to swap your harness memory slot, you can still use
+Ragamuffin by giving agents two tools that call the API directly:
+
+- `ragamuffin_store(vault, id, text, metadata)` → `POST /v1/ingest`
+- `ragamuffin_recall(vault, query, limit)` → `POST /v1/recall`
+
+The harness slot (claudemem, Honcho, etc.) continues to handle automatic
+turn-by-turn memory. Agents use the Ragamuffin tools **selectively** — only for
+decisions, conclusions, and facts worth sharing across harness boundaries.
+
+### Tool definitions to add to your agent
+
+**OpenClaw — custom tool:**
+```json5
+// Add to openclaw.json under the agent's tool definition
+{
+  name: "ragamuffin_recall",
+  description: "Search an agent's knowledge vault. Use this to recall what another agent knows.",
+  parameters: {
+    type: "object",
+    properties: {
+      vault: { type: "string", description: "Agent vault name, e.g. agent::robot" },
+      query: { type: "string", description: "Natural language query" },
+      limit: { type: "integer", default: 5 },
+    },
+    required: ["vault", "query"],
+  },
+  handler: "http://ragamuffin:8080/v1/recall",
+}
+```
+
+**Hermes — custom tool via function calling config:**
+```yaml
+# Extend agent config with Ragamuffin tools
+tools:
+  - name: ragamuffin_recall
+    description: "Search an agent's knowledge vault"
+    handler:
+      url: "http://ragamuffin:8080/v1/recall"
+      method: POST
+      headers:
+        Content-Type: application/json
+```
+
+### When agents should write vs. when the slot handles it
+
+| Type | Handled by | Example |
+|---|---|---|
+| Turn transcript | Slot (auto) | "User asked about X. I responded Y." |
+| Important decision | Agent (explicit) | "Decision: use Qdrant collection isolation, not metadata filters." |
+| Cross-agent artifact | Agent (explicit) | "Deploy plan for v0.5 written to /ops/ragamuffin-v0.5-plan.md" |
+| Session summary | Slot (auto) or Agent | Summaries at end of session |
+
+Agents should store sparingly in hybrid mode — only what they'd want another
+agent to find. The slot already captures everything else.
+
+### Migration path from hybrid to full slot
+
+1. **Phase 1 (hybrid):** Deploy Ragamuffin. Give agents tools. Validate that
+   cross-harness recall works. No slot changes.
+2. **Phase 2 (parallel):** Begin slot migration on non-critical agents. Run
+   both backends — slot handles turn persistence, Ragamuffin handles
+   cross-harness recall.
+3. **Phase 3 (full):** Swap the slot to `memory-ragamuffin` on all agents.
+   Ragamuffin now handles both turn persistence and cross-harness recall.
+   Retire old slot backend.
+
+---
 
 ## Auth Integration
 
