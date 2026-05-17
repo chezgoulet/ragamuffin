@@ -80,7 +80,7 @@ func (c *Client) CreatePayloadIndex(ctx context.Context, collection, field, fiel
 	default:
 		ft = pb.FieldType_FieldTypeKeyword
 	}
-	_, err := c.points.CreateFieldIndex(ctx, &pb.CreateFieldIndexRequest{
+	_, err := c.points.CreateFieldIndex(ctx, &pb.CreateFieldIndexCollection{
 		CollectionName: collection,
 		FieldName:      field,
 		FieldType:      &ft,
