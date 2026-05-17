@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"log/slog"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
@@ -751,3 +753,51 @@ func TestPointToReviewEntry_MissingKeyValue(t *testing.T) {
 }
 
 // ── ───────────────────────────────────────────────────────────────────────────
+
+// ── Auth mock ──────────────────────────────────────────────────────────────────
+
+type mockReadOnlyAuth struct{}
+
+func (a *mockReadOnlyAuth) Authenticate(r *http.Request) (*auth.Claims, error) {
+	return &auth.Claims{Access: []string{"read"}}, nil
+}
+
+// ── Auth tests ─────────────────────────────────────────────────────────────────
+
+func TestReviewPost_AuthForbidden(t *testing.T) {
+	store := &reviewMockStore{collection: "test_facts"}
+	srv := newReviewServer(store)
+
+	body := `{"key": "test-key", "action": "confirm"}`
+	req := httptest.NewRequest("POST", "/v1/review", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+
+	handler := auth.Middleware(&mockReadOnlyAuth{})(http.HandlerFunc(srv.handleReview))
+
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 403 {
+		t.Fatalf("expected 403 for read-only claims, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── Body limit tests ───────────────────────────────────────────────────────────
+
+func TestReviewPost_BodyTooLarge(t *testing.T) {
+	store := &reviewMockStore{collection: "test_facts"}
+	srv := newReviewServer(store)
+
+	// Build a body that exceeds the 512KB limit
+	largeValue := strings.Repeat("x", 600*1024)
+	body := fmt.Sprintf(`{"key": "test-key", "action": "confirm", "extra": "%s"}`, largeValue)
+
+	req := httptest.NewRequest("POST", "/v1/review", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.handleReview(w, req)
+
+	if w.Code != 400 {
+		t.Fatalf("expected 400 for oversized body, got %d: %s", w.Code, w.Body.String())
+	}
+}
