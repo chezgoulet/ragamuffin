@@ -90,6 +90,15 @@ type Config struct {
 	RateLimitIngest    int
 	RateLimitReview    int
 
+	// Pruner configuration
+	PrunerEnabled                bool
+	PrunerStaleInterval          time.Duration
+	PrunerConflictInterval       time.Duration
+	PrunerSupersedeInterval      time.Duration
+	PrunerStaleDays              int
+	PrunerConflictSampleSize     int
+	PrunerLowConfidenceThreshold float64
+
 	// Optional — LLM
 	LLMProvider string
 	LLMBaseURL  string
@@ -248,6 +257,11 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REVIEW must be non-negative, got %d", c.RateLimitReview))
 	}
 
+	// Pruner config: StaleDays must be positive if pruner is enabled
+	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
+		errs = append(errs, "RAGAMUFFIN_PRUNER_STALE_DAYS must be positive when pruner is enabled")
+	}
+
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
 	case "none", "api_key", "jwt":
@@ -310,6 +324,14 @@ func Load() (*Config, error) {
 		RateLimitReindex:   envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
 		RateLimitIngest:    envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
 		RateLimitReview:    envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
+
+		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
+		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),
+		PrunerConflictInterval:       envDuration("RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL", 72*time.Hour),
+		PrunerSupersedeInterval:      envDuration("RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL", 24*time.Hour),
+		PrunerStaleDays:              envInt("RAGAMUFFIN_PRUNER_STALE_DAYS", 90),
+		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
+		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here

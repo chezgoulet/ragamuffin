@@ -74,4 +74,7 @@ func (p *Pruner) lowConfidenceScan(ctx context.Context) {
 	}
 
 	p.logger.Info("lowConfidenceScan complete", "found", len(points), "marked", marked)
+	if marked > 0 {
+		p.RecordFlagged(marked)
+	}
 }

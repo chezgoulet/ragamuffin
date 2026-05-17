@@ -145,6 +145,9 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 	}
 
 	p.logger.Info("conflictScan complete", "sampled", len(facts), "flagged_pairs", flagged)
+	if flagged > 0 {
+		p.RecordFlagged(flagged * 2) // two facts per pair
+	}
 }
 
 // markContradiction adds the other fact's key to this fact's contradicts list

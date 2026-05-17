@@ -82,4 +82,7 @@ func (p *Pruner) staleScan(ctx context.Context) {
 	}
 
 	p.logger.Info("staleScan complete", "found", len(points), "marked", marked)
+	if marked > 0 {
+		p.RecordFlagged(marked)
+	}
 }

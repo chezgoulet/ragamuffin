@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -31,14 +32,14 @@ import (
 // PrunerConfig controls the Pruner's scan intervals and thresholds.
 // All intervals have sensible defaults; zero values disable that scan type.
 type PrunerConfig struct {
-	Enabled               bool          // master switch (default false)
-	StaleScanInterval     time.Duration // default 24h
-	ConflictScanInterval  time.Duration // default 72h
-	SupersedeScanInterval time.Duration // default 24h
-	StaleDays             int           // default 90 — facts past this TTL expiry are flagged
-	ConflictSampleSize    int           // default 50 — pairs per scan cycle
-	LowConfidenceThreshold float64      // default 0.5 — below this → needs_review
-	ConfidenceBoost       float64       // default 0.1 — added on confirmation via review queue
+	Enabled                bool          // master switch (default false)
+	StaleScanInterval      time.Duration // default 24h
+	ConflictScanInterval   time.Duration // default 72h
+	SupersedeScanInterval  time.Duration // default 24h
+	StaleDays              int           // default 90 — facts past this TTL expiry are flagged
+	ConflictSampleSize     int           // default 50 — pairs per scan cycle
+	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
+	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
 }
 
 // DefaultConfig returns a PrunerConfig with sensible defaults.
@@ -46,12 +47,12 @@ func DefaultConfig() PrunerConfig {
 	return PrunerConfig{
 		Enabled:                false,
 		StaleScanInterval:      24 * time.Hour,
-		ConflictScanInterval:    72 * time.Hour,
-		SupersedeScanInterval:   24 * time.Hour,
-		StaleDays:               90,
-		ConflictSampleSize:      50,
-		LowConfidenceThreshold:  0.5,
-		ConfidenceBoost:         0.1,
+		ConflictScanInterval:   72 * time.Hour,
+		SupersedeScanInterval:  24 * time.Hour,
+		StaleDays:              90,
+		ConflictSampleSize:     50,
+		LowConfidenceThreshold: 0.5,
+		ConfidenceBoost:        0.1,
 	}
 }
 
@@ -59,12 +60,33 @@ func DefaultConfig() PrunerConfig {
 
 // Pruner manages scheduled fact lifecycle scans.
 type Pruner struct {
-	facts       *qdrant.Client
-	vaultClient *qdrant.Client
-	embedder    *embedding.Client
-	llm         *llm.Client
-	logger      *slog.Logger
-	cfg         PrunerConfig
+	facts        *qdrant.Client
+	vaultClient  *qdrant.Client
+	embedder     *embedding.Client
+	llm          *llm.Client
+	logger       *slog.Logger
+	cfg          PrunerConfig
+	mu           sync.Mutex
+	lastScans    map[string]time.Time // scan name → last run timestamp
+	totalScans   map[string]int64     // scan name → total runs
+	factsFlagged int64                // total facts flagged across all scans
+	factsResolved int64               // total facts resolved via review queue
+}
+
+// ScanHealthReport describes one scan's status for audit reporting.
+type ScanHealthReport struct {
+	Enabled     bool   `json:"enabled"`
+	LastRun     string `json:"last_run,omitempty"`
+	TotalRuns   int64  `json:"total_runs"`
+	Interval    string `json:"interval"`
+}
+
+// HealthReport is the full Pruner health report for audit integration.
+type HealthReport struct {
+	Enabled          bool                         `json:"enabled"`
+	Scans            map[string]ScanHealthReport  `json:"scans"`
+	FactsFlaggedTotal int64                       `json:"facts_flagged_total"`
+	FactsResolvedTotal int64                      `json:"facts_resolved_total"`
 }
 
 // New creates a Pruner. Pass nil for any unused client (e.g., no vault client
@@ -77,7 +99,63 @@ func New(facts, vaultClient *qdrant.Client, ec *embedding.Client, lm *llm.Client
 		llm:         lm,
 		logger:      logger,
 		cfg:         cfg,
+		lastScans:   make(map[string]time.Time),
+		totalScans:  make(map[string]int64),
 	}
+}
+
+// ── Health (for Audit integration) ────────────────────────────────────────────
+
+// Health returns a thread-safe snapshot of Pruner health for the audit endpoint.
+func (p *Pruner) Health() HealthReport {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	hr := HealthReport{
+		Enabled:           p.cfg.Enabled,
+		Scans:             make(map[string]ScanHealthReport),
+		FactsFlaggedTotal: p.factsFlagged,
+		FactsResolvedTotal: p.factsResolved,
+	}
+
+	scanDefs := map[string]struct {
+		interval time.Duration
+	}{
+		"StaleScan":       {p.cfg.StaleScanInterval},
+		"ConflictScan":    {p.cfg.ConflictScanInterval},
+		"SupersedeScan":   {p.cfg.SupersedeScanInterval},
+		"LowConfidenceScan": {0},
+	}
+
+	for name, def := range scanDefs {
+		lastRun := p.lastScans[name]
+		rpt := ScanHealthReport{
+			Enabled:   def.interval > 0 || name == "LowConfidenceScan",
+			TotalRuns: p.totalScans[name],
+			Interval:  def.interval.String(),
+		}
+		if !lastRun.IsZero() {
+			rpt.LastRun = lastRun.Format(time.RFC3339)
+		}
+		hr.Scans[name] = rpt
+	}
+
+	return hr
+}
+
+// RecordFlagged increments the flagged counter. Called by scan implementations.
+func (p *Pruner) RecordFlagged(count int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.factsFlagged += int64(count)
+}
+
+// RecordResolved increments the resolved counter. Called by the server when
+// a review item is resolved via POST /v1/review.
+func (p *Pruner) RecordResolved(count int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.factsResolved += int64(count)
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -119,6 +197,9 @@ func (p *Pruner) Run(ctx context.Context) {
 // runScan runs scanFn immediately, then every interval (if > 0) until ctx done.
 func (p *Pruner) runScan(ctx context.Context, name string, interval time.Duration, scanFn func(context.Context)) {
 	p.logger.Info("pruner scan starting", "scan", name)
+
+	// Run first scan
+	p.recordScanRun(name)
 	scanFn(ctx)
 
 	if interval <= 0 {
@@ -134,9 +215,18 @@ func (p *Pruner) runScan(ctx context.Context, name string, interval time.Duratio
 			return
 		case <-ticker.C:
 			p.logger.Info("pruner scan running", "scan", name)
+			p.recordScanRun(name)
 			scanFn(ctx)
 		}
 	}
+}
+
+// recordScanRun records the last run time and increments the counter.
+func (p *Pruner) recordScanRun(name string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.lastScans[name] = time.Now().UTC()
+	p.totalScans[name]++
 }
 
 // ── Scan helpers ──────────────────────────────────────────────────────────────

@@ -562,6 +562,36 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ── Pruner health check ──
+	if checkSet["pruner_health"] {
+		if s.pruner != nil {
+			health := s.pruner.Health()
+			resp["pruner_health"] = health
+		} else {
+			resp["pruner_health"] = map[string]interface{}{
+				"enabled": false,
+				"message": "pruner not configured",
+			}
+		}
+	}
+
+	// ── Fact conflict check ──
+	if checkSet["fact_conflict"] {
+		conflicts := s.checkFactConflicts(ctx)
+		resp["fact_conflicts"] = conflicts
+	}
+
+	// ── Fact vs vault conflict check ──
+	if checkSet["fact_vault_conflict"] {
+		if !s.cfg.HasLLM() {
+			resp["fact_vault_conflicts"] = []interface{}{}
+		} else {
+			conflicts, llmCalls := s.checkFactVaultConflicts(ctx, req.SampleSize)
+			resp["fact_vault_conflicts"] = conflicts
+			resp["fact_vault_conflict_llm_calls"] = llmCalls
+		}
+	}
+
 	writeJSON(w, 200, resp)
 }
 

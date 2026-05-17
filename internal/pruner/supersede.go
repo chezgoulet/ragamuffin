@@ -112,6 +112,7 @@ func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 
 	if marked > 0 {
 		p.logger.Info("supersedeCrossReference complete", "marked_as_superseded", marked)
+		p.RecordFlagged(marked)
 	}
 }
 
@@ -206,6 +207,7 @@ func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
 
 	if marked > 0 {
 		p.logger.Info("supersedeKeyPattern complete", "marked_as_superseded", marked)
+		p.RecordFlagged(marked)
 	}
 }
 

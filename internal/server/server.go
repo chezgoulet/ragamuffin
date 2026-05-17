@@ -21,6 +21,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
@@ -51,6 +52,7 @@ type Server struct {
 	ratelimit   *ratelimit.Limiter
 	watcher     watcher.Watcher
 	logStore    *logstore.Store
+	pruner      *pruner.Pruner
 	mcpHandler  *mcp.Handler
 	logger      *slog.Logger
 	started     time.Time
@@ -59,7 +61,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -71,6 +73,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 		ratelimit:     rl,
 		watcher:       w,
 		logStore:      logStore,
+		pruner:        pr,
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),

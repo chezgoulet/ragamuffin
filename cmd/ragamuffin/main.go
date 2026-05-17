@@ -270,7 +270,13 @@ func main() {
 
 	// ── Pruner (fact lifecycle management) ────────────────────────────────────
 	prunerCfg := pruner.DefaultConfig()
-	prunerCfg.Enabled = true // TODO: make configurable via env var
+	prunerCfg.Enabled = cfg.PrunerEnabled
+	prunerCfg.StaleScanInterval = cfg.PrunerStaleInterval
+	prunerCfg.ConflictScanInterval = cfg.PrunerConflictInterval
+	prunerCfg.SupersedeScanInterval = cfg.PrunerSupersedeInterval
+	prunerCfg.StaleDays = cfg.PrunerStaleDays
+	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
+	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
 	p := pruner.New(factsQc, qc, ec, lm, logger.With("component", "pruner"), prunerCfg)
 	ctxPruner, cancelPruner := context.WithCancel(context.Background())
 	defer cancelPruner()
@@ -290,7 +296,7 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, logger)
 
 	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
