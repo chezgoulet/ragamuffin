@@ -16,6 +16,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -54,6 +55,7 @@ type Server struct {
 	logStore    *logstore.Store
 	pruner      *pruner.Pruner
 	mcpHandler  *mcp.Handler
+	broker      *events.Broker  // SSE subscriber registry
 	logger      *slog.Logger
 	started     time.Time
 	mu          sync.Mutex
@@ -61,7 +63,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, br *events.Broker, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -74,6 +76,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		watcher:       w,
 		logStore:      logStore,
 		pruner:        pr,
+		broker:        br,
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),
@@ -127,6 +130,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
 	mux.HandleFunc("/metrics", s.withRequestID(s.handleMetrics))
 	mux.HandleFunc("/vaults", s.withRequestID(s.handleVaults))
+	mux.HandleFunc("/events", s.withRequestID(s.handleEvents))
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
 
 	// Static file server (catch-all for web UI)
@@ -163,6 +167,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Ingest — agent session persistence
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
+
+	// Agent session endpoints (v0.5+/#162)
+	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
@@ -477,11 +484,17 @@ func (s *Server) handleVaultSnapshot(w http.ResponseWriter, r *http.Request) {
 // ── /vaults ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		s.handleListVaults(w, r)
+	case http.MethodPost:
+		s.handleCreateVault(w, r)
+	default:
 		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
-		return
 	}
+}
 
+func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.IsMultiTenant() {
 		// Single-tenant: return the single vault with real stats
 		idx := s.indexerFor(r.Context())
@@ -520,7 +533,9 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 			formatted := lastIndexed.Format(time.RFC3339)
 			lastIndexedStr = &formatted
 		}
+		s.mu.Lock()
 		vc := s.cfg.Vaults[name]
+		s.mu.Unlock()
 		path := ""
 		if vc != nil {
 			path = vc.Path
@@ -537,6 +552,68 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, map[string]any{
 		"vaults": vaults,
+	})
+}
+
+// handleCreateVault creates a new runtime vault (POST /vaults).
+// Only available in multi-tenant mode.
+func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name        string `json:"name"`
+		Path        string `json:"path"`
+		Description string `json:"description,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+	if req.Name == "" || req.Path == "" {
+		writeError(w, 400, "INVALID_REQUEST", "name and path are required")
+		return
+	}
+
+	// Check vault config access with lock — re-check inside lock to avoid TOCTOU
+	s.mu.Lock()
+	if s.cfg.Vaults == nil {
+		s.mu.Unlock()
+		writeError(w, 400, "INVALID_REQUEST", "not in multi-tenant mode")
+		return
+	}
+	if _, exists := s.cfg.Vaults[req.Name]; exists {
+		s.mu.Unlock()
+		writeError(w, 409, "CONFLICT", "vault already exists")
+		return
+	}
+	s.mu.Unlock()
+
+	if _, exists := s.indexers.Get(req.Name); exists {
+		writeError(w, 409, "CONFLICT", "vault index already exists")
+		return
+	}
+
+	// Create vault directory on disk (I/O outside lock)
+	if err := os.MkdirAll(req.Path, 0755); err != nil {
+		writeError(w, 500, "INTERNAL", fmt.Sprintf("failed to create vault directory: %s", err))
+		return
+	}
+
+	// Register new vault config — re-check under lock to prevent double-create race
+	s.mu.Lock()
+	if _, exists := s.cfg.Vaults[req.Name]; exists {
+		s.mu.Unlock()
+		writeError(w, 409, "CONFLICT", "vault already exists (concurrent creation)")
+		return
+	}
+	s.cfg.Vaults[req.Name] = &config.VaultConfig{
+		Path: req.Path,
+	}
+	s.mu.Unlock()
+
+	s.logger.Info("vault created at runtime", "name", req.Name, "path", req.Path)
+
+	writeJSON(w, 201, map[string]interface{}{
+		"name": req.Name,
+		"path": req.Path,
 	})
 }
 
@@ -574,6 +651,32 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
+}
+
+// ── Per-vault LLM / embedding resolution (#161) ──────────────────────────────
+
+// llmFor returns a per-vault LLM client based on vault name.
+// Uses the indexer manager's cached per-vault LLM clients.
+// Falls through to the server default if no per-vault override exists.
+func (s *Server) llmFor(ctx context.Context, vaultName string) *llm.Client {
+	if vaultName != "" {
+		if lm := s.indexers.GetLLM(vaultName); lm != nil {
+			return lm
+		}
+	}
+	return s.llm
+}
+
+// embeddingFor returns a per-vault embedding client based on vault name.
+// Uses the indexer manager's cached per-vault embedding clients.
+// Falls through to the server default if no per-vault override exists.
+func (s *Server) embeddingFor(ctx context.Context, vaultName string) *embedding.Client {
+	if vaultName != "" {
+		if ec := s.indexers.GetEmbedder(vaultName); ec != nil {
+			return ec
+		}
+	}
+	return s.embedder
 }
 
 // ── /version ──────────────────────────────────────────────────────────────────

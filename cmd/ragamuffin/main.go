@@ -189,8 +189,9 @@ func main() {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")
 	}
 
-	// ── Initialize event emitter (optional) ──────────────────────────────────
-	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger)
+	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
+	eventBroker := events.NewBroker()
+	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker)
 	if cfg.EventWebhookURL != "" {
 		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
 	}
@@ -339,7 +340,7 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, eventBroker, logger)
 
 	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
