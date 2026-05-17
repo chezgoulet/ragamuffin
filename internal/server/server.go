@@ -90,6 +90,9 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
 
+	// Migrate existing facts — set defaults on missing lifecycle fields
+	s.migrateFacts()
+
 	return s
 }
 

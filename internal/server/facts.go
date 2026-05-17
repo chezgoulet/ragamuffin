@@ -655,6 +655,148 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// migrateFacts reads all existing facts and fills in default values for
+// v0.5 lifecycle fields that didn't exist before. This is a one-time
+// migration run at server startup. Errors are logged but non-fatal.
+func (s *Server) migrateFacts() {
+	if s.facts == nil {
+		return
+	}
+	ctx := context.Background()
+	collection := s.cfg.FactsCollection
+
+	var offset string
+	const pageSize uint32 = 100
+	migrated := 0
+
+	for {
+		points, err := s.facts.ScrollFiltered(ctx, collection, nil, pageSize, offset)
+		if err != nil {
+			s.logger.Error("facts migration scroll failed", "error", err)
+			return
+		}
+		if len(points) == 0 {
+			break
+		}
+
+		for _, p := range points {
+			payload := p.GetPayload()
+			if payload == nil {
+				continue
+			}
+
+			needsUpdate := false
+			now := time.Now().UTC().Format(time.RFC3339)
+
+			// status: default "active"
+			if _, ok := payload["status"]; !ok {
+				payload["status"] = qdrant.NewValue("active")
+				needsUpdate = true
+			}
+			// confidence: default 1.0
+			if _, ok := payload["confidence"]; !ok {
+				payload["confidence"] = qdrant.NewValue(1.0)
+				needsUpdate = true
+			}
+			// source_type: default "manual"
+			if _, ok := payload["source_type"]; !ok {
+				payload["source_type"] = qdrant.NewValue("manual")
+				needsUpdate = true
+			}
+			// conflict_resolved: default true
+			if _, ok := payload["conflict_resolved"]; !ok {
+				payload["conflict_resolved"] = qdrant.NewValue(true)
+				needsUpdate = true
+			}
+			// confirmation_count: default 1
+			if _, ok := payload["confirmation_count"]; !ok {
+				payload["confirmation_count"] = qdrant.NewValue(float64(1))
+				needsUpdate = true
+			}
+			// created_at: default to updated_at or now
+			if _, ok := payload["created_at"]; !ok {
+				if ua, ok := payload["updated_at"]; ok && ua.GetStringValue() != "" {
+					payload["created_at"] = qdrant.NewValue(ua.GetStringValue())
+				} else {
+					payload["created_at"] = qdrant.NewValue(now)
+				}
+				needsUpdate = true
+			}
+			// last_confirmed_at: default to updated_at or now
+			if _, ok := payload["last_confirmed_at"]; !ok {
+				if ua, ok := payload["updated_at"]; ok && ua.GetStringValue() != "" {
+					payload["last_confirmed_at"] = qdrant.NewValue(ua.GetStringValue())
+				} else {
+					payload["last_confirmed_at"] = qdrant.NewValue(now)
+				}
+				needsUpdate = true
+			}
+			// supersedes: default ""
+			if _, ok := payload["supersedes"]; !ok {
+				payload["supersedes"] = qdrant.NewValue("")
+				needsUpdate = true
+			}
+			// contradicts: default empty list
+			if _, ok := payload["contradicts"]; !ok {
+				payload["contradicts"] = &qdrant.Value{
+					Kind: &qdrant.Value_ListValue{
+						ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+					},
+				}
+				needsUpdate = true
+			}
+			// source: default ""
+			if _, ok := payload["source"]; !ok {
+				payload["source"] = qdrant.NewValue("")
+				needsUpdate = true
+			}
+			// ttl_days: default 0
+			if _, ok := payload["ttl_days"]; !ok {
+				payload["ttl_days"] = qdrant.NewValue(float64(0))
+				needsUpdate = true
+			}
+			// expires_at: default ""
+			if _, ok := payload["expires_at"]; !ok {
+				payload["expires_at"] = qdrant.NewValue("")
+				needsUpdate = true
+			}
+
+			if !needsUpdate {
+				continue
+			}
+
+			point := &qdrant.PointStruct{
+				Id: p.Id,
+				Payload: payload,
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{
+							Data: []float32{0, 0, 0, 0},
+						},
+					},
+				},
+			}
+
+			if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
+				s.logger.Error("facts migration upsert failed", "error", err)
+				continue
+			}
+			migrated++
+		}
+
+		// Set offset for next page
+		if id := points[len(points)-1].GetId().GetUuid(); id != "" {
+			offset = id
+		} else {
+			break
+		}
+	}
+
+	if migrated > 0 {
+		s.logger.Info("facts migration complete", "migrated", migrated)
+	}
+}
+
 // ── Route dispatcher ─────────────────────────────────────────────────────
 
 // handleFacts dispatches to POST/GET/PUT/PATCH/DELETE /v1/facts based on method.
