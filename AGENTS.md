@@ -27,7 +27,16 @@ internal/
   auth/                   # API key and JWT authentication
   ratelimit/              # Per-endpoint rate limiter
   logstore/               # SQLite-backed structured log store
-  mcp/                    # MCP SSE transport + JSON-RPC dispatch
+  vault/                  # v0.5 — per-agent vault lifecycle, provisioning
+  session/                # v0.5 — session ingest and recall dispatch
+
+plugins/
+  memory-ragamuffin-openclaw/  # v0.5 — OpenClaw plugin adapter (Node.js)
+  memory-ragamuffin-hermes/    # v0.5 — Hermes plugin adapter (Python)
+
+docs/
+  integration/
+    memory-provider-api.md     # v0.5 — HTTP contract for adapters
 ```
 
 ## Coding Conventions
@@ -92,8 +101,14 @@ work on that version.
 | v0.2 | [SPEC-v0.2.md](SPEC-v0.2.md) | Designed, not started |
 | v0.3 | [SPEC-v0.3.md](SPEC-v0.3.md) | Done |
 | v0.4 | [SPEC-v0.4.md](SPEC-v0.4.md) | Done — multi-tenancy, auth, graph, CloudEvents, web UI |
+| v0.5 | [SPEC-v0.5.md](SPEC-v0.5.md) | In progress — agent memory backend, per-agent vaults, session ingest, harness plugin adapters |
 
 The [ROADMAP.md](ROADMAP.md) has the high-level vision and out-of-scope list.
+
+### Integration docs
+
+Adapter authors and operators should read:
+- [docs/integration/memory-provider-api.md](docs/integration/memory-provider-api.md) — HTTP contract, lifecycle mapping, error handling
 
 ## Implementation Order
 

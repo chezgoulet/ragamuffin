@@ -5,14 +5,22 @@
 
 ---
 
-**Ragamuffin** is what happens when you get tired of your RAG stack being held together with Python async bugs, MCP bridges, and two-hop architectures that fail at 1 AM.
+**Ragamuffin** serves two roles in one binary:
 
-Point it at a directory. It watches for changes, indexes everything into [Qdrant](https://qdrant.tech), and serves a REST API that any agent can curl. No bridge. No translation layer. One binary.
+1. **Vault Knowledge Server** — point it at a directory, it watches for changes, indexes everything into [Qdrant](https://qdrant.tech), and serves a REST API that any agent can curl. No bridge. No translation layer.
+2. **Agent Memory Backend (v0.5)** — plug it into OpenClaw or Hermes via a harness plugin adapter, and every agent gets isolated, persistent, cross-session memory backed by per-agent Qdrant collections. No agent discipline required.
 
 ```bash
+# Vault mode: semantic search over watched directories
 curl -s http://localhost:8000/recall \
   -d '{"query":"what do we know about that thing?"}'
+
+# Agent memory mode: recall from a specific agent's private vault
+curl -s http://localhost:8000/v1/recall \
+  -d '{"vault":"agent::dev","query":"what did Christopher ask about?"}'
 ```
+
+Scroll down to [Two Patterns](#two-patterns) for the full picture.
 
 ## Quick Start
 
@@ -36,7 +44,147 @@ curl -s http://localhost:8000/recall \
 # Online docs: https://raw.githubusercontent.com/chezgoulet/ragamuffin/main/README.md
 ```
 
+---
 
+## Two Patterns
+
+Ragamuffin serves two distinct use cases. They can be used independently or together.
+
+### Pattern 1: Vault Knowledge Server
+
+Point Ragamuffin at a filesystem directory. It watches for changes (poll or inotify),
+chunks files, embeds them, and indexes into Qdrant. Agents search the vault with
+natural language queries. Optional LLM-backed answer synthesis.
+
+```
+┌──────────────────┐     ┌──────────────┐     ┌──────────────┐
+│  File System     │────▶│  Ragamuffin  │────▶│  Qdrant      │
+│  (vault dir)     │     │  (Go binary) │     │  collections │
+│  docs/           │     │              │     └──────────────┘
+│  ops/            │     │  ┌─────────┐ │
+│  policies/       │     │  │ SQLite  │ │
+└──────────────────┘     │  │ (logs)  │ │
+                          │  └─────────┘ │
+                          └──────┬───────┘
+                                 │
+                    ┌────────────┴────────────┐
+                    ▼                         ▼
+               ┌──────────┐            ┌──────────┐
+               │ Agent A  │            │ Agent B  │
+               │ (search) │            │ (search) │
+               └──────────┘            └──────────┘
+```
+
+**Who this is for:** Teams that want agents to search shared documentation,
+runbooks, policies, or codebases — any directory of files that needs to be
+queryable by natural language.
+
+### Pattern 2: Agent Memory Backend
+
+Plug Ragamuffin into your agent harness (OpenClaw or Hermes) via a memory
+plugin adapter. Every agent gets its own isolated Qdrant collection, persistent
+session memory, and cross-agent recall — with zero agent discipline required.
+The harness routes memory operations transparently: no `curl`, no tool calls
+from the agent itself.
+
+```
+┌──────────────────┐     ┌──────────────┐     ┌──────────────────────┐
+│  OpenClaw        │     │  Ragamuffin  │     │  Qdrant              │
+│  (dev agent)     │────▶│              │────▶│  agent::dev          │
+│  memory-ragamuffin│    │  POST /v1/   │     │  ┌────────────────┐  │
+│  plugin          │     │  ingest      │     │  │ session turns  │  │
+├──────────────────┤     │              │     │  │ recalled facts │  │
+│  Hermes          │     │  POST /v1/   │     │  │ summaries      │  │
+│  (robot agent)   │────▶│  recall      │     │  └────────────────┘  │
+│  memory-ragamuffin│    │              │────▶├──────────────────────┤
+│  plugin          │     │              │     │  Qdrant              │
+└──────────────────┘     │  POST /v1/   │     │  agent::robot        │
+                          │  recall?     │     │  ┌────────────────┐  │
+                          │  vault=agent::│    │  │ session turns  │  │
+   (cross-agent)          │  robot       │     │  │ recalled facts │  │
+                          │             │      │  │ summaries      │  │
+                          └──────────────┘     │  └────────────────┘  │
+                                               └──────────────────────┘
+```
+
+**Who this is for:** Operators running multi-agent systems who need:
+- **Guaranteed persistence** — the harness enforces memory writes, agents don't
+  have to remember to call a tool
+- **Per-agent isolation** — each agent's Qdrant collection is physically separate;
+  metadata filter bugs can't leak data across agents
+- **Cross-agent recall** — agent A can query agent B's memory via `agent_recall`
+  (privileged tool provided by the harness)
+- **Single infrastructure** — one Ragamuffin instance, one Qdrant cluster, all agents
+
+### Side-by-side
+
+| Dimension | Vault Knowledge Server | Agent Memory Backend |
+|---|---|---|
+| Data source | Filesystem directory | Session turn content from harness |
+| Isolation | Per-vault Qdrant collections | Per-agent Qdrant collections (`agent::<name>`) |
+| Agent setup | Curl / MCP from any agent | Plugin adapter installed in harness |
+| Persistence | File watcher detects changes | Harness calls `POST /v1/ingest` each turn |
+| Cross-agent | N/A | Privileged cross-agent recall tool |
+| Hardware | One Ragamuffin | One Ragamuffin for all agents |
+
+Both patterns can coexist: file-based vaults for shared knowledge, agent vaults
+for session memory, all on the same Ragamuffin instance.
+
+### Hybrid Pattern 3: Ragamuffin as Cross-Harness Bridge
+
+Keep your existing harness memory slots (claudemem in OpenClaw, Honcho in
+Hermes) while using Ragamuffin exclusively as a **cross-harness recall bridge**
+and **structured fact store**. Agents get two additional tools that call
+Ragamuffin's API directly — no plugin swap required.
+
+```
+┌──────────────────┐     ┌──────────────┐
+│  OpenClaw        │     │  Claudemem   │ ← per-turn auto-persist (unchanged)
+│  (dev agent)     │────▶│              │
+│                  │     └──────────────┘
+│  ragamuffin_     │
+│  recall/store    ├───▶┌──────────────┐
+│  (agent tools)   │     │  Ragamuffin  │ ← cross-harness bridge
+└──────────────────┘     │              │
+                          │  agent::dev │
+┌──────────────────┐     │  agent::robot│
+│  Hermes          │     │  agent::scout│
+│  (robot agent)   │────▶│              │
+│                  │     └──────────────┘
+│  ragamuffin_     │
+│  recall/store    ├───▶┌──────────────┐
+│  (agent tools)   │     │  Honcho      │ ← per-turn auto-persist (unchanged)
+└──────────────────┘     └──────────────┘
+```
+
+**Why run this way:**
+- Zero migration — your existing memory setup stays exactly as-is
+- Cross-harness recall works across the boundary: OpenClaw dev can ask what
+  Hermes robot found in the last scan
+- Agents write selectively — only important conclusions and shared facts go
+  to Ragamuffin, not every turn
+- Gentler operational path: validate Ragamuffin in production before committing
+  to a full slot swap
+
+**What it costs:**
+- No auto-persistence — agents must explicitly call their store tool to write
+- No auto-prefetch — Ragamuffin context won't appear in the system prompt
+  automatically; agents must use recall when they need it
+- Agent discipline is required — if the agent forgets to store something, it's
+  lost (mitigated by the existing slot backend catching everything per-turn)
+
+| Dimension | Full plugin (slot) | Hybrid (agent tools) |
+|---|---|---|
+| Harness slot | Swap to memory-ragamuffin | Keep claudemem/Honcho |
+| Turn persistence | Automatic | Slot handles this |
+| Cross-harness recall | Built-in | Via ragamuffin_recall tool |
+| Agent writes | Zero-touch | Explicit tool calls |
+| Migration risk | Swap and validate | Additive, zero-risk |
+| End state | Full Ragamuffin | Ragamuffin as bridge layer |
+
+All three patterns use the same Ragamuffin instance and the same per-agent
+Qdrant collections. The difference is who calls the API — the harness plugin
+or the agent itself.
 
 ---
 
@@ -135,6 +283,142 @@ curl -s http://localhost:8000/audit \
 | `stale_days` | int | 90 | Days since last update to flag as stale |
 | `checks` | array | all | Which checks: `stale`, `semantic_conflict`, `gap`, `duplicate` |
 | `sample_size` | int | 50 | Chunk pairs to LLM-compare (1–200, requires LLM) |
+
+### Agent Memory Endpoints (v0.5)
+
+These endpoints support the agent memory backend pattern. Harness plugin adapters
+call them transparently — agents don't curl these directly. But you can, for
+debugging and manual inspection.
+
+#### `POST /v1/vaults` — Create or confirm an agent vault
+
+Each agent gets its own isolated vault. Calling this endpoint ensures the vault
+exists (idempotent — returns `created: false` if already present).
+
+```bash
+curl -s -X POST http://localhost:8000/v1/vaults \
+  -H "Content-Type: application/json" \
+  -d '{"name":"agent::dev","label":"Dev agent working memory"}'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | — | Vault name **(required)** — use `agent::<name>` convention |
+| `label` | string | `""` | Human-readable label for the vault |
+
+**Response:**
+```json
+{
+  "name": "agent::dev",
+  "label": "Dev agent working memory",
+  "created": true,
+  "collection": "agent::dev"
+}
+```
+
+`created: false` means the vault already existed. Vault operations are
+deterministic — name hashes to a Qdrant collection name. Safe to call on
+every agent startup.
+
+#### `POST /v1/ingest` — Index content into an agent vault
+
+Persist session content, turn transcripts, or any text into an agent's vault.
+Called by the harness plugin after each completed turn.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vault": "agent::dev",
+    "documents": [
+      {
+        "id": "turn-2026-05-17-001",
+        "text": "User asked about Hermes integration. I explained the MemoryProvider ABC patterns...",
+        "metadata": {
+          "source": "session",
+          "agent": "dev",
+          "session_id": "sess_abc123"
+        }
+      }
+    ]
+  }'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `vault` | string | — | Target vault name **(required)** |
+| `documents` | array | `[]` | List of documents to index **(required)** |
+| `documents[].id` | string | — | Unique doc/session ID **(required)** |
+| `documents[].text` | string | — | Content text **(required)** |
+| `documents[].metadata` | object | `{}` | Optional metadata for filtering |
+
+**Response:**
+```json
+{
+  "indexed": 1,
+  "vault": "agent::dev"
+}
+```
+
+#### `POST /v1/recall` — Semantic search across vaults
+
+Extended recall that targets a specific vault by name. Same semantics as `/recall`
+but with vault targeting.
+
+```bash
+# Recall from the calling agent's own vault
+curl -s -X POST http://localhost:8000/v1/recall \
+  -H "Content-Type: application/json" \
+  -d '{"vault":"agent::dev","query":"what did we decide about Qdrant isolation?","limit":5}'
+
+# Cross-agent recall — query another agent's vault
+curl -s -X POST http://localhost:8000/v1/recall \
+  -H "Content-Type: application/json" \
+  -d '{"vault":"agent::robot","query":"what vulnerabilities were found?","limit":3}'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `vault` | string | — | Vault to search **(required)** |
+| `query` | string | — | Natural-language query **(required)** |
+| `limit` | int | 10 | Max results (1–100) |
+| `min_score` | float | 0.0 | Minimum similarity threshold (0.0–1.0) |
+
+**Response:**
+```json
+{
+  "results": [
+    {
+      "text": "Use physical Qdrant collection isolation, not metadata filters...",
+      "score": 0.89,
+      "metadata": {
+        "source": "session",
+        "agent": "dev",
+        "session_id": "sess_abc123"
+      }
+    }
+  ],
+  "vault": "agent::dev"
+}
+```
+
+#### `GET /v1/vaults/:name/health` — Check vault readiness
+
+Used during agent startup to confirm the vault is reachable and ready.
+
+```bash
+curl -s http://localhost:8000/v1/vaults/agent::dev/health
+```
+
+**Response:**
+```json
+{
+  "name": "agent::dev",
+  "exists": true,
+  "collection": "agent::dev",
+  "indexed": 142
+}
+```
 
 ### Structured Data Endpoints (v0.3)
 
@@ -397,6 +681,82 @@ API routes take priority over static file serving.
 
 ---
 
+## Harness Integration (v0.5)
+
+Ragamuffin ships as the memory backend for both OpenClaw and Hermes agents.
+The adapters are reference implementations — any harness with a pluggable memory
+backend can adopt the same API contract.
+
+### OpenClaw — `plugins.slots.memory = "memory-ragamuffin"`
+
+Configure in `openclaw.json`:
+
+```json5
+{
+  plugins: {
+    slots: {
+      memory: "memory-ragamuffin",
+    },
+    entries: {
+      "memory-ragamuffin": {
+        enabled: true,
+        config: {
+          endpoint: "http://ragamuffin:8080",
+          vaultPrefix: "agent::",
+          autoRecall: true,
+          autoCapture: true,
+        },
+      },
+    },
+  },
+}
+```
+
+That's it. Restart OpenClaw and every agent's memory is automatically
+Ragamuffin-backed — per-agent Qdrant isolation, session persistence,
+and cross-agent recall. Agents write zero code.
+
+**Don't want to swap slots yet?** See [Hybrid: Ragamuffin as cross-harness
+bridge](#hybrid-pattern-3-ragamuffin-as-cross-harness-bridge) — you can add
+Ragamuffin as agent tools alongside your existing memory backend with zero
+migration.
+
+### Hermes — `memory.provider: "ragamuffin"`
+
+Configure in `config.yaml`:
+
+```yaml
+memory:
+  provider: ragamuffin
+  ragamuffin:
+    endpoint: "http://ragamuffin:8080"
+    vault_prefix: "agent::"
+```
+
+Hermes discovers the plugin from `plugins/memory/ragamuffin/`. The adapter
+implements the `MemoryProvider` ABC — `initialize`, `prefetch`, `sync_turn`,
+`get_tool_schemas`, `on_session_end`, `shutdown`.
+
+### Lifecycle mapping
+
+Both adapters implement the same mapping from harness hooks to Ragamuffin API calls:
+
+| Harness hook | Ragamuffin API call |
+|---|---|
+| Plugin load / agent start | `POST /v1/vaults` — create/confirm agent vault |
+| Pre-turn recall | `POST /v1/recall` — semantic search against agent vault |
+| Post-turn persist | `POST /v1/ingest` — index the completed turn |
+| Session end | `POST /v1/ingest` — index a session summary artifact |
+| Cross-agent recall | `POST /v1/recall?vault=agent::robot` — query another agent's vault |
+
+### Writing an adapter for another harness
+
+See [docs/integration/memory-provider-api.md](docs/integration/memory-provider-api.md)
+for the full HTTP contract, OpenAPI spec, error handling guide, and agent identity
+conventions. The adapters are ~200 lines each — the contract is the hard part.
+
+---
+
 ## Rate Limits
 
 Per-endpoint rate limiting via environemnt variables. Disabled by default; enable with `RAGAMUFFIN_RATE_LIMIT_ENABLED=true`.
@@ -592,14 +952,15 @@ via slog and returns JSON 500 errors instead of silent connection drops.
 
 ## Status
 
-Active development. v0.4 with multi-tenancy, authentication, knowledge graph,
-CloudEvents, configurable LLM timeout, embedded web dashboard, and all v0.3
-features.
+Active development. v0.5 adds agent memory backend support — per-agent Qdrant
+collections, session ingest endpoint, cross-agent recall, and harness plugin
+adapters for OpenClaw and Hermes.
 
 ### Release History
 
 | Version | Highlights |
 |---|---|
+| v0.5 | Agent memory backend — per-agent Qdrant collections, session ingest (`POST /v1/ingest`), vault provisioning (`POST /v1/vaults`), cross-agent recall, OpenClaw + Hermes plugin adapters, integration docs |
 | v0.4 | Multi-tenancy, authentication (API key + JWT), knowledge graph, CloudEvents, LLM timeout config, embedded web UI, built-in web dashboard |
 | v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |
 | v0.3.3 | Tags fix for facts POST (`qdrant.NewValue` 2-value return), deployment fixes |

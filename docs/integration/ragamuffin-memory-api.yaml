@@ -1,0 +1,327 @@
+openapi: "3.0.3"
+info:
+  title: Ragamuffin Memory Provider API
+  version: "0.5.0"
+  description: |
+    HTTP contract for agent harness memory adapters. Harness plugin adapters
+    (OpenClaw, Hermes, etc.) call these endpoints to provide persistent,
+    isolated, cross-session agent memory backed by Qdrant.
+
+    Two reference implementations exist:
+    - OpenClaw: plugins/memory-ragamuffin-openclaw/ (Node.js)
+    - Hermes:   plugins/memory-ragamuffin-hermes/   (Python)
+
+servers:
+  - url: http://ragamuffin:8080
+    description: Default Ragamuffin endpoint
+
+paths:
+  /v1/vaults:
+    post:
+      summary: Create or confirm an agent vault
+      description: |
+        Idempotent vault provisioning. Creates the corresponding Qdrant
+        collection if it doesn't exist. Safe to call on every agent startup.
+      operationId: createVault
+      tags: [Vaults]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateVaultRequest'
+      responses:
+        "200":
+          description: Vault already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultResponse'
+        "201":
+          description: Vault created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+        "502":
+          $ref: '#/components/responses/QdrantUnavailable'
+
+  /v1/vaults/{name}/health:
+    get:
+      summary: Check vault readiness
+      description: |
+        Verify vault exists and Qdrant is reachable. Used during agent init
+        to gate readiness before accepting turns.
+      operationId: checkVaultHealth
+      tags: [Vaults]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^agent::[a-zA-Z0-9_-]+$'
+          description: Vault name (e.g., agent::dev)
+      responses:
+        "200":
+          description: Vault health status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultHealthResponse'
+        "502":
+          $ref: '#/components/responses/QdrantUnavailable'
+
+  /v1/ingest:
+    post:
+      summary: Index content into a vault
+      description: |
+        Persist session turns, summaries, or any text content into an
+        agent's vault. Called by the harness after each completed turn
+        and at session end.
+      operationId: ingestContent
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IngestRequest'
+      responses:
+        "200":
+          description: All documents indexed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestResponse'
+        "207":
+          description: Partial success (some documents failed)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestPartialResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+        "404":
+          $ref: '#/components/responses/VaultNotFound'
+        "502":
+          $ref: '#/components/responses/QdrantUnavailable'
+
+  /v1/recall:
+    post:
+      summary: Semantic search against a vault
+      description: |
+        Vault-targeted semantic search. Used by the harness during prefetch
+        for turn context and for cross-agent recall.
+      operationId: recallMemory
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecallRequest'
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecallResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+        "404":
+          $ref: '#/components/responses/VaultNotFound'
+        "502":
+          $ref: '#/components/responses/QdrantUnavailable'
+
+components:
+  schemas:
+    CreateVaultRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9_:-]+$'
+          maxLength: 256
+          description: "Vault name (use agent::<id> convention)"
+        label:
+          type: string
+          maxLength: 512
+          description: "Human-readable label"
+
+    VaultResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        label:
+          type: string
+        created:
+          type: boolean
+          description: "true if vault was just created, false if it already existed"
+        collection:
+          type: string
+          description: "Qdrant collection name backing this vault"
+
+    VaultHealthResponse:
+      type: object
+      properties:
+        name:
+          type: string
+        exists:
+          type: boolean
+        collection:
+          type: string
+        indexed:
+          type: integer
+          description: "Number of points (documents) in the collection"
+
+    Document:
+      type: object
+      required: [id, text]
+      properties:
+        id:
+          type: string
+          maxLength: 512
+          description: "Unique identifier (session_id + turn_number, or UUID)"
+        text:
+          type: string
+          maxLength: 65536
+          description: "Content text to embed and index"
+        metadata:
+          type: object
+          description: "Arbitrary metadata attached to the Qdrant point"
+          additionalProperties: true
+
+    IngestRequest:
+      type: object
+      required: [vault, documents]
+      properties:
+        vault:
+          type: string
+          description: "Target vault name"
+        documents:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/Document'
+
+    IngestResponse:
+      type: object
+      properties:
+        indexed:
+          type: integer
+          description: "Number of documents successfully indexed"
+        vault:
+          type: string
+
+    IngestPartialResponse:
+      allOf:
+        - $ref: '#/components/schemas/IngestResponse'
+        - type: object
+          properties:
+            errors:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  error:
+                    type: string
+                    enum: [duplicate_id, text_too_long, embedding_failed]
+
+    RecallRequest:
+      type: object
+      required: [vault, query]
+      properties:
+        vault:
+          type: string
+          description: "Vault to search"
+        query:
+          type: string
+          minLength: 1
+          maxLength: 2048
+          description: "Natural-language search query"
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 10
+        min_score:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.0
+
+    RecallResult:
+      type: object
+      properties:
+        text:
+          type: string
+        score:
+          type: number
+          format: float
+        metadata:
+          type: object
+          additionalProperties: true
+
+    RecallResponse:
+      type: object
+      properties:
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecallResult'
+        vault:
+          type: string
+        query:
+          type: string
+
+    ApiError:
+      type: object
+      properties:
+        error:
+          type: boolean
+          enum: [true]
+        code:
+          type: string
+        message:
+          type: string
+
+  responses:
+    InvalidInput:
+      description: Invalid request parameters
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: INVALID_INPUT
+            message: "Vault name is required"
+    VaultNotFound:
+      description: Vault does not exist
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: VAULT_NOT_FOUND
+            message: "Vault 'agent::dev' not found — call POST /v1/vaults first"
+    QdrantUnavailable:
+      description: Qdrant is not reachable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: QDRANT_UNAVAILABLE
+            message: "Qdrant is not reachable at localhost:6334"

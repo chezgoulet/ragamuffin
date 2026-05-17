@@ -1,6 +1,7 @@
 # Binaries
 ragamuffin
 ragamuffin-*
+!/docs/integration/ragamuffin-memory-api.yaml
 cmd/ragamuffin/ragamuffin
 cmd/embedding-proxy/embedding-proxy
 
