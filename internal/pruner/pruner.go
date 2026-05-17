@@ -65,17 +65,17 @@ func DefaultConfig() PrunerConfig {
 
 // Pruner manages scheduled fact lifecycle scans.
 type Pruner struct {
-	facts        *qdrant.Client
-	vaultClient  *qdrant.Client
-	embedder     *embedding.Client
-	llm          *llm.Client
-	logger       *slog.Logger
-	cfg          PrunerConfig
-	mu           sync.Mutex
-	lastScans    map[string]time.Time // scan name → last run timestamp
-	totalScans   map[string]int64     // scan name → total runs
-	factsFlagged int64                // total facts flagged across all scans
-	factsResolved int64               // total facts resolved via review queue
+	facts         qdrant.FactStore
+	vaultClient   qdrant.FactStore
+	embedder      embedding.Embedder
+	llm           llm.Synthesizer
+	logger        *slog.Logger
+	cfg           PrunerConfig
+	mu            sync.Mutex
+	lastScans     map[string]time.Time // scan name → last run timestamp
+	totalScans    map[string]int64     // scan name → total runs
+	factsFlagged  int64                // total facts flagged across all scans
+	factsResolved int64                // total facts resolved via review queue
 }
 
 // ScanHealthReport describes one scan's status for audit reporting.
@@ -96,7 +96,7 @@ type HealthReport struct {
 
 // New creates a Pruner. Pass nil for any unused client (e.g., no vault client
 // means SupersedeScan skips vault chunk cross-referencing).
-func New(facts, vaultClient *qdrant.Client, ec *embedding.Client, lm *llm.Client, logger *slog.Logger, cfg PrunerConfig) *Pruner {
+func New(facts, vaultClient qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, logger *slog.Logger, cfg PrunerConfig) *Pruner {
 	return &Pruner{
 		facts:       facts,
 		vaultClient: vaultClient,

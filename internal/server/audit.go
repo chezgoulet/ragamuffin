@@ -114,7 +114,7 @@ func (s *Server) checkDuplicates(vaultPath string) []map[string]any {
 	return dupes
 }
 
-func (s *Server) checkSemanticConflicts(ctx context.Context, qc *qdrant.Client, sampleSize int) ([]conflictResult, int) {
+func (s *Server) checkSemanticConflicts(ctx context.Context, qc qdrant.FactStore, sampleSize int) ([]conflictResult, int) {
 	if qc == nil {
 		qc = s.qdrant
 	}

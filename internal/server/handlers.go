@@ -74,7 +74,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 	// Get accurate chunk count from per-vault Qdrant client
 	vaultName := vaultFromContext(r.Context())
-	var qc *qdrant.Client
+	var qc qdrant.FactStore
 	if vaultName != "" {
 		qc = s.indexers.GetClient(vaultName)
 	}
@@ -552,7 +552,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		} else {
 			// Use vault-specific Qdrant client
 			vaultName := vaultFromContext(r.Context())
-			var auditQc *qdrant.Client
+			var auditQc qdrant.FactStore
 			if vaultName != "" {
 				auditQc = s.indexers.GetClient(vaultName)
 			}

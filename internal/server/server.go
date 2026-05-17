@@ -43,10 +43,10 @@ var (
 // Server is the HTTP server.
 type Server struct {
 	cfg         *config.Config
-	qdrant      *qdrant.Client
-	facts       *qdrant.Client
-	embedder    *embedding.Client
-	llm         *llm.Client
+	qdrant      qdrant.FactStore
+	facts       qdrant.FactStore
+	embedder    embedding.Embedder
+	llm         llm.Synthesizer
 	indexers    *indexer.Manager
 	gitProvider git.Provider
 	ratelimit   *ratelimit.Limiter
@@ -61,7 +61,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -330,7 +330,7 @@ func (s *Server) vaultPathFromContext(ctx context.Context) string {
 
 // qdrantFor returns the per-vault Qdrant client from context,
 // falling back to the server-wide client (for single-tenant mode).
-func (s *Server) qdrantFor(ctx context.Context) *qdrant.Client {
+func (s *Server) qdrantFor(ctx context.Context) qdrant.FactStore {
 	if name := vaultFromContext(ctx); name != "" {
 		if qc := s.indexers.GetClient(name); qc != nil {
 			return qc
@@ -342,7 +342,7 @@ func (s *Server) qdrantFor(ctx context.Context) *qdrant.Client {
 // llmFor returns the per-vault LLM client from context,
 // falling back to the server-wide LLM client for backward compatibility.
 // Returns nil if neither is configured.
-func (s *Server) llmFor(ctx context.Context) *llm.Client {
+func (s *Server) llmFor(ctx context.Context) llm.Synthesizer {
 	if name := vaultFromContext(ctx); name != "" {
 		if lm := s.indexers.GetLLM(name); lm != nil {
 			return lm
@@ -353,7 +353,7 @@ func (s *Server) llmFor(ctx context.Context) *llm.Client {
 
 // embeddingFor returns the per-vault embedding client from context,
 // falling back to the server-wide embedder.
-func (s *Server) embeddingFor(ctx context.Context) *embedding.Client {
+func (s *Server) embeddingFor(ctx context.Context) embedding.Embedder {
 	if name := vaultFromContext(ctx); name != "" {
 		if ec := s.indexers.GetEmbedder(name); ec != nil {
 			return ec
