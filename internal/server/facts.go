@@ -14,8 +14,6 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-)
-
 // nv wraps qdrant.NewValue, panicking on error.
 // All call sites pass primitive types (string, bool, float64) that cannot
 // produce NewValue errors at runtime. Go's type system forces error capture.

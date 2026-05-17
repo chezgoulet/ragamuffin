@@ -11,8 +11,6 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-)
-
 // nv wraps qdrant.NewValue, panicking on error.
 func nv(v any) *qdrant.Value {
 	r, err := qdrant.NewValue(v)
