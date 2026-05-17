@@ -498,6 +498,9 @@ curl -s -X POST http://localhost:8000/v1/facts \
 | `key` | string | 1024 bytes | Fact key **(required)** |
 | `value` | string | 64 KB | Fact value **(required)** |
 | `tags` | array | optional | String tags for filtering |
+| `ttl_days` | int | — | Time-to-live in days (0 = never expires, default 0). Pruner **StaleScan** marks expired facts as `needs_review`. |
+| `confidence` | float | 0.0–1.0 | Optional confidence score (default 0.9). Pruner **LowConfidenceScan** flags facts below threshold. |
+| `supersedes` | string | — | Key of a fact this new fact replaces. Pruner **SupersedeScan** marks the target as `superseded`. |
 
 Key is hashed (SHA-256) → deterministic UUID is used as the Qdrant point ID. Re-inserting the same key upserts.
 
@@ -523,6 +526,7 @@ curl -s "http://localhost:8000/v1/facts?limit=20&before=<next_token>"
 | `key` | Exact fact_key match | — |
 | `prefix` | Full-text/substring match on fact_key (see note) | — |
 | `tag` | Exact tag keyword filter | — |
+| `status` | Filter by lifecycle status (active, needs_review, superseded, rejected) | — |
 | `limit` | Max results per page (1–1000) | 100 |
 | `before` | Cursor from previous response `next_token` | — |
 
@@ -535,7 +539,16 @@ curl -s "http://localhost:8000/v1/facts?limit=20&before=<next_token>"
 ```json
 {
   "entries": [
-    {"key": "deployment/url", "value": "https://app.example.com", "tags": ["prod"], "updated_at": "2026-05-15T12:00:00Z"}
+    {
+      "key": "deployment/url",
+      "value": "https://app.example.com",
+      "tags": ["prod"],
+      "status": "active",
+      "confidence": 0.9,
+      "expires_at": "2026-11-11T12:00:00Z",
+      "supersedes": "",
+      "updated_at": "2026-05-15T12:00:00Z"
+    }
   ],
   "next_token": "uuid-for-next-page"
 }
@@ -550,6 +563,207 @@ curl -s -X DELETE "http://localhost:8000/v1/facts?key=deployment/url"
 | Param | Description |
 |---|---|
 | `key` | Fact key to delete **(required)** |
+
+#### `PUT /v1/facts` — Update a fact's TTL or status
+
+Update an existing fact's lifecycle fields. The fact `key` is passed as a **query parameter**;
+update fields go in the JSON body. Fields not sent are preserved.
+
+```bash
+# Update TTL and status
+curl -s -X PUT "http://localhost:8000/v1/facts?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"ttl_days":180,"status":"active"}'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `ttl_days` | int | New TTL in days (0 = never expires) |
+| `status` | string | One of `active`, `needs_review`, `superseded`, `rejected` |
+| `tags` | array | Replace tags |
+| `confidence` | float | Update confidence score |
+| `conflict_resolved` | bool | Mark conflict as resolved |
+| `value` | string | New value |
+| `source` | string | Update source |
+| `source_type` | string | Update source type |
+
+**Response:**
+```json
+{"key":"deployment/url","updated":true}
+```
+
+#### `PATCH /v1/facts` — Partial fact update (bulk)
+
+Patch individual fields on one or more facts without replacing the entire record.
+Keys and updates are sent in the JSON body.
+
+```bash
+# Single fact
+curl -s -X PATCH http://localhost:8000/v1/facts \
+  -H "Content-Type: application/json" \
+  -d '{"keys":["deployment/url"],"updates":{"value":"https://new.example.com"}}'
+
+# Bulk update multiple facts
+curl -s -X PATCH http://localhost:8000/v1/facts \
+  -H "Content-Type: application/json" \
+  -d '{"keys":["deployment/url","api/endpoint"],"updates":{"status":"needs_review"}}'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `keys` | array | Fact keys to update **(required**, min 1) |
+| `updates.value` | string | New value |
+| `updates.tags` | array | Replace tags |
+| `updates.ttl_days` | int | Update TTL |
+| `updates.status` | string | Update status (`active`, `needs_review`, `superseded`, `rejected`) |
+| `updates.confidence` | float | Update confidence |
+| `updates.conflict_resolved` | bool | Mark conflict resolved |
+| `updates.source` | string | Update source |
+| `updates.source_type` | string | Update source type |
+| `updates.supersedes` | string | Update supersedes field |
+
+**Response:**
+```json
+{
+  "results": [
+    {"key":"deployment/url","ok":true},
+    {"key":"api/endpoint","ok":true}
+  ]
+}
+```
+
+#### `GET /v1/review` — List facts flagged for review
+
+Returns facts with status `needs_review` — flagged by the pruner's stale scan,
+conflict scan, supersede scan, or low-confidence scan. Pre-filtered to
+`needs_review`. Supports additional filter params beyond `GET /v1/facts`.
+
+```bash
+# All flagged facts
+curl -s http://localhost:8000/v1/review
+
+# Filter by review reason type
+curl -s "http://localhost:8000/v1/review?reason=stale"
+
+# Filter by tag
+curl -s "http://localhost:8000/v1/review?tag=prod"
+
+# Filter by source type
+curl -s "http://localhost:8000/v1/review?source_type=doc"
+
+# Min confidence (show only facts below this threshold)
+curl -s "http://localhost:8000/v1/review?min_confidence=0.5"
+
+# Paginate
+curl -s "http://localhost:8000/v1/review?limit=20"
+```
+
+**Response:**
+```json
+{
+  "entries": [
+    {
+      "key": "deployment/url",
+      "value": "https://old.example.com",
+      "status": "needs_review",
+      "confidence": 0.9,
+      "review_reasons": [
+        {"type": "stale", "detail": "expired on 2026-05-17T03:00:00Z"}
+      ],
+      "last_confirmed_at": "",
+      "tags": ["prod"],
+      "updated_at": "2026-05-17T03:00:00Z"
+    }
+  ],
+  "total": 1,
+  "next_token": "uuid-for-next-page"
+}
+```
+
+| Param | Description | Default |
+|---|---|---|
+| `reason` | Filter by reason type (`stale`, `contradiction`, `supersession`, `low_confidence`) | — |
+| `tag` | Filter by fact tag keyword | — |
+| `source_type` | Filter by source type | — |
+| `min_confidence` | Only show facts with confidence below this value | — |
+| `limit` | Max results (1–100) | 50 |
+| `before` | Cursor pagination (UUID from previous `next_token`) | — |
+
+#### `POST /v1/review` — Resolve a review item
+
+Mark a flagged fact as resolved. The fact `key` is passed as a **query parameter**;
+the action and options go in the JSON body.
+
+```bash
+# Confirm — accept the fact as-is (sets status to active, increments confirmation_count)
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"confirm"}'
+
+# Confirm with custom confidence
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"confirm","confidence":0.95}'
+
+# Supersede — this fact is replaced by another
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"supersede","new_key":"deployment/v2/url","new_value":"https://v2.example.com"}'
+
+# Reject — this fact is incorrect
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"reject","note":"Superseded by v2 deployment"}'
+
+# Reclassify — prevent the scan from flagging again
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"reclassify","ttl_days":180}'
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `action` | string | `confirm`, `supersede`, `reject`, or `reclassify` **(required)** |
+| `confidence` | float | Updated confidence (action=`confirm`) |
+| `new_key` | string | New fact key (action=`supersede`) |
+| `new_value` | string | New fact value (action=`supersede`) |
+| `note` | string | Optional reason for the resolution |
+| `ttl_days` | int | Update TTL (action=`reclassify`) |
+| `tags` | array | Update tags |
+| `source` | string | Update source |
+| `source_type` | string | Update source type |
+
+**Response:**
+```json
+{"key":"deployment/url","action":"confirm","status":"active","resolved":true}
+```
+
+#### `GET /v1/review/stats` — Review queue statistics
+
+Returns aggregate counts for the review queue, broken down by reason and source type.
+
+```bash
+curl -s http://localhost:8000/v1/review/stats
+```
+
+**Response:**
+```json
+{
+  "total_needs_review": 12,
+  "by_reason": {
+    "stale": 8,
+    "contradiction": 3,
+    "low_confidence": 1
+  },
+  "by_source_type": {
+    "doc": 5,
+    "agent": 4,
+    "unknown": 3
+  },
+  "oldest_item": "2026-05-01T12:00:00Z",
+  "avg_pending_days": 14.5
+}
+```
 
 #### `POST /v1/logs` — Append a log entry
 
@@ -1139,6 +1353,31 @@ with `Content-Type: application/cloudevents+json`. Delivery is fire-and-forget (
 All handlers are wrapped in a panic recovery middleware that logs stack traces
 via slog and returns JSON 500 errors instead of silent connection drops.
 
+### Pruner (Fact Lifecycle Management)
+
+The Pruner runs scheduled background scans on the facts collection to manage
+fact lifecycle. Each scan type can be configured independently.
+
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_PRUNER_ENABLED` | `false` | Master switch for all scans |
+| `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | `24h` | Stale scan interval (0 = disabled) |
+| `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | `72h` | Conflict scan interval (0 = disabled) |
+| `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | `24h` | Supersede scan interval (0 = disabled) |
+| `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past TTL expiry before a fact is flagged stale |
+| `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Pairs per conflict scan cycle |
+| `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Below this → flagged `needs_review` |
+| `RAGAMUFFIN_PRUNER_CONFIDENCE_BOOST` | `0.1` | Added on operator accept via review queue |
+
+**Scan types:**
+
+| Scan | What it does |
+|---|---|
+| **StaleScan** | Queries facts with `status=active AND ttl_days>0 AND expires_at_unix<now`, marks them `needs_review` |
+| **ConflictScan** | Samples active facts, embeds values, compares cosine similarity (threshold 0.85). High-similarity pairs with different values are flagged |
+| **SupersedeScan** | Two sub-scans: cross-reference (facts with `supersedes` field pointing to an active target → target marked `superseded`) and key-pattern (`org/v2/x` vs `org/v1/x` → lower version marked `superseded`) |
+| **LowConfidenceScan** | One-time scan at startup: marks active facts with confidence < threshold as `needs_review` |
+
 ### Tuning
 
 | Env Var | Default | Description |
@@ -1256,7 +1495,7 @@ adapters for OpenClaw and Hermes.
 
 | Version | Highlights |
 |---|---|
-| v0.5 | Agent memory backend — per-agent Qdrant collections, session ingest (`POST /v1/ingest`), vault provisioning (`POST /v1/vaults`), cross-agent recall, OpenClaw + Hermes plugin adapters, integration docs |
+| v0.5 | Fact lifecycle management (Pruner: stale, conflict, supersede scans), review queue API (`GET/POST /v1/review`, `GET /v1/review/stats`), fact update endpoints (`PUT/PATCH /v1/facts`), agent memory backend (per-agent Qdrant collections, session ingest, vault provisioning, cross-agent recall, OpenClaw + Hermes plugin adapters), SSE streaming, lint pass, test infrastructure |
 | v0.4 | Multi-tenancy, authentication (API key + JWT), knowledge graph, CloudEvents, LLM timeout config, embedded web UI, built-in web dashboard |
 | v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |
 | v0.3.3 | Tags fix for facts POST (`qdrant.NewValue` 2-value return), deployment fixes |
