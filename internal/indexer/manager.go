@@ -15,23 +15,23 @@ import (
 type Manager struct {
 	mu           sync.RWMutex
 	indexers     map[string]*Indexer
-	clients      map[string]*qdrant.Client
-	llmClients   map[string]*llm.Client
-	embedClients map[string]*embedding.Client
+	clients      map[string]qdrant.FactStore
+	llmClients   map[string]llm.Synthesizer
+	embedClients map[string]embedding.Embedder
 }
 
 // NewManager creates an empty indexer manager.
 func NewManager() *Manager {
 	return &Manager{
 		indexers:     make(map[string]*Indexer),
-		clients:      make(map[string]*qdrant.Client),
-		llmClients:   make(map[string]*llm.Client),
-		embedClients: make(map[string]*embedding.Client),
+		clients:      make(map[string]qdrant.FactStore),
+		llmClients:   make(map[string]llm.Synthesizer),
+		embedClients: make(map[string]embedding.Embedder),
 	}
 }
 
 // Add registers a new indexer for a vault. The vault name must be unique.
-func (m *Manager) Add(name string, idx *Indexer, qc *qdrant.Client) error {
+func (m *Manager) Add(name string, idx *Indexer, qc qdrant.FactStore) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, exists := m.indexers[name]; exists {
@@ -50,14 +50,14 @@ func (m *Manager) Get(name string) *Indexer {
 }
 
 // GetClient returns the Qdrant client for a vault, or nil if not found.
-func (m *Manager) GetClient(name string) *qdrant.Client {
+func (m *Manager) GetClient(name string) qdrant.FactStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.clients[name]
 }
 
 // SetLLM stores a per-vault LLM client. Pass nil to clear.
-func (m *Manager) SetLLM(name string, lm *llm.Client) {
+func (m *Manager) SetLLM(name string, lm llm.Synthesizer) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if lm != nil {
@@ -68,14 +68,14 @@ func (m *Manager) SetLLM(name string, lm *llm.Client) {
 }
 
 // GetLLM returns the per-vault LLM client, or nil if not set.
-func (m *Manager) GetLLM(name string) *llm.Client {
+func (m *Manager) GetLLM(name string) llm.Synthesizer {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.llmClients[name]
 }
 
 // SetEmbedder stores a per-vault embedding client. Pass nil to clear.
-func (m *Manager) SetEmbedder(name string, ec *embedding.Client) {
+func (m *Manager) SetEmbedder(name string, ec embedding.Embedder) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ec != nil {
@@ -86,7 +86,7 @@ func (m *Manager) SetEmbedder(name string, ec *embedding.Client) {
 }
 
 // GetEmbedder returns the per-vault embedding client, or nil if not set.
-func (m *Manager) GetEmbedder(name string) *embedding.Client {
+func (m *Manager) GetEmbedder(name string) embedding.Embedder {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.embedClients[name]

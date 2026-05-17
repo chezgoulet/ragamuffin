@@ -30,8 +30,8 @@ type FileEventCallback func(action, path string)
 // Indexer processes file events and maintains the Qdrant index.
 type Indexer struct {
 	vaultPath     string
-	qdrant        *qdrant.Client
-	embedder      *embedding.Client
+	qdrant        qdrant.FactStore
+	embedder      embedding.Embedder
 	logger        *slog.Logger
 	chunkMaxTokens int
 
@@ -51,7 +51,7 @@ type Indexer struct {
 }
 
 // New creates an Indexer.
-func New(vaultPath string, qc *qdrant.Client, ec *embedding.Client, logger *slog.Logger) *Indexer {
+func New(vaultPath string, qc qdrant.FactStore, ec embedding.Embedder, logger *slog.Logger) *Indexer {
 	return &Indexer{
 		vaultPath:  vaultPath,
 		qdrant:     qc,

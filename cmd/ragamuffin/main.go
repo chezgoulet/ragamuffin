@@ -27,7 +27,7 @@ import (
 
 // vaultSetup holds the components created for a single vault during startup.
 type vaultSetup struct {
-	Qc           *qdrant.Client
+	Qc           qdrant.FactStore
 	DoneCh       chan struct{}   // close to signal watcher shutdown
 	PrunerEventCh chan watcher.Event // fed events for the pruner
 	InitialDone  chan struct{}   // closed when initial indexing completes
@@ -43,8 +43,8 @@ func buildVault(
 	cfg *config.Config,
 	name, vaultPath, collectionName string,
 	idxManager *indexer.Manager,
-	ec *embedding.Client,
-	lm *llm.Client,
+	ec embedding.Embedder,
+	lm llm.Synthesizer,
 	emitter *events.Emitter,
 	idxCancelFuncs *[]context.CancelFunc,
 	watcherDoneChs *[]chan struct{},
@@ -172,7 +172,7 @@ func main() {
 	logger.Info("qdrant facts collection ready", "collection", cfg.FactsCollection)
 
 	// ── Initialize embedding client (shared, optional) ──────────────────────
-	var ec *embedding.Client
+	var ec embedding.Embedder
 	if cfg.EmbeddingAPIKey != "" {
 		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
 		logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
@@ -181,7 +181,7 @@ func main() {
 	}
 
 	// ── Initialize LLM client (shared, optional) ─────────────────────────────
-	var lm *llm.Client
+	var lm llm.Synthesizer
 	if cfg.HasLLM() {
 		lm = llm.New(cfg.LLMProvider, cfg.LLMBaseURL, cfg.LLMAPIKey, cfg.LLMModel, cfg.LLMTimeout)
 		logger.Info("LLM client ready", "model", cfg.LLMModel)
@@ -329,7 +329,7 @@ func main() {
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// Use first vault's Qdrant client for shared Qdrant health check
-	var qc *qdrant.Client
+	var qc qdrant.FactStore
 	if cfg.IsMultiTenant() {
 		for _, name := range idxManager.VaultNames() {
 			qc = idxManager.GetClient(name)

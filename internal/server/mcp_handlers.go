@@ -278,7 +278,7 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 	// Resolve vault path and Qdrant client from context (MCP is global, no vault context)
 	vaultPath := s.vaultPathFromContext(ctx)
 	vaultName := vaultFromContext(ctx)
-	var qc *qdrant.Client
+	var qc qdrant.FactStore
 	if vaultName != "" {
 		qc = s.indexers.GetClient(vaultName)
 	}
