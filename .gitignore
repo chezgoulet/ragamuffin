@@ -26,3 +26,9 @@ Thumbs.db
 # Build artifacts
 /build/
 /dist/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
