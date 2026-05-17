@@ -251,6 +251,35 @@ func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) (
 	return resp.Result, resp.NextPageOffset, nil
 }
 
+// ScrollFiltered returns points matching a filter, paginated by string-based offset (UUID).
+// Unlike Scroll, this uses a string offset for the pruner's pagination loop pattern.
+func (c *Client) ScrollFiltered(ctx context.Context, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+	req := &pb.ScrollPoints{
+		CollectionName: c.collection,
+		WithPayload:    pb.NewWithPayload(true),
+		WithVectors:    pb.NewWithVectors(true),
+	}
+	if filter != nil {
+		req.Filter = filter
+	}
+	if limit > 0 {
+		req.Limit = &limit
+	}
+	if offset != "" {
+		req.Offset = &pb.PointId{
+			PointIdOptions: &pb.PointId_Uuid{
+				Uuid: offset,
+			},
+		}
+	}
+
+	resp, err := c.points.Scroll(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
 // Health checks if Qdrant is reachable.
 func (c *Client) Health(ctx context.Context) error {
 	_, err := c.collections.List(ctx, &pb.ListCollectionsRequest{})

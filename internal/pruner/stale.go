@@ -7,20 +7,11 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-// staleScan queries active facts whose expires_at_unix is in the past
-// and marks them as needs_review.
-//
-// Query filter: status = "active" AND ttl_days > 0 AND expires_at_unix < now.
-func (p *Pruner) staleScan(ctx context.Context) {
-	if p.facts == nil {
-		p.logger.Warn("staleScan: no facts client available")
-		return
-	}
-
-	now := float64(time.Now().UTC().Unix())
+// staleFilter builds the Qdrant filter for stale facts:
+// status = "active" AND ttl_days > 0 AND expires_at_unix < now.
+func staleFilter(nowUnix float64) *pb.Filter {
 	minTTL := float64(0)
-
-	filter := &pb.Filter{
+	return &pb.Filter{
 		Must: []*pb.Condition{
 			{
 				ConditionOneOf: &pb.Condition_Field{
@@ -49,13 +40,25 @@ func (p *Pruner) staleScan(ctx context.Context) {
 					Field: &pb.FieldCondition{
 						Key: "expires_at_unix",
 						Range: &pb.Range{
-							Lt: &now, // expires_at_unix < now
+							Lt: &nowUnix, // expires_at_unix < now
 						},
 					},
 				},
 			},
 		},
 	}
+}
+
+// staleScan queries active facts whose expires_at_unix is in the past
+// and marks them as needs_review.
+func (p *Pruner) staleScan(ctx context.Context) {
+	if p.facts == nil {
+		p.logger.Warn("staleScan: no facts client available")
+		return
+	}
+
+	now := float64(time.Now().UTC().Unix())
+	filter := staleFilter(now)
 
 	points, err := p.scrollFilteredFacts(ctx, filter, 0)
 	if err != nil {

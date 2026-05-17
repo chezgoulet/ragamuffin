@@ -545,7 +545,6 @@ curl -s "http://localhost:8000/v1/facts?limit=20&before=<next_token>"
       "tags": ["prod"],
       "status": "active",
       "confidence": 0.9,
-      "ttl_days": 180,
       "expires_at": "2026-11-11T12:00:00Z",
       "supersedes": "",
       "updated_at": "2026-05-15T12:00:00Z"
@@ -567,60 +566,93 @@ curl -s -X DELETE "http://localhost:8000/v1/facts?key=deployment/url"
 
 #### `PUT /v1/facts` — Update a fact's TTL or status
 
-Update an existing fact's lifecycle fields. Fields not sent are preserved.
+Update an existing fact's lifecycle fields. The fact `key` is passed as a **query parameter**;
+update fields go in the JSON body. Fields not sent are preserved.
 
 ```bash
-curl -s -X PUT http://localhost:8000/v1/facts \
+# Update TTL and status
+curl -s -X PUT "http://localhost:8000/v1/facts?key=deployment/url" \
   -H "Content-Type: application/json" \
-  -d '{"key":"deployment/url","ttl_days":180,"status":"active"}'
+  -d '{"ttl_days":180,"status":"active"}'
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `key` | string | Fact key to update **(required)** |
 | `ttl_days` | int | New TTL in days (0 = never expires) |
 | `status` | string | One of `active`, `needs_review`, `superseded`, `rejected` |
 | `tags` | array | Replace tags |
+| `confidence` | float | Update confidence score |
+| `conflict_resolved` | bool | Mark conflict as resolved |
+| `value` | string | New value |
+| `source` | string | Update source |
+| `source_type` | string | Update source type |
 
 **Response:**
 ```json
 {"key":"deployment/url","updated":true}
 ```
 
-#### `PATCH /v1/facts` — Partial fact update
+#### `PATCH /v1/facts` — Partial fact update (bulk)
 
-Patch individual fields on a fact without replacing the entire record.
+Patch individual fields on one or more facts without replacing the entire record.
+Keys and updates are sent in the JSON body.
 
 ```bash
+# Single fact
 curl -s -X PATCH http://localhost:8000/v1/facts \
   -H "Content-Type: application/json" \
-  -d '{"key":"deployment/url","value":"https://new.example.com"}'
+  -d '{"keys":["deployment/url"],"updates":{"value":"https://new.example.com"}}'
+
+# Bulk update multiple facts
+curl -s -X PATCH http://localhost:8000/v1/facts \
+  -H "Content-Type: application/json" \
+  -d '{"keys":["deployment/url","api/endpoint"],"updates":{"status":"needs_review"}}'
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `key` | string | Fact key to update **(required)** |
-| `value` | string | New value |
-| `tags` | array | Replace tags |
-| `ttl_days` | int | Update TTL |
+| `keys` | array | Fact keys to update **(required**, min 1) |
+| `updates.value` | string | New value |
+| `updates.tags` | array | Replace tags |
+| `updates.ttl_days` | int | Update TTL |
+| `updates.status` | string | Update status (`active`, `needs_review`, `superseded`, `rejected`) |
+| `updates.confidence` | float | Update confidence |
+| `updates.conflict_resolved` | bool | Mark conflict resolved |
+| `updates.source` | string | Update source |
+| `updates.source_type` | string | Update source type |
+| `updates.supersedes` | string | Update supersedes field |
 
 **Response:**
 ```json
-{"key":"deployment/url","patched":true}
+{
+  "results": [
+    {"key":"deployment/url","ok":true},
+    {"key":"api/endpoint","ok":true}
+  ]
+}
 ```
 
 #### `GET /v1/review` — List facts flagged for review
 
 Returns facts with status `needs_review` — flagged by the pruner's stale scan,
-conflict scan, or low-confidence scan. Accepts the same pagination and filter
-parameters as `GET /v1/facts`, pre-filtered to `needs_review`.
+conflict scan, supersede scan, or low-confidence scan. Pre-filtered to
+`needs_review`. Supports additional filter params beyond `GET /v1/facts`.
 
 ```bash
 # All flagged facts
 curl -s http://localhost:8000/v1/review
 
-# Filter by type of flag
-curl -s "http://localhost:8000/v1/review?tag=stale"
+# Filter by review reason type
+curl -s "http://localhost:8000/v1/review?reason=stale"
+
+# Filter by tag
+curl -s "http://localhost:8000/v1/review?tag=prod"
+
+# Filter by source type
+curl -s "http://localhost:8000/v1/review?source_type=doc"
+
+# Min confidence (show only facts below this threshold)
+curl -s "http://localhost:8000/v1/review?min_confidence=0.5"
 
 # Paginate
 curl -s "http://localhost:8000/v1/review?limit=20"
@@ -634,9 +666,13 @@ curl -s "http://localhost:8000/v1/review?limit=20"
       "key": "deployment/url",
       "value": "https://old.example.com",
       "status": "needs_review",
-      "flags": ["stale"],
-      "flagged_at": "2026-05-17T03:00:00Z",
-      "tags": ["prod"]
+      "confidence": 0.9,
+      "review_reasons": [
+        {"type": "stale", "detail": "expired on 2026-05-17T03:00:00Z"}
+      ],
+      "last_confirmed_at": "",
+      "tags": ["prod"],
+      "updated_at": "2026-05-17T03:00:00Z"
     }
   ],
   "total": 1,
@@ -646,48 +682,65 @@ curl -s "http://localhost:8000/v1/review?limit=20"
 
 | Param | Description | Default |
 |---|---|---|
-| `status` | Override filter (defaults to `needs_review`) | `needs_review` |
-| `limit` | Max results (1–1000) | 100 |
-| `before` | Cursor pagination | — |
+| `reason` | Filter by reason type (`stale`, `contradiction`, `supersession`, `low_confidence`) | — |
+| `tag` | Filter by fact tag keyword | — |
+| `source_type` | Filter by source type | — |
+| `min_confidence` | Only show facts with confidence below this value | — |
+| `limit` | Max results (1–100) | 50 |
+| `before` | Cursor pagination (UUID from previous `next_token`) | — |
 
 #### `POST /v1/review` — Resolve a review item
 
-Mark a flagged fact as resolved. The operator can accept the fact (sets status
-back to `active` with optional confidence boost), mark it superseded by another
-fact, or reject it outright.
+Mark a flagged fact as resolved. The fact `key` is passed as a **query parameter**;
+the action and options go in the JSON body.
 
 ```bash
-# Accept — confirm the fact as-is
-curl -s -X POST http://localhost:8000/v1/review \
+# Confirm — accept the fact as-is (sets status to active, increments confirmation_count)
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
   -H "Content-Type: application/json" \
-  -d '{"key":"deployment/url","action":"accept"}'
+  -d '{"action":"confirm"}'
+
+# Confirm with custom confidence
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"confirm","confidence":0.95}'
 
 # Supersede — this fact is replaced by another
-curl -s -X POST http://localhost:8000/v1/review \
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
   -H "Content-Type: application/json" \
-  -d '{"key":"deployment/url","action":"supersede","superseded_by":"deployment/v2/url"}'
+  -d '{"action":"supersede","new_key":"deployment/v2/url","new_value":"https://v2.example.com"}'
 
 # Reject — this fact is incorrect
-curl -s -X POST http://localhost:8000/v1/review \
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
   -H "Content-Type: application/json" \
-  -d '{"key":"deployment/url","action":"reject","reason":"Superseded by v2 deployment"}'
+  -d '{"action":"reject","note":"Superseded by v2 deployment"}'
+
+# Reclassify — prevent the scan from flagging again
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"reclassify","ttl_days":180}'
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `key` | string | Fact key to resolve **(required)** |
-| `action` | string | `accept`, `supersede`, or `reject` **(required)** |
-| `superseded_by` | string | New fact key (required if action=`supersede`) |
-| `reason` | string | Optional reason for the resolution |
+| `action` | string | `confirm`, `supersede`, `reject`, or `reclassify` **(required)** |
+| `confidence` | float | Updated confidence (action=`confirm`) |
+| `new_key` | string | New fact key (action=`supersede`) |
+| `new_value` | string | New fact value (action=`supersede`) |
+| `note` | string | Optional reason for the resolution |
+| `ttl_days` | int | Update TTL (action=`reclassify`) |
+| `tags` | array | Update tags |
+| `source` | string | Update source |
+| `source_type` | string | Update source type |
 
 **Response:**
 ```json
-{"key":"deployment/url","action":"reject","status":"rejected","resolved":true}
+{"key":"deployment/url","action":"confirm","status":"active","resolved":true}
 ```
 
 #### `GET /v1/review/stats` — Review queue statistics
 
-Returns aggregate counts for the review queue.
+Returns aggregate counts for the review queue, broken down by reason and source type.
 
 ```bash
 curl -s http://localhost:8000/v1/review/stats
@@ -696,14 +749,19 @@ curl -s http://localhost:8000/v1/review/stats
 **Response:**
 ```json
 {
-  "needs_review": 12,
-  "flagged_today": 3,
-  "total_resolved": 45,
-  "by_flag": {
+  "total_needs_review": 12,
+  "by_reason": {
     "stale": 8,
-    "conflict": 3,
+    "contradiction": 3,
     "low_confidence": 1
-  }
+  },
+  "by_source_type": {
+    "doc": 5,
+    "agent": 4,
+    "unknown": 3
+  },
+  "oldest_item": "2026-05-01T12:00:00Z",
+  "avg_pending_days": 14.5
 }
 ```
 

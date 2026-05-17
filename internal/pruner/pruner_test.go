@@ -238,6 +238,84 @@ func TestRecordFlaggedAndResolved(t *testing.T) {
 	}
 }
 
+// ── Stale filter tests ────────────────────────────────────────────────
+
+func TestStaleFilter_NowInFuture(t *testing.T) {
+	filter := staleFilter(1000000.0)
+	if filter == nil {
+		t.Fatal("staleFilter returned nil")
+	}
+	if len(filter.Must) != 3 {
+		t.Fatalf("staleFilter: got %d conditions, want 3", len(filter.Must))
+	}
+}
+
+// verify the staleFilter conditions match expected field keys
+func TestStaleFilter_FieldKeys(t *testing.T) {
+	filter := staleFilter(100.0)
+	var keys []string
+	for _, c := range filter.Must {
+		if fc := c.GetField(); fc != nil {
+			keys = append(keys, fc.Key)
+		}
+	}
+	expected := []string{"status", "ttl_days", "expires_at_unix"}
+	if len(keys) != len(expected) {
+		t.Fatalf("staleFilter field keys = %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Errorf("staleFilter field[%d] = %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+// ── Low-confidence filter tests ────────────────────────────────────────
+
+func TestLowConfidenceFilter_Threshold(t *testing.T) {
+	filter := lowConfidenceFilter(0.5)
+	if filter == nil {
+		t.Fatal("lowConfidenceFilter returned nil")
+	}
+	if len(filter.Must) != 2 {
+		t.Fatalf("lowConfidenceFilter: got %d conditions, want 2", len(filter.Must))
+	}
+}
+
+func TestLowConfidenceFilter_FieldKeys(t *testing.T) {
+	filter := lowConfidenceFilter(0.5)
+	var keys []string
+	for _, c := range filter.Must {
+		if fc := c.GetField(); fc != nil {
+			keys = append(keys, fc.Key)
+		}
+	}
+	expected := []string{"status", "confidence"}
+	if len(keys) != len(expected) {
+		t.Fatalf("lowConfidenceFilter field keys = %v, want %v", keys, expected)
+	}
+	for i, k := range keys {
+		if k != expected[i] {
+			t.Errorf("lowConfidenceFilter field[%d] = %q, want %q", i, k, expected[i])
+		}
+	}
+}
+
+func TestLowConfidenceFilter_ConfidenceRange(t *testing.T) {
+	filter := lowConfidenceFilter(0.5)
+	// The filter should have confidence < 0.5 - 0.001 = 0.499
+	rng := filter.Must[1].GetField().GetRange()
+	if rng == nil {
+		t.Fatal("expected a Range condition on confidence")
+	}
+	if rng.Lt == nil {
+		t.Fatal("expected Lt on confidence range")
+	}
+	if *rng.Lt > 0.5 || *rng.Lt < 0.49 {
+		t.Errorf("confidence Lt = %f, want ~0.499", *rng.Lt)
+	}
+}
+
 func TestMetrics_AfterScans(t *testing.T) {
 	p := New(nil, nil, nil, nil, nil, DefaultConfig())
 	p.recordScanRun("StaleScan")

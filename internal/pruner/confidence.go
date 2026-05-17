@@ -6,23 +6,11 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-// lowConfidenceScan finds active facts with confidence below the threshold
-// and marks them as needs_review. This is a one-time scan (not recurring)
-// run at startup to catch facts created before confidence tracking existed.
-func (p *Pruner) lowConfidenceScan(ctx context.Context) {
-	if p.facts == nil {
-		p.logger.Warn("lowConfidenceScan: no facts client available")
-		return
-	}
-
-	threshold := p.cfg.LowConfidenceThreshold
-	if threshold <= 0 {
-		threshold = 0.5
-	}
-
-	lt := threshold - 0.001 // strict less-than to avoid edge of 0.5
-
-	filter := &pb.Filter{
+// lowConfidenceFilter builds a Qdrant filter for active facts with confidence
+// strictly below the given threshold. Uses a small epsilon to avoid float edge cases.
+func lowConfidenceFilter(threshold float64) *pb.Filter {
+	lt := threshold - 0.001
+	return &pb.Filter{
 		Must: []*pb.Condition{
 			{
 				ConditionOneOf: &pb.Condition_Field{
@@ -48,6 +36,23 @@ func (p *Pruner) lowConfidenceScan(ctx context.Context) {
 			},
 		},
 	}
+}
+
+// lowConfidenceScan finds active facts with confidence below the threshold
+// and marks them as needs_review. This is a one-time scan (not recurring)
+// run at startup to catch facts created before confidence tracking existed.
+func (p *Pruner) lowConfidenceScan(ctx context.Context) {
+	if p.facts == nil {
+		p.logger.Warn("lowConfidenceScan: no facts client available")
+		return
+	}
+
+	threshold := p.cfg.LowConfidenceThreshold
+	if threshold <= 0 {
+		threshold = 0.5
+	}
+
+	filter := lowConfidenceFilter(threshold)
 
 	points, err := p.scrollFilteredFacts(ctx, filter, 0)
 	if err != nil {
