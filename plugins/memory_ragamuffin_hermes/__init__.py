@@ -226,37 +226,48 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._provision_vault()
 
     def _provision_vault(self) -> bool:
-        """POST /v1/vaults to create or confirm vault."""
+        """GET /vaults to confirm the agent's vault is configured.
+
+        Vaults are configured statically on the server (config file/env).
+        This method does NOT create vaults — it just confirms the vault
+        exists and the plugin can reach the server.
+        """
         if not self._requests:
             return False
 
         try:
-            url = _build_endpoint(self._endpoint, "/v1/vaults")
+            url = _build_endpoint(self._endpoint, "/vaults")
             headers = _build_headers(self._auth_token)
-            payload = {"name": self._agent_vault, "label": f"Agent: {self._agent_identity}"}
 
-            resp = self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
             )
-            if resp.status_code in (200, 201):
+            if resp.status_code == 200:
                 data = resp.json()
-                created = data.get("created", False)
-                self._vault_ready = True
-                self._available = True
-                logger.info(
-                    "Ragamuffin vault %s: %s",
-                    "created" if created else "confirmed",
-                    self._agent_vault,
-                )
-                return True
+                vaults = data.get("vaults", [])
+                # Check if our vault is in the list
+                vault_names = [v.get("name", "") for v in vaults]
+                if self._agent_vault in vault_names:
+                    self._vault_ready = True
+                    self._available = True
+                    logger.info(
+                        "Ragamuffin vault confirmed: %s", self._agent_vault
+                    )
+                    return True
+                else:
+                    logger.warning(
+                        "Ragamuffin vault '%s' not found. Configured vaults: %s",
+                        self._agent_vault, vault_names,
+                    )
+                    return False
             else:
                 logger.warning(
-                    "Ragamuffin vault provisioning failed: %s %s",
+                    "Ragamuffin vault check failed: %s %s",
                     resp.status_code, resp.text,
                 )
                 return False
         except Exception as e:
-            logger.warning("Ragamuffin vault provisioning error: %s", e)
+            logger.warning("Ragamuffin vault check error: %s", e)
             return False
 
     def system_prompt_block(self) -> str:
@@ -295,13 +306,12 @@ class RagamuffinMemoryProvider(MemoryProvider):
             try:
                 if self._requests is None:
                     return
-                url = _build_endpoint(self._endpoint, "/v1/recall")
+                url = _build_endpoint(self._endpoint, f"/vault/{self._agent_vault}/recall")
                 headers = _build_headers(self._auth_token)
                 payload = {
-                    "vault": self._agent_vault,
                     "query": query,
-                    "limit": 5,
-                    "min_score": 0.3,
+                    "top_k": 5,
+                    "score_threshold": 0.3,
                 }
 
                 resp = self._requests.post(
@@ -333,14 +343,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return
 
         self._turn_counter += 1
-        doc_id = f"{self._session_id or 'session'}-turn-{self._turn_counter}"
         text = f"User: {user_content}\nAssistant: {assistant_content}"
-        metadata = {
-            "source": "session",
-            "agent": self._agent_identity,
-            "session_id": self._session_id,
-            "turn": self._turn_counter,
-        }
 
         def _run():
             try:
@@ -350,9 +353,9 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 headers = _build_headers(self._auth_token)
                 payload = {
                     "vault": self._agent_vault,
-                    "documents": [
-                        {"id": doc_id, "text": text, "metadata": metadata}
-                    ],
+                    "content": text,
+                    "source": "session_turn",
+                    "tags": ["session", self._agent_identity],
                 }
                 self._requests.post(
                     url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
@@ -413,18 +416,9 @@ class RagamuffinMemoryProvider(MemoryProvider):
             headers = _build_headers(self._auth_token)
             payload = {
                 "vault": self._agent_vault,
-                "documents": [
-                    {
-                        "id": doc_id,
-                        "text": summary_text,
-                        "metadata": {
-                            "source": "session_summary",
-                            "agent": self._agent_identity,
-                            "session_id": self._session_id,
-                            "turn": total_turns,
-                        },
-                    }
-                ],
+                "content": summary_text,
+                "source": "session_summary",
+                "tags": [self._session_id or "session", self._agent_identity],
             }
             self._requests.post(
                 url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
@@ -447,7 +441,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
         )
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
-        """POST /v1/recall against the specified vault."""
+        """POST /vault/{name}/recall against the specified vault."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
@@ -460,13 +454,12 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return json.dumps({"error": "Query is required"})
 
         try:
-            url = _build_endpoint(self._endpoint, "/v1/recall")
+            url = _build_endpoint(self._endpoint, f"/vault/{vault}/recall")
             headers = _build_headers(self._auth_token)
             payload = {
-                "vault": vault,
                 "query": query,
-                "limit": min(max(limit, 1), 100),
-                "min_score": min(max(min_score, 0.0), 1.0),
+                "top_k": min(max(limit, 1), 100),
+                "score_threshold": min(max(min_score, 0.0), 1.0),
             }
 
             resp = self._requests.post(

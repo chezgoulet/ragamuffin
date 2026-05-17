@@ -82,7 +82,7 @@ func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 			},
 		}
 
-		targets, err := p.scrollFilteredFacts(ctx, targetFilter, 1, "")
+		targets, err := p.scrollFilteredFacts(ctx, targetFilter, 1)
 		if err != nil || len(targets) == 0 {
 			// Target doesn't exist or error — log at debug level
 			p.logger.Debug("supersedeCrossReference: target not found",
@@ -165,7 +165,7 @@ func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
 		// Look for /vN/ or /vN pattern at any path depth
 		// e.g., "org/v2/decision" → prefix "org/", version 2
 		prefix, version := parseVersionedKey(key)
-		if version > 1 {
+		if version >= 1 {
 			groups[prefix] = append(groups[prefix], versionedFact{
 				pointID: pt.GetId().GetUuid(),
 				version: version,
@@ -229,7 +229,7 @@ func parseVersionedKey(key string) (prefix string, version int) {
 				}
 				v = v*10 + int(c-'0')
 			}
-			if v > 1 {
+			if v >= 1 {
 				// Reconstruct prefix from parts before the version segment
 				parts = parts[:i] // drop version and everything after
 				prefix = strings.Join(parts, "/")

@@ -10,7 +10,7 @@ import (
 )
 
 // conflictScan samples active facts, computes their embeddings, and checks
-// pairwise cosine similarity. Pairs above the threshold (0.92) are flagged
+// pairwise cosine similarity. Pairs above the threshold (0.85) are flagged
 // as contradicting each other if they are semantically different.
 //
 // The scan uses the embedder to get real embeddings for each fact's value,
@@ -120,9 +120,11 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 			sim := cosineSimilarity(vectors[i], vectors[j])
 
 			// High similarity suggests contradiction (two facts saying different things
-			// about the same subject). Threshold of 0.92 catches near-duplicates and
-			// statements about the same topic with different conclusions.
-			if sim < 0.92 {
+		// Similarity above 0.85 suggests the two facts make related claims about
+		// the same subject — potential contradiction. This threshold catches
+		// near-duplicates and competing statements. A two-stage approach
+		// (embedding → LLM confirmation) is a future improvement.
+			if sim < 0.85 {
 				continue
 			}
 

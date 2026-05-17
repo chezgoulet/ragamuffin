@@ -84,6 +84,7 @@ func (c *Client) CreatePayloadIndex(ctx context.Context, collection, field, fiel
 		FieldName:      field,
 		FieldType:      &ft,
 	})
+	return err
 
 func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error {
 	// Check if collection exists

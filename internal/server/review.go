@@ -326,6 +326,28 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		if req.NewValue != "" {
 			// Create a new fact via implicit POST
 			s.handleReviewSupersedeCreate(w, r, req.NewKey, req.NewValue, payload, now)
+			// Then write updated status to the OLD fact
+			payload["updated_at"] = qdrant.NewValue(now)
+			oldPoint := &qdrant.PointStruct{
+				Id: &qdrant.PointId{
+					PointIdOptions: &qdrant.PointId_Uuid{
+						Uuid: factKeyHash(key),
+					},
+				},
+				Payload: payload,
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{
+							Data: []float32{0, 0, 0, 0},
+						},
+					},
+				},
+			}
+			if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{oldPoint}); err != nil {
+				s.log(r.Context()).Error("review supersede: failed to update old fact", "error", err)
+				writeError(w, 500, "UPSERT_FAILED", "created new fact but failed to update old fact")
+				return
+			}
 			return
 		}
 
@@ -582,30 +604,4 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 
 // ── Payload extraction (duplicated from facts.go for convenience) ─────────────
 
-func getPayloadStringValue(payload map[string]*qdrant.Value, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	return v.GetStringValue()
-}
 
-func getPayloadFloatValue(payload map[string]*qdrant.Value, key string) float64 {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return 0
-	}
-	return v.GetDoubleValue()
-}
-
-func getPayloadBoolValue(payload map[string]*qdrant.Value, key string) bool {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return false
-	}
-	return v.GetBoolValue()
-}
-
-func getPayloadIntValue(payload map[string]*qdrant.Value, key string) int {
-	return int(getPayloadFloatValue(payload, key))
-}

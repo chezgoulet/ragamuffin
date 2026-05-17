@@ -256,8 +256,36 @@ func (p *Pruner) scrollAllFacts(ctx context.Context) ([]*pb.RetrievedPoint, erro
 }
 
 // scrollFilteredFacts returns facts matching the given filter.
+// If limit is 0, paginates through all results (up to Qdrant's max scroll).
 func (p *Pruner) scrollFilteredFacts(ctx context.Context, filter *pb.Filter, limit uint32) ([]*pb.RetrievedPoint, error) {
+	if limit == 0 {
+		return p.scrollAllFilteredFacts(ctx, filter)
+	}
 	return p.facts.ScrollFiltered(ctx, p.facts.Collection(), filter, limit, "")
+}
+
+// scrollAllFilteredFacts paginates through ALL facts matching the filter.
+func (p *Pruner) scrollAllFilteredFacts(ctx context.Context, filter *pb.Filter) ([]*pb.RetrievedPoint, error) {
+	var all []*pb.RetrievedPoint
+	var offset string
+	const pageSize uint32 = 200
+
+	for {
+		points, err := p.facts.ScrollFiltered(ctx, p.facts.Collection(), filter, pageSize, offset)
+		if err != nil {
+			return nil, fmt.Errorf("scroll filtered facts: %w", err)
+		}
+		if len(points) == 0 {
+			break
+		}
+		all = append(all, points...)
+		if id := points[len(points)-1].GetId().GetUuid(); id != "" {
+			offset = id
+		} else {
+			break
+		}
+	}
+	return all, nil
 }
 
 // updateFactStatus sets the status field on a single fact point.

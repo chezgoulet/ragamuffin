@@ -973,3 +973,35 @@ func getPayloadInt(payload map[string]*qdrant.Value, key string) (int, bool) {
 	}
 	return int(f), true
 }
+
+// ── Single-value convenience helpers ────────────────────────────────────────
+// These wrap the (value, exists) tuple variants above for callers that only
+// need the value with zero-as-default semantics.
+
+func getPayloadStringValue(payload map[string]*qdrant.Value, key string) string {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return v.GetStringValue()
+}
+
+func getPayloadFloatValue(payload map[string]*qdrant.Value, key string) float64 {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return 0
+	}
+	return v.GetDoubleValue()
+}
+
+func getPayloadBoolValue(payload map[string]*qdrant.Value, key string) bool {
+	v, ok := payload[key]
+	if !ok || v == nil {
+		return false
+	}
+	return v.GetBoolValue()
+}
+
+func getPayloadIntValue(payload map[string]*qdrant.Value, key string) int {
+	return int(getPayloadFloatValue(payload, key))
+}
