@@ -258,3 +258,8 @@ func (c *Client) Health(ctx context.Context) error {
 func (c *Client) Close() error {
 	return c.conn.Close()
 }
+
+// Collection returns the collection name this client was created for.
+func (c *Client) Collection() string {
+	return c.collection
+}

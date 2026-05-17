@@ -17,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
@@ -266,6 +267,15 @@ func main() {
 	}
 	defer logStore.Close()
 	logger.Info("log store ready", "path", logPath)
+
+	// ── Pruner (fact lifecycle management) ────────────────────────────────────
+	prunerCfg := pruner.DefaultConfig()
+	prunerCfg.Enabled = true // TODO: make configurable via env var
+	p := pruner.New(factsQc, qc, ec, lm, logger.With("component", "pruner"), prunerCfg)
+	ctxPruner, cancelPruner := context.WithCancel(context.Background())
+	defer cancelPruner()
+	go p.Run(ctxPruner)
+	logger.Info("pruner started", "enabled", prunerCfg.Enabled)
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// Pass qc = first vault's Qdrant client for backward-compat /health checks

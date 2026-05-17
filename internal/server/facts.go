@@ -208,6 +208,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	// Compute fields
 	confidence := defaultConfidence(fp.Confidence)
 	expiresAt := computeExpiresAt(intValue(fp.TTLDays))
+	var expiresAtUnix float64
+	if ttl := intValue(fp.TTLDays); ttl > 0 {
+		expiresAtUnix = float64(time.Now().UTC().AddDate(0, 0, ttl).Unix())
+	}
 
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":          fp.Key,
@@ -224,6 +228,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"updated_at":        now,
 		"ttl_days":          intValue(fp.TTLDays),
 		"expires_at":        expiresAt,
+		"expires_at_unix":   expiresAtUnix,
 	})
 	// Contradicts: empty list (server-managed)
 	payload["contradicts"] = &qdrant.Value{
@@ -474,8 +479,10 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		payload["ttl_days"] = qdrant.NewValue(float64(ttl))
 		if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
 			payload["expires_at"] = qdrant.NewValue(expiresAt)
+			payload["expires_at_unix"] = qdrant.NewValue(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
 		} else {
 			payload["expires_at"] = qdrant.NewValue("")
+			payload["expires_at_unix"] = qdrant.NewValue(float64(0))
 		}
 	}
 	if req.Tags != nil {
@@ -758,6 +765,11 @@ func (s *Server) migrateFacts() {
 			// expires_at: default ""
 			if _, ok := payload["expires_at"]; !ok {
 				payload["expires_at"] = qdrant.NewValue("")
+				needsUpdate = true
+			}
+			// expires_at_unix: default 0
+			if _, ok := payload["expires_at_unix"]; !ok {
+				payload["expires_at_unix"] = qdrant.NewValue(float64(0))
 				needsUpdate = true
 			}
 

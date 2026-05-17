@@ -369,6 +369,7 @@ func (s *Server) ensureFactIndexes() {
 		"source_type":       "keyword",
 		"confidence":        "float",
 		"expires_at":        "keyword",
+		"expires_at_unix":   "float",
 		"fact_key":          "keyword",
 		"conflict_resolved": "bool",
 	}
