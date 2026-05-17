@@ -18,7 +18,7 @@ type CloudEvent struct {
 	Source      string      `json:"source"`
 	Type        string      `json:"type"`
 	Time        string      `json:"time"`
-	Data        interface{} `json:"data,omitempty"`
+	Data        any `json:"data,omitempty"`
 }
 
 // Event types Ragamuffin emits.
@@ -61,7 +61,7 @@ type ServerStartedData struct {
 }
 
 // New creates a CloudEvent with required fields populated.
-func New(eventType, source string, data interface{}) CloudEvent {
+func New(eventType, source string, data any) CloudEvent {
 	return CloudEvent{
 		SpecVersion: "1.0",
 		ID:          uuidV7(),

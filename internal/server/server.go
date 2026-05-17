@@ -496,8 +496,8 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 			formatted := lastIndexed.Format(time.RFC3339)
 			lastIndexedStr = &formatted
 		}
-		writeJSON(w, 200, map[string]interface{}{
-			"vaults": []map[string]interface{}{
+		writeJSON(w, 200, map[string]any{
+			"vaults": []map[string]any{
 				{
 					"name":          "default",
 					"path":          s.cfg.VaultPath,
@@ -512,7 +512,7 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Multi-tenant: list all configured vaults with per-vault stats
-	var vaults []map[string]interface{}
+	var vaults []map[string]any
 	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
 		fileCount, chunkCount, lastIndexed, indexing, _, _ := idx.Stats()
 		var lastIndexedStr *string
@@ -525,7 +525,7 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 		if vc != nil {
 			path = vc.Path
 		}
-		vaults = append(vaults, map[string]interface{}{
+		vaults = append(vaults, map[string]any{
 			"name":          name,
 			"path":          path,
 			"indexed_files": fileCount,
@@ -535,7 +535,7 @@ func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
 		})
 	})
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"vaults": vaults,
 	})
 }
@@ -570,7 +570,7 @@ func writeError(w http.ResponseWriter, status int, code, message string) {
 	json.NewEncoder(w).Encode(errResp{Error: true, Code: code, Message: message})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)

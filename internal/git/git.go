@@ -51,11 +51,11 @@ type githubProvider struct {
 	client *http.Client
 }
 
-func (p *githubProvider) apiURL(format string, args ...interface{}) string {
+func (p *githubProvider) apiURL(format string, args ...any) string {
 	return "https://api.github.com" + fmt.Sprintf(format, args...)
 }
 
-func (p *githubProvider) do(ctx context.Context, method, urlStr string, body interface{}, out interface{}) error {
+func (p *githubProvider) do(ctx context.Context, method, urlStr string, body any, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -110,7 +110,7 @@ func (p *githubProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 	baseSHA := refResp.Object.SHA
 
 	// 2. Create branch
-	createRef := map[string]interface{}{
+	createRef := map[string]any{
 		"ref": "refs/heads/" + branch,
 		"sha": baseSHA,
 	}
@@ -119,7 +119,7 @@ func (p *githubProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 	}
 
 	// 3. Create/update file on branch
-	fileReq := map[string]interface{}{
+	fileReq := map[string]any{
 		"message": title,
 		"content": base64.StdEncoding.EncodeToString([]byte(content)),
 		"branch":  branch,
@@ -140,7 +140,7 @@ func (p *githubProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 
 	// 4. Handle deletion (empty content)
 	if content == "" {
-		deleteReq := map[string]interface{}{
+		deleteReq := map[string]any{
 			"message": title,
 			"sha":     existing.SHA,
 			"branch":  branch,
@@ -151,7 +151,7 @@ func (p *githubProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 	}
 
 	// 5. Create PR
-	prReq := map[string]interface{}{
+	prReq := map[string]any{
 		"title":                 title,
 		"head":                  branch,
 		"base":                  baseBranch,
@@ -177,11 +177,11 @@ type gitlabProvider struct {
 	client *http.Client
 }
 
-func (p *gitlabProvider) apiURL(format string, args ...interface{}) string {
+func (p *gitlabProvider) apiURL(format string, args ...any) string {
 	return "https://gitlab.com/api/v4" + fmt.Sprintf(format, args...)
 }
 
-func (p *gitlabProvider) do(ctx context.Context, method, urlStr string, body interface{}, out interface{}) error {
+func (p *gitlabProvider) do(ctx context.Context, method, urlStr string, body any, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -238,10 +238,10 @@ func (p *gitlabProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 		action = "delete"
 	}
 
-	commitReq := map[string]interface{}{
+	commitReq := map[string]any{
 		"branch":        branch,
 		"commit_message": title,
-		"actions": []map[string]interface{}{
+		"actions": []map[string]any{
 			{
 				"action":  action,
 				"file_path": targetPath,
@@ -254,7 +254,7 @@ func (p *gitlabProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 	}
 
 	// 3. Create merge request
-	mrReq := map[string]interface{}{
+	mrReq := map[string]any{
 		"title":              title,
 		"source_branch":      branch,
 		"target_branch":      baseBranch,
@@ -281,11 +281,11 @@ type giteaProvider struct {
 	client  *http.Client
 }
 
-func (p *giteaProvider) apiURL(format string, args ...interface{}) string {
+func (p *giteaProvider) apiURL(format string, args ...any) string {
 	return p.baseURL + fmt.Sprintf(format, args...)
 }
 
-func (p *giteaProvider) do(ctx context.Context, method, urlStr string, body interface{}, out interface{}) error {
+func (p *giteaProvider) do(ctx context.Context, method, urlStr string, body any, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -339,7 +339,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 	}
 
 	// 2. Create branch
-	branchReq := map[string]interface{}{
+	branchReq := map[string]any{
 		"old_branch_name": baseBranch,
 		"new_branch_name": branch,
 	}
@@ -348,7 +348,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 	}
 
 	// 3. Create/update file
-	fileReq := map[string]interface{}{
+	fileReq := map[string]any{
 		"message": title,
 		"content": base64.StdEncoding.EncodeToString([]byte(content)),
 		"branch":  branch,
@@ -367,7 +367,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 			return "", "", fmt.Errorf("create file: %w", err)
 		}
 	} else if existing.SHA != "" {
-		deleteReq := map[string]interface{}{
+		deleteReq := map[string]any{
 			"message": title,
 			"sha":     existing.SHA,
 			"branch":  branch,
@@ -378,7 +378,7 @@ func (p *giteaProvider) CreatePR(ctx context.Context, repo, baseBranch, title, c
 	}
 
 	// 4. Create PR
-	prReq := map[string]interface{}{
+	prReq := map[string]any{
 		"title": title,
 		"head":  branch,
 		"base":  baseBranch,

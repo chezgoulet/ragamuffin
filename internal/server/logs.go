@@ -39,7 +39,7 @@ func (s *Server) handleLogsPost(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB for logs
 	var lp logPayload
 	if err := json.NewDecoder(r.Body).Decode(&lp); err != nil {
-		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 	if lp.Agent == "" || lp.Type == "" || lp.Body == "" {

@@ -18,8 +18,8 @@ type conflictResult struct {
 	Summary string            `json:"summary"`
 }
 
-func (s *Server) checkStaleness(vaultPath string, staleDays int) ([]map[string]interface{}, error) {
-	var stale []map[string]interface{}
+func (s *Server) checkStaleness(vaultPath string, staleDays int) ([]map[string]any, error) {
+	var stale []map[string]any
 	cutoff := time.Now().AddDate(0, 0, -staleDays)
 
 	err := filepath.Walk(vaultPath, func(absPath string, info os.FileInfo, err error) error {
@@ -28,7 +28,7 @@ func (s *Server) checkStaleness(vaultPath string, staleDays int) ([]map[string]i
 		}
 		if info.ModTime().Before(cutoff) {
 			relPath, _ := filepath.Rel(vaultPath, absPath)
-			stale = append(stale, map[string]interface{}{
+			stale = append(stale, map[string]any{
 				"path":         relPath,
 				"last_updated": info.ModTime().Format(time.RFC3339),
 				"days_stale":   int(time.Since(info.ModTime()).Hours() / 24),
@@ -90,9 +90,9 @@ func (s *Server) checkGaps(vaultPath string) []string {
 	return gaps
 }
 
-func (s *Server) checkDuplicates(vaultPath string) []map[string]interface{} {
+func (s *Server) checkDuplicates(vaultPath string) []map[string]any {
 	seen := make(map[string]string) // filename → first path
-	var dupes []map[string]interface{}
+	var dupes []map[string]any
 
 	filepath.Walk(vaultPath, func(absPath string, info os.FileInfo, err error) error {
 		if err != nil || info.IsDir() {
@@ -101,7 +101,7 @@ func (s *Server) checkDuplicates(vaultPath string) []map[string]interface{} {
 		name := info.Name()
 		relPath, _ := filepath.Rel(vaultPath, absPath)
 		if first, exists := seen[name]; exists {
-			dupes = append(dupes, map[string]interface{}{
+			dupes = append(dupes, map[string]any{
 				"filename": name,
 				"path_a":   first,
 				"path_b":   relPath,
@@ -226,7 +226,7 @@ func truncate(s string, maxLen int) string {
 
 // checkFactConflicts returns all facts with non-empty contradicts lists
 // (unresolved semantic contradictions detected by the Pruner).
-func (s *Server) checkFactConflicts(ctx context.Context) []map[string]interface{} {
+func (s *Server) checkFactConflicts(ctx context.Context) []map[string]any {
 	if s.facts == nil {
 		return nil
 	}
@@ -269,14 +269,14 @@ func (s *Server) checkFactConflicts(ctx context.Context) []map[string]interface{
 		return nil
 	}
 
-	conflicts := make([]map[string]interface{}, 0, len(points))
+	conflicts := make([]map[string]any, 0, len(points))
 	for _, pt := range points {
 		payload := pt.GetPayload()
 		key, _ := getPayloadString(payload, "fact_key")
 		value, _ := getPayloadString(payload, "fact_value")
 		contradicts := getPayloadStringList(payload, "contradicts")
 
-		conflicts = append(conflicts, map[string]interface{}{
+		conflicts = append(conflicts, map[string]any{
 			"key":         key,
 			"value":       truncate(value, 200),
 			"contradicts": contradicts,
@@ -289,7 +289,7 @@ func (s *Server) checkFactConflicts(ctx context.Context) []map[string]interface{
 // checkFactVaultConflicts compares fact values against vault chunks using LLM.
 // Samples vault chunks and recently updated facts, then asks the LLM to
 // identify semantic contradictions between stored knowledge and vault content.
-func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([]map[string]interface{}, int) {
+func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([]map[string]any, int) {
 	if s.facts == nil || s.embedder == nil {
 		return nil, 0
 	}
@@ -333,7 +333,7 @@ func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([
 
 	// Pair each fact with a random chunk and compare via LLM
 	llmCalls := 0
-	conflicts := make([]map[string]interface{}, 0)
+	conflicts := make([]map[string]any, 0)
 
 	for i, fp := range factPoints {
 		if i >= len(chunkPoints) {
@@ -364,7 +364,7 @@ func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([
 			continue
 		}
 		if summary != "" {
-			conflicts = append(conflicts, map[string]interface{}{
+			conflicts = append(conflicts, map[string]any{
 				"fact_key":   factKey,
 				"fact_value": truncate(factValue, 200),
 				"chunk_text": truncate(chunkText, 200),

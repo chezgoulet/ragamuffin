@@ -163,7 +163,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024) // 256 KB for facts
 	var fp factPayload
 	if err := json.NewDecoder(r.Body).Decode(&fp); err != nil {
-		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 	if fp.Key == "" || fp.Value == "" {
@@ -407,7 +407,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	respBody := map[string]interface{}{
+	respBody := map[string]any{
 		"entries": resp,
 	}
 	if nextToken != "" {
@@ -433,7 +433,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
 	var req factUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 
@@ -532,7 +532,7 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 512*1024)
 	var req factBulkUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, 400, "INVALID_JSON", fmt.Sprintf("invalid request body: %v", err))
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
 		return
 	}
 	if len(req.Keys) == 0 {
@@ -627,7 +627,7 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 		succeeded++
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"results":   results,
 		"total":     len(req.Keys),
 		"succeeded": succeeded,
@@ -656,7 +656,7 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"deleted": true,
 		"key":     key,
 	})

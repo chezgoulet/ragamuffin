@@ -33,7 +33,7 @@ type JWTAuthenticator struct {
 }
 
 type cachedKey struct {
-	publicKey interface{}
+	publicKey any
 }
 
 // ragaClaims are the custom claims embedded in the JWT.
@@ -93,7 +93,7 @@ func (j *JWTAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	}
 
 	// Verify and parse the token
-	parsed, err := jwt.ParseWithClaims(tokenStr, &ragaClaims{}, func(t *jwt.Token) (interface{}, error) {
+	parsed, err := jwt.ParseWithClaims(tokenStr, &ragaClaims{}, func(t *jwt.Token) (any, error) {
 		return ck.publicKey, nil
 	},
 		jwt.WithIssuer(j.issuer),
@@ -154,7 +154,7 @@ func (j *JWTAuthenticator) getJWKS() (map[string]cachedKey, error) {
 	}
 
 	var jwksResp struct {
-		Keys []map[string]interface{} `json:"keys"`
+		Keys []map[string]any `json:"keys"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&jwksResp); err != nil {
 		return nil, fmt.Errorf("decode jwks: %w", err)
@@ -187,7 +187,7 @@ func (j *JWTAuthenticator) getJWKS() (map[string]cachedKey, error) {
 }
 
 // parseJWK converts a raw JWK to a Go public key.
-func parseJWK(kty string, raw map[string]interface{}) (interface{}, error) {
+func parseJWK(kty string, raw map[string]any) (any, error) {
 	switch kty {
 	case "RSA":
 		return parseRSAJWK(raw)
@@ -198,7 +198,7 @@ func parseJWK(kty string, raw map[string]interface{}) (interface{}, error) {
 	}
 }
 
-func parseRSAJWK(raw map[string]interface{}) (*rsa.PublicKey, error) {
+func parseRSAJWK(raw map[string]any) (*rsa.PublicKey, error) {
 	nStr, _ := raw["n"].(string)
 	eStr, _ := raw["e"].(string)
 	if nStr == "" || eStr == "" {
@@ -220,7 +220,7 @@ func parseRSAJWK(raw map[string]interface{}) (*rsa.PublicKey, error) {
 	}, nil
 }
 
-func parseECJWK(raw map[string]interface{}) (*ecdsa.PublicKey, error) {
+func parseECJWK(raw map[string]any) (*ecdsa.PublicKey, error) {
 	crv, _ := raw["crv"].(string)
 	xStr, _ := raw["x"].(string)
 	yStr, _ := raw["y"].(string)

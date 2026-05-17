@@ -38,7 +38,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		_, _, _, indexing, progressPct, totalFiles = idx.Stats()
 	}
 
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"status":  "ok",
 		"qdrant":  "reachable",
 		"indexing": indexing,
@@ -96,7 +96,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		vaultPath = "multi-tenant (see /vaults)"
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"vault_path":        vaultPath,
 		"indexed_files":     fileCount,
 		"total_chunks":      chunkCount,
@@ -197,7 +197,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		out = append(out, res)
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"results":   out,
 		"top_score": topScore,
 	})
@@ -319,7 +319,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !s.cfg.HasLLM() {
-		writeError(w, 503, "LLM_NOT_CONFIGURED", "LLM not configured")
+		writeError(w, 503, "SERVICE_UNAVAILABLE", "LLM not configured")
 		return
 	}
 
@@ -360,7 +360,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"answer":    answer,
 		"sources":   sources,
 		"mode_used": modeUsed,
@@ -432,7 +432,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 502, "GIT_PROVIDER_ERROR", fmt.Sprintf("PR creation failed: %s", err))
 			return
 		}
-		writeJSON(w, 200, map[string]interface{}{
+		writeJSON(w, 200, map[string]any{
 			"mode":   "pr",
 			"pr_url": prURL,
 			"branch": branch,
@@ -465,7 +465,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 200, map[string]any{
 		"mode":    "direct",
 		"path":    cleanPath,
 		"written": true,
@@ -512,7 +512,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 	defer cancel()
 
-	resp := map[string]interface{}{
+	resp := map[string]any{
 		"checks_run": req.Checks,
 	}
 
@@ -547,7 +547,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	// ── Semantic conflict check ──
 	if checkSet["semantic_conflict"] {
 		if !s.cfg.HasLLM() {
-			resp["semantic_conflicts"] = []interface{}{}
+			resp["semantic_conflicts"] = []any{}
 			resp["llm_calls"] = 0
 		} else {
 			// Use vault-specific Qdrant client
@@ -568,7 +568,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			health := s.pruner.Health()
 			resp["pruner_health"] = health
 		} else {
-			resp["pruner_health"] = map[string]interface{}{
+			resp["pruner_health"] = map[string]any{
 				"enabled": false,
 				"message": "pruner not configured",
 			}
@@ -584,7 +584,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	// ── Fact vs vault conflict check ──
 	if checkSet["fact_vault_conflict"] {
 		if !s.cfg.HasLLM() {
-			resp["fact_vault_conflicts"] = []interface{}{}
+			resp["fact_vault_conflicts"] = []any{}
 		} else {
 			conflicts, llmCalls := s.checkFactVaultConflicts(ctx, req.SampleSize)
 			resp["fact_vault_conflicts"] = conflicts
@@ -626,7 +626,7 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, 202, map[string]interface{}{
+	writeJSON(w, 202, map[string]any{
 		"status":  "accepted",
 		"vault":   vaultName,
 		"message": "Re-index started. Monitor progress via /health.",
