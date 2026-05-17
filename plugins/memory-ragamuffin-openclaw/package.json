@@ -1,0 +1,23 @@
+{
+  "name": "memory-ragamuffin-openclaw",
+  "version": "0.5.0",
+  "description": "Ragamuffin-backed memory for OpenClaw — per-agent Qdrant-isolated semantic search via Vault recall",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "openclaw": {
+    "extensions": ["./dist/index.js"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    }
+  },
+  "devDependencies": {
+    "typescript": "^5.0",
+    "vitest": "^3.0"
+  }
+}
