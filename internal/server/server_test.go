@@ -7,8 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/llm"
 )
 
 // ── vaultPathFromContext ──────────────────────────────────────────────────────
@@ -384,5 +388,164 @@ func TestWithRateLimit_PassThrough(t *testing.T) {
 	}
 	if w.Code != 200 {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+// ── llmFor ────────────────────────────────────────────────────────────────────
+
+func TestLlmFor_NoContext_FallsToServerDefault(t *testing.T) {
+	srv := &Server{
+		cfg:       &config.Config{},
+		llm:       llm.New("test", "http://llm", "sk-1", "gpt", 30*time.Second),
+		indexers:  indexer.NewManager(),
+	}
+
+	lm := srv.llmFor(context.Background())
+	if lm == nil {
+		t.Fatal("expected non-nil LLM client from fallback")
+	}
+	// Should be the server-level client
+	if lm != srv.llm {
+		t.Error("llmFor should return server-level llm when no vault in context")
+	}
+}
+
+func TestLlmFor_NoContext_NoLLMConfigured(t *testing.T) {
+	srv := &Server{
+		cfg:      &config.Config{},
+		llm:      nil,
+		indexers: indexer.NewManager(),
+	}
+
+	lm := srv.llmFor(context.Background())
+	if lm != nil {
+		t.Error("expected nil when no LLM configured and no vault context")
+	}
+}
+
+func TestLlmFor_VaultContext_UsesPerVault(t *testing.T) {
+	perVaultLm := llm.New("test", "http://vault-llm", "sk-2", "gpt-4", 30*time.Second)
+	srv := &Server{
+		cfg:      &config.Config{},
+		llm:      llm.New("test", "http://server-llm", "sk-1", "gpt", 30*time.Second),
+		indexers: indexer.NewManager(),
+	}
+	srv.indexers.SetLLM("docs", perVaultLm)
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	lm := srv.llmFor(ctx)
+	if lm == nil {
+		t.Fatal("expected non-nil LLM client")
+	}
+	if lm != perVaultLm {
+		t.Error("llmFor should return per-vault LLM when vault in context")
+	}
+}
+
+func TestLlmFor_VaultContext_FallsToServerWhenNoPerVault(t *testing.T) {
+	serverLm := llm.New("test", "http://server-llm", "sk-1", "gpt", 30*time.Second)
+	srv := &Server{
+		cfg:      &config.Config{},
+		llm:      serverLm,
+		indexers: indexer.NewManager(),
+	}
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	lm := srv.llmFor(ctx)
+	if lm != serverLm {
+		t.Error("llmFor should fall back to server LLM when per-vault not set")
+	}
+}
+
+func TestLlmFor_VaultContext_BothNil(t *testing.T) {
+	srv := &Server{
+		cfg:      &config.Config{},
+		llm:      nil,
+		indexers: indexer.NewManager(),
+	}
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	lm := srv.llmFor(ctx)
+	if lm != nil {
+		t.Error("expected nil when neither server nor per-vault LLM is configured")
+	}
+}
+
+// ── embeddingFor ──────────────────────────────────────────────────────────────
+
+func TestEmbeddingFor_NoContext_FallsToServerDefault(t *testing.T) {
+	srv := &Server{
+		cfg:       &config.Config{},
+		embedder:  embedding.New("http://embed", "sk-1", "model"),
+		indexers:  indexer.NewManager(),
+	}
+
+	ec := srv.embeddingFor(context.Background())
+	if ec == nil {
+		t.Fatal("expected non-nil embedder from fallback")
+	}
+	if ec != srv.embedder {
+		t.Error("embeddingFor should return server-level embedder when no vault in context")
+	}
+}
+
+func TestEmbeddingFor_NoContext_NilEmbedder(t *testing.T) {
+	srv := &Server{
+		cfg:      &config.Config{},
+		embedder: nil,
+		indexers: indexer.NewManager(),
+	}
+
+	ec := srv.embeddingFor(context.Background())
+	if ec != nil {
+		t.Error("expected nil when no embedder configured and no vault context")
+	}
+}
+
+func TestEmbeddingFor_VaultContext_UsesPerVault(t *testing.T) {
+	perVaultEc := embedding.New("http://vault-embed", "sk-2", "vault-model")
+	srv := &Server{
+		cfg:      &config.Config{},
+		embedder: embedding.New("http://server-embed", "sk-1", "server-model"),
+		indexers: indexer.NewManager(),
+	}
+	srv.indexers.SetEmbedder("docs", perVaultEc)
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	ec := srv.embeddingFor(ctx)
+	if ec == nil {
+		t.Fatal("expected non-nil embedder")
+	}
+	if ec != perVaultEc {
+		t.Error("embeddingFor should return per-vault embedder when vault in context")
+	}
+}
+
+func TestEmbeddingFor_VaultContext_FallsToServerWhenNoPerVault(t *testing.T) {
+	serverEc := embedding.New("http://server-embed", "sk-1", "server-model")
+	srv := &Server{
+		cfg:      &config.Config{},
+		embedder: serverEc,
+		indexers: indexer.NewManager(),
+	}
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	ec := srv.embeddingFor(ctx)
+	if ec != serverEc {
+		t.Error("embeddingFor should fall back to server embedder when per-vault not set")
+	}
+}
+
+func TestEmbeddingFor_VaultContext_BothNil(t *testing.T) {
+	srv := &Server{
+		cfg:      &config.Config{},
+		embedder: nil,
+		indexers: indexer.NewManager(),
+	}
+
+	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
+	ec := srv.embeddingFor(ctx)
+	if ec != nil {
+		t.Error("expected nil when neither server nor per-vault embedder is configured")
 	}
 }

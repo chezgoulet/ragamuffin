@@ -132,6 +132,26 @@ func main() {
 				os.Exit(1)
 			}
 
+		// Per-vault LLM client (optional override)
+		if vc.HasLLM() {
+			provider := vc.LLMProvider
+			if provider == "" {
+				provider = cfg.LLMProvider
+			}
+			vlm := llm.New(provider, vc.LLMEndpoint, vc.LLMApiKey, vc.LLMModel, vc.LLMTimeout)
+			if vlm != nil {
+				idxManager.SetLLM(name, vlm)
+				logger.Info("per-vault LLM client configured", "vault", name, "model", vc.LLMModel)
+			}
+		}
+
+			// Per-vault embedding client (optional override)
+			if vc.HasEmbedding() {
+				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel)
+				idxManager.SetEmbedder(name, vec)
+				logger.Info("per-vault embedding client configured", "vault", name, "model", vc.EmbeddingModel)
+			}
+
 			// Start watcher for this vault
 			interval, err := time.ParseDuration(cfg.WatchInterval)
 			if err != nil {

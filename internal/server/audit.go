@@ -200,7 +200,7 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, qc *qdrant.Client, 
 		}
 
 		llmCalls++
-		summary, err := s.llm.Compare(ctx, textA, textB, srcA, srcB)
+		summary, err := s.llmFor(ctx).Compare(ctx, textA, textB, srcA, srcB)
 		if err != nil {
 			s.log(ctx).Warn("audit: LLM compare failed", "error", err)
 			continue

@@ -157,7 +157,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	// Generate query embedding
-	vector, err := s.embedder.EmbedSingle(ctx, req.Query)
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
 	if err != nil {
 		writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("embedding failed: %s", err))
 		return
@@ -218,7 +218,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 	modeUsed = mode
 
 	if mode == "rag" || mode == "auto" {
-		vector, err := s.embedder.EmbedSingle(ctx, query)
+		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
@@ -257,7 +257,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 	}
 
 	if modeUsed == "full" && contextText == "" {
-		vector, err := s.embedder.EmbedSingle(ctx, query)
+		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
@@ -354,7 +354,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, err := s.llm.Synthesize(ctx, req.Query, contextText)
+	answer, err := s.llmFor(ctx).Synthesize(ctx, req.Query, contextText)
 	if err != nil {
 		writeError(w, 502, "LLM_API_ERROR", fmt.Sprintf("LLM call failed: %s", err))
 		return

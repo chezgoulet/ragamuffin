@@ -85,6 +85,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/v1/logs", cfg.RateLimitLogs)
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
+	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
 
 	return s
 }
@@ -145,6 +146,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+
+	// Ingest — agent session persistence
+	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
@@ -319,6 +323,29 @@ func (s *Server) qdrantFor(ctx context.Context) *qdrant.Client {
 		}
 	}
 	return s.qdrant
+}
+
+// llmFor returns the per-vault LLM client from context,
+// falling back to the server-wide LLM client for backward compatibility.
+// Returns nil if neither is configured.
+func (s *Server) llmFor(ctx context.Context) *llm.Client {
+	if name := vaultFromContext(ctx); name != "" {
+		if lm := s.indexers.GetLLM(name); lm != nil {
+			return lm
+		}
+	}
+	return s.llm
+}
+
+// embeddingFor returns the per-vault embedding client from context,
+// falling back to the server-wide embedder.
+func (s *Server) embeddingFor(ctx context.Context) *embedding.Client {
+	if name := vaultFromContext(ctx); name != "" {
+		if ec := s.indexers.GetEmbedder(name); ec != nil {
+			return ec
+		}
+	}
+	return s.embedder
 }
 
 // withVault wraps a handler to validate vault access. Extracts the vault name

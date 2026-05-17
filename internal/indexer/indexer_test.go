@@ -1,6 +1,7 @@
 package indexer
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -54,6 +55,24 @@ func TestSetChunkMaxTokens(t *testing.T) {
 	idx.SetChunkMaxTokens(0)
 	if idx.chunkMaxTokens != 0 {
 		t.Errorf("chunkMaxTokens = %d, want 0", idx.chunkMaxTokens)
+	}
+}
+
+// ── Ingest ──────────────────────────────────────────────────────────────────
+
+func TestIngest_NilEmbedder(t *testing.T) {
+	idx := New("/vault", nil, nil, nil)
+	err := idx.Ingest(context.Background(), "some content", "source-1", nil)
+	if err == nil {
+		t.Error("expected error with nil embedder")
+	}
+}
+
+func TestIngest_EmptyContent(t *testing.T) {
+	idx := New("/vault", nil, nil, nil)
+	err := idx.Ingest(context.Background(), "", "source-1", nil)
+	if err == nil {
+		t.Error("expected error with empty content")
 	}
 }
 
