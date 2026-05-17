@@ -24,6 +24,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -40,6 +41,10 @@ type PrunerConfig struct {
 	ConflictSampleSize     int           // default 50 — pairs per scan cycle
 	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
 	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
+
+	// LogScanFn is called after each scan completes. Optional; used by the server
+	// to log scan summaries to /v1/logs.
+	LogScanFn func(scanName string, duration time.Duration, factsFlagged int, errStr string)
 }
 
 // DefaultConfig returns a PrunerConfig with sensible defaults.
@@ -158,6 +163,42 @@ func (p *Pruner) RecordResolved(count int) {
 	p.factsResolved += int64(count)
 }
 
+// factsFlaggedCount returns the current flagged count (thread-safe).
+func (p *Pruner) factsFlaggedCount() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.factsFlagged
+}
+
+// Metrics returns pruner Prometheus-style metric values.
+func (p *Pruner) Metrics() (scanCounts map[string]int64, factsFlagged, factsResolved int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	scanCounts = make(map[string]int64, len(p.totalScans))
+	for k, v := range p.totalScans {
+		scanCounts[k] = v
+	}
+	return scanCounts, p.factsFlagged, p.factsResolved
+}
+
+// ProcessEvents drains watcher file events from the channel. This is a
+// placeholder for Phase 6 source-file staleness tracking — for now it
+// just drops events with a debug log.
+func (p *Pruner) ProcessEvents(ctx context.Context, events <-chan watcher.Event) {
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				return
+			}
+			p.logger.Debug("pruner: file event received (not yet tracked)",
+				"path", e.Path, "action", e.Action.String())
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 
 // Run starts the scan scheduler goroutines. Blocks until ctx is cancelled.
@@ -195,12 +236,25 @@ func (p *Pruner) Run(ctx context.Context) {
 }
 
 // runScan runs scanFn immediately, then every interval (if > 0) until ctx done.
+// After each run, calls cfg.LogScanFn if configured.
 func (p *Pruner) runScan(ctx context.Context, name string, interval time.Duration, scanFn func(context.Context)) {
 	p.logger.Info("pruner scan starting", "scan", name)
 
+	run := func() {
+		p.recordScanRun(name)
+		beforeFlagged := p.factsFlaggedCount()
+		start := time.Now()
+		scanFn(ctx)
+		elapsed := time.Since(start)
+		afterFlagged := p.factsFlaggedCount()
+		flagged := afterFlagged - beforeFlagged
+		if p.cfg.LogScanFn != nil {
+			p.cfg.LogScanFn(name, elapsed, int(flagged), "")
+		}
+	}
+
 	// Run first scan
-	p.recordScanRun(name)
-	scanFn(ctx)
+	run()
 
 	if interval <= 0 {
 		return
@@ -215,8 +269,7 @@ func (p *Pruner) runScan(ctx context.Context, name string, interval time.Duratio
 			return
 		case <-ticker.C:
 			p.logger.Info("pruner scan running", "scan", name)
-			p.recordScanRun(name)
-			scanFn(ctx)
+			run()
 		}
 	}
 }

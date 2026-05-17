@@ -95,6 +95,7 @@ func main() {
 	// Shutdown control
 	var idxCancelFuncs []context.CancelFunc
 	var watcherDoneChs []chan struct{}
+	var prunerEventChs []chan watcher.Event
 
 	if cfg.IsMultiTenant() {
 		// Multi-tenant: one indexer + Qdrant connection per vault
@@ -159,11 +160,38 @@ func main() {
 				interval = 60 * time.Second
 			}
 			w := watcher.New(vc.Path, interval, logger.With("vault", name), cfg.WatcherMode)
-			events := make(chan watcher.Event, 100)
+
+			// Fan-out: watcher events → indexer + pruner (non-blocking send)
+			rawEvents := make(chan watcher.Event, 100)
+			idxEvents := make(chan watcher.Event, 100)
+			prunevents := make(chan watcher.Event, 100)
 			vwDone := make(chan struct{})
 			watcherDoneChs = append(watcherDoneChs, vwDone)
+			prunerEventChs = append(prunerEventChs, prunevents)
 
-			go w.Watch(events, vwDone)
+			go w.Watch(rawEvents, vwDone)
+			go func() {
+				for {
+					select {
+					case e, ok := <-rawEvents:
+						if !ok {
+							return
+						}
+						select {
+						case idxEvents <- e:
+						default:
+							logger.With("vault", name).Warn("indexer event channel full, dropping event")
+						}
+						select {
+						case prunevents <- e:
+						default:
+							logger.With("vault", name).Debug("pruner event channel full, dropping event")
+						}
+					case <-vwDone:
+						return
+					}
+				}
+			}()
 
 			// Start indexer for this vault
 			idxCtx, idxCancel := context.WithCancel(context.Background())
@@ -171,7 +199,7 @@ func main() {
 			initialDone := make(chan struct{})
 			readyChans = append(readyChans, initialDone)
 
-			go idx.ProcessEvents(idxCtx, events, initialDone)
+			go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
 			logger.Info("vault indexer started", "vault", name, "path", vc.Path, "collection", collectionName)
 
 			// Use first vault's log path
@@ -225,11 +253,38 @@ func main() {
 			interval = 60 * time.Second
 		}
 		w := watcher.New(cfg.VaultPath, interval, logger, cfg.WatcherMode)
-		events := make(chan watcher.Event, 100)
+
+		// Fan-out: watcher events → indexer + pruner (non-blocking send)
+		rawEvents := make(chan watcher.Event, 100)
+		idxEvents := make(chan watcher.Event, 100)
+		prunevents := make(chan watcher.Event, 100)
 		swDone := make(chan struct{})
 		watcherDoneChs = append(watcherDoneChs, swDone)
+		prunerEventChs = append(prunerEventChs, prunevents)
 
-		go w.Watch(events, swDone)
+		go w.Watch(rawEvents, swDone)
+		go func() {
+			for {
+				select {
+				case e, ok := <-rawEvents:
+					if !ok {
+						return
+					}
+					select {
+					case idxEvents <- e:
+					default:
+						logger.Warn("indexer event channel full, dropping event")
+					}
+					select {
+					case prunevents <- e:
+					default:
+						logger.Debug("pruner event channel full, dropping event")
+					}
+				case <-swDone:
+					return
+				}
+			}
+		}()
 		logger.Info("watcher started", "interval", interval)
 
 		// Start indexer
@@ -237,7 +292,7 @@ func main() {
 		idxCancelFuncs = append(idxCancelFuncs, idxCancel)
 		initialDone := make(chan struct{})
 
-		go idx.ProcessEvents(idxCtx, events, initialDone)
+		go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
 		<-initialDone // Wait for initial indexing to complete
 		logger.Info("initial indexing complete")
 
@@ -277,11 +332,24 @@ func main() {
 	prunerCfg.StaleDays = cfg.PrunerStaleDays
 	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
 	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
+	prunerCfg.LogScanFn = func(scanName string, dur time.Duration, flagged int, errStr string) {
+		body := fmt.Sprintf("scan=%s duration=%s facts_flagged=%d", scanName, dur, flagged)
+		if errStr != "" {
+			body += " error=" + errStr
+		}
+		logStore.Append(context.Background(), "pruner", "scan", body, []string{"pruner", scanName, "scan"}, time.Now())
+	}
 	p := pruner.New(factsQc, qc, ec, lm, logger.With("component", "pruner"), prunerCfg)
 	ctxPruner, cancelPruner := context.WithCancel(context.Background())
 	defer cancelPruner()
 	go p.Run(ctxPruner)
 	logger.Info("pruner started", "enabled", prunerCfg.Enabled)
+
+	// Start pruner event processors (watcher fan-out consumers)
+	for _, ch := range prunerEventChs {
+		go p.ProcessEvents(ctxPruner, ch)
+	}
+	logger.Info("pruner event processors started", "count", len(prunerEventChs))
 
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// Pass qc = first vault's Qdrant client for backward-compat /health checks

@@ -641,6 +641,23 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("ragamuffin_qdrant_health %d", s.qdrantHealth()),
 		"",
 	}, "\n"))
+
+	// ── Pruner metrics ─────────────────────────────────────────────────
+	if s.pruner != nil {
+		scanCounts, flaggedCount, resolvedCount := s.pruner.Metrics()
+		b.WriteString("# HELP ragamuffin_pruner_scans_total Total pruner scan runs by type.\n")
+		b.WriteString("# TYPE ragamuffin_pruner_scans_total counter\n")
+		for scanType, count := range scanCounts {
+			fmt.Fprintf(&b, "ragamuffin_pruner_scans_total{scan_type=\"%s\"} %d\n", scanType, count)
+		}
+		b.WriteString("# HELP ragamuffin_pruner_facts_flagged_total Total facts flagged for review.\n")
+		b.WriteString("# TYPE ragamuffin_pruner_facts_flagged_total counter\n")
+		fmt.Fprintf(&b, "ragamuffin_pruner_facts_flagged_total %d\n", flaggedCount)
+		b.WriteString("# HELP ragamuffin_pruner_facts_resolved_total Total review queue resolutions.\n")
+		b.WriteString("# TYPE ragamuffin_pruner_facts_resolved_total counter\n")
+		fmt.Fprintf(&b, "ragamuffin_pruner_facts_resolved_total %d\n", resolvedCount)
+	}
+
 	w.Write([]byte(b.String()))
 }
 
