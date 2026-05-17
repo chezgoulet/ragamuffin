@@ -20,7 +20,7 @@ import (
 // All call sites pass primitive types (string, bool, float64) that cannot
 // produce NewValue errors at runtime. Go's type system forces error capture.
 func nv(v any) *qdrant.Value {
-	r, err := nv(v)
+	r, err := qdrant.NewValue(v)
 	if err != nil {
 		panic("NewValue: " + err.Error())
 	}
@@ -899,12 +899,7 @@ func applyFieldUpdate(payload map[string]*qdrant.Value, key string, val *string)
 func setPayloadTags(payload map[string]*qdrant.Value, tags []string) {
 	tagVals := make([]*qdrant.Value, len(tags))
 	for i, t := range tags {
-		v, err := nv(t)
-		if err != nil {
-			// Should never happen for strings, but skip if it does
-			continue
-		}
-		tagVals[i] = v
+		tagVals[i] = nv(t)
 	}
 	payload["fact_tags"] = &qdrant.Value{
 		Kind: &qdrant.Value_ListValue{

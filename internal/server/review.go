@@ -15,7 +15,7 @@ import (
 
 // nv wraps qdrant.NewValue, panicking on error.
 func nv(v any) *qdrant.Value {
-	r, err := nv(v)
+	r, err := qdrant.NewValue(v)
 	if err != nil {
 		panic("NewValue: " + err.Error())
 	}
