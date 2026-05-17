@@ -2,7 +2,13 @@
 
 Know an agent that needs to read, search, and write to a knowledge base?
 Ragamuffin is a REST API that turns a directory of files into a queryable
-vector store.
+vector store — and in v0.5, it's also the memory backend that powers your
+agent's persistent, isolated cross-session recall.
+
+Two modes:
+- **Vault mode** — point at a directory, search with natural language
+- **Agent memory mode** — the harness plugin handles everything; you just use
+  `memory_search`/`memory_get` as normal, and Ragamuffin is the backend
 
 ## Quickstart
 
@@ -13,6 +19,46 @@ curl -s http://ragamuffin:8000/health | jq .
 # Quick info
 curl -s http://ragamuffin:8000/stats | jq .
 ```
+
+## Agent Memory Mode (v0.5)
+
+When your harness is configured with the `memory-ragamuffin` plugin, you
+don't need to curl any Ragamuffin endpoints yourself. The harness does it
+for you:
+
+### What happens automatically
+
+| Event | Harness action |
+|---|---|
+| Agent starts | `POST /v1/vaults` — creates/confirms your vault `agent::<your_name>` |
+| Before each turn | `POST /v1/recall` — searches your vault for relevant context |
+| After each turn | `POST /v1/ingest` — saves the turn to your vault |
+| Session ends | `POST /v1/ingest` — saves a session summary |
+
+Your memory tools (`memory_search`, `memory_get`, etc.) work exactly as before —
+they're just backed by Ragamuffin now instead of file-based storage.
+
+### Cross-agent recall — `agent_recall`
+
+If your harness exposes a privileged `agent_recall` tool, you can query another
+agent's memory:
+
+```
+# What has robot been working on?
+agent_recall(vault="agent::robot", query="what issues have been identified?", limit=3)
+```
+
+This is a **privileged** tool — the harness controls whether your agent can
+access other vaults. It's not something you can curl (even if you knew the
+endpoint), because the harness authenticates and authorizes the request.
+
+### What you should still do directly
+
+- Write structured facts → `POST /v1/facts` (for small, persistent data)
+- Write log entries → `POST /v1/logs` (for what you did, when)
+- Read shared vaults → `POST /recall` with `source_filter`
+
+---
 
 ## Endpoints (Agent-Friendly Cheat Sheet)
 

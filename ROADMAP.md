@@ -247,6 +247,96 @@ see audit results. Not a CMS — read-only. Write operations stay API-only.
 
 ---
 
+## v0.5 — Agent Memory Backend
+
+**Theme:** One binary, two roles. Ragamuffin becomes the memory backend for
+multi-agent systems.
+
+### Agent Memory Backend
+
+v0.4 added multi-tenancy for *vaults* — multiple filesystem directories on one
+Ragamuffin. v0.5 extends multi-tenancy to *agents*: each agent gets its own
+Qdrant collection, isolated from every other agent, with automatic session
+persistence driven by the harness.
+
+```
+┌──────────────────┐     ┌──────────────┐     ┌──────────────────────┐
+│  Harness plugin  │     │  Ragamuffin  │     │  Qdrant collections  │
+│  (OpenClaw /     │────▶│  POST /v1/   │     │                      │
+│   Hermes)        │     │  ingest      │     │  agent::dev          │
+│                   │     │              │     │  agent::robot        │
+│  sync_turn()     │     │  POST /v1/   │────▶│  agent::scout        │
+│  prefetch()      │────▶│  recall      │     │  agent::press        │
+│  initialize()    │     │              │     │  (one per agent)     │
+│                   │     │  POST /v1/   │     └──────────────────────┘
+│                   │────▶│  vaults      │
+└──────────────────┘     └──────────────┘
+```
+
+**Key architectural decision from the design discussion:**
+- Physical Qdrant collection isolation per agent, not shared collection with
+  metadata WHERE clause. Metadata filter bugs produce silent cross-tenant data
+  bleed — a 500 error would be better than wrong results.
+- The `qdrantFor(ctx)` pattern from PR #147 is canonical for all per-vault
+  resource resolution (Qdrant, LLM, embedding endpoints).
+- Harness-enforced persistence — agents are not trusted to call save-to-Ragamuffin
+  tools. The gateway intercepts memory tool calls transparently.
+- No Passeur dependency for persistence. The memory plugin pattern is generic
+  and works with any harness that has a pluggable memory backend.
+
+**Deliverables:**
+
+| Issue | What | Status |
+|---|---|---|
+| #161 | Per-vault LLM routing (`llmFor(ctx)`, `embeddingFor(ctx)`) — vault-level LLM/embedding endpoint config | Open |
+| #162 | Agent session persistence — vault provisioning API, session ingest endpoint, agent-to-agent recall endpoint | Open |
+| #163 | memory-ragamuffin plugin — OpenClaw adapter (Node.js) + Hermes adapter (Python) + integration docs | Open |
+
+### Integration Documentation
+
+A standalone API contract that any harness author can implement against,
+without reading Ragamuffin Go code. Covers:
+
+- HTTP endpoints (`POST /v1/vaults`, `POST /v1/ingest`, `POST /v1/recall`, `GET /v1/vaults/:name/health`)
+- OpenAPI spec for codegen
+- Lifecycle mapping table (harness hooks → Ragamuffin calls)
+- Agent identity conventions and vault naming (`agent::<id>`)
+- Error handling and status codes
+
+### What Ships in v0.5
+
+```
+ragamuffin/
+├── internal/
+│   ├── vault/                  # NEW — per-agent vault lifecycle
+│   │   ├── provision.go        # vault creation, health checks
+│   │   └── provisioning_test.go
+│   ├── session/                # NEW — session ingest & recall
+│   │   ├── ingest.go           # document ingestion
+│   │   ├── recall.go           # vault-targeted semantic search
+│   │   └── session_test.go
+├── plugins/
+│   ├── memory-ragamuffin-openclaw/   # NEW — OpenClaw plugin
+│   │   ├── index.js
+│   │   └── package.json
+│   └── memory-ragamuffin-hermes/     # NEW — Hermes plugin
+│       ├── __init__.py
+│       └── requirements.txt
+├── docs/
+│   └── integration/
+│       ├── memory-provider-api.md    # NEW — API contract doc
+│       └── ragamuffin-memory-api.yaml# NEW — OpenAPI spec
+```
+
+### What v0.5 Does NOT Include
+
+- ClawHub / PyPI publishing of plugins (for now, they ship in-repo)
+- Migration tooling from existing memory files (deferred to post-v0.5)
+- Plugin versioning and upgrade paths
+- Harnesses without a pluggable memory backend (would need a sidecar — defer)
+
+---
+
 ## Out of Scope (Forever)
 
 These are good ideas. They are not Ragamuffin's job.
@@ -277,6 +367,7 @@ These are good ideas. They are not Ragamuffin's job.
 | v0.2 | Local-first + production | 3–4 weeks | Embedding proxy design |
 | v0.3 | Smart vault | 4–6 weeks | v0.2 stable, entity extraction approach validated |
 | v0.4 | Multi-agent + scale | 6–8 weeks | v0.3 stable, multi-tenancy use case confirmed |
+| v0.5 | Agent memory backend | 4–6 weeks | v0.4 stable, harness plugin interface validated |
 
 Each version is independently shippable. No version requires a later version's
 features. A team could stop at v0.2 and have a production-ready single-vault
