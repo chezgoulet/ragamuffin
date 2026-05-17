@@ -9,14 +9,6 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-// nv wraps pb.NewValue, panicking on error.
-func nv(v any) *pb.Value {
-	r, err := pb.NewValue(v)
-	if err != nil {
-		panic("NewValue: " + err.Error())
-	}
-	return r
-}
 // conflictScan samples active facts, computes their embeddings, and checks
 // pairwise cosine similarity. Pairs above the threshold (0.85) are flagged
 // as contradicting each other if they are semantically different.
