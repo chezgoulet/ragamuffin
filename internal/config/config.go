@@ -88,6 +88,7 @@ type Config struct {
 	RateLimitSnapshot int
 	RateLimitReindex   int
 	RateLimitIngest    int
+	RateLimitReview    int
 
 	// Optional — LLM
 	LLMProvider string
@@ -243,6 +244,9 @@ func (c *Config) Validate() []string {
 	if c.RateLimitIngest < 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_INGEST must be non-negative, got %d", c.RateLimitIngest))
 	}
+	if c.RateLimitReview < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REVIEW must be non-negative, got %d", c.RateLimitReview))
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -305,6 +309,7 @@ func Load() (*Config, error) {
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
 		RateLimitReindex:   envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
 		RateLimitIngest:    envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
+		RateLimitReview:    envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here

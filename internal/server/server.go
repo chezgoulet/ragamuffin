@@ -86,6 +86,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
+	rl.SetLimit("/v1/review", cfg.RateLimitReview)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -152,6 +153,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+
+	// Review queue (stats MUST be registered before the prefix match)
+	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
+	mux.HandleFunc("/v1/review", s.withRequestID(s.withRateLimit("/v1/review", s.handleReview)))
 
 	// Ingest — agent session persistence
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
