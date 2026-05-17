@@ -11,14 +11,7 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-// nv wraps qdrant.NewValue, panicking on error.
-func nv(v any) *qdrant.Value {
-	r, err := qdrant.NewValue(v)
-	if err != nil {
-		panic("NewValue: " + err.Error())
-	}
-	return r
-}
+
 // ── Request/Response types ────────────────────────────────────────────────────
 
 type reviewResponse struct {
