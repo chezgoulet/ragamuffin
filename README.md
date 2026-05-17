@@ -46,6 +46,69 @@ curl -s http://localhost:8000/recall \
 
 ---
 
+## Quick Start (Development)
+
+### Prerequisites
+
+- **Go 1.23+** (`go version`)
+- **Qdrant** running locally (`docker run -d -p 6334:6334 qdrant/qdrant`)
+- **Embedding API key** (OpenAI or compatible — `text-embedding-3-small` by default)
+
+### Build from Source
+
+```bash
+git clone https://github.com/chezgoulet/ragamuffin.git
+cd ragamuffin
+go build -o ragamuffin ./cmd/ragamuffin
+```
+
+### Run Locally
+
+```bash
+# Set minimum config
+export RAGAMUFFIN_VAULT_PATH=./test-vault
+export RAGAMUFFIN_QDRANT_URL=http://localhost:6334
+export RAGAMUFFIN_EMBEDDING_API_KEY=sk-...
+
+# Create a vault dir with some content
+mkdir -p ./test-vault
+echo '# Hello' > ./test-vault/index.md
+
+# Start
+./ragamuffin
+```
+
+### Run Tests
+
+```bash
+# Unit tests (no external dependencies)
+go test ./internal/... -short
+
+# Integration tests (require Qdrant + API keys — skipped by default)
+go test ./... -run Integration -v
+```
+
+> **Note:** Integration tests are tagged `t.Skip()` by default and require
+> explicit environment setup. Unit tests cover auth, chunking, config,
+> events, LLM client, embedding client, Qdrant client, rate limiting,
+> server handlers, and the indexer manager. The pruner package has no
+> integration tests — testing is via the review queue API end-to-end.
+
+### Dependency Audit
+
+Ragamuffin minimizes external dependencies. Key libraries:
+
+| Dependency | Purpose |
+|---|---|
+| [`github.com/qdrant/go-client`](https://github.com/qdrant/qdrant-awesome-go) | Qdrant gRPC client + protobuf types |
+| [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) | Pure-Go SQLite driver (no CGo) |
+| [`golang.org/x/crypto`](https://pkg.go.dev/golang.org/x/crypto) | Ed25519 signing for JWTs |
+
+No ORM, no web framework, no heavy SDK — the binary stays small and
+self-contained.
+
+---
+
 ## Two Patterns
 
 Ragamuffin serves two distinct use cases. They can be used independently or together.
@@ -581,14 +644,42 @@ Plain-text Prometheus format with counters for requests, durations, indexed file
 
 ### Agent Protocol Endpoint
 
-#### `GET /mcp` / `POST /mcp` — Model Context Protocol (SSE transport)
+#### `GET /mcp` — SSE stream (long-lived connection)
 
-Agents that support MCP can connect via the SSE stream at `/mcp`. Implements:
-- `initialize` — protocol handshake
-- `tools/list` — discover available tools
-- `tools/call` — invoke `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_draft`, `ragamuffin_audit`
+Agents that support MCP connect via Server-Sent Events. Flow:
+1. Client opens `GET /mcp` → receives SSE stream with session ID
+2. Client sends JSON-RPC requests via `POST /mcp` (events endpoint sent in SSE `endpoint` event)
+3. Server pushes tool results and notifications back through the SSE stream
 
-The MCP tools mirror the REST endpoints above. Client disconnect cancels in-flight operations.
+```bash
+# Connect (opens persistent SSE connection)
+curl -s -N http://localhost:8000/mcp
+
+# In a separate shell, send tool invocation
+curl -s -X POST http://localhost:8000/mcp \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"deployment strategy"}}}'
+```
+
+#### Implements
+
+| Method | Client Request | Server Response |
+|---|---|---|
+| `initialize` | Protocol handshake | Server info + capabilities (tools, streaming) |
+| `tools/list` | List available tools | Tool definitions with input schemas |
+| `tools/call` | Invoke tool by name | Tool result (JSON) pushed via SSE |
+| `notifications/tools/list_changed` | (server→client) | Server pushes when tools change |
+
+#### Available Tools
+
+All tools mirror the REST API:
+- `ragamuffin_recall` — semantic search (`/recall`)
+- `ragamuffin_ask` — synthesized answer with RAG (`/ask`)
+- `ragamuffin_draft` — write files to vault or create PR (`/draft`)
+- `ragamuffin_audit` — vault health checks (`/audit`)
+
+Client disconnect cancels any in-flight operations. Each SSE connection has a
+40-second keepalive heartbeat. Sessions expire after 5 minutes of inactivity.
 
 ---
 
@@ -805,6 +896,149 @@ uses `modernc.org/sqlite`, no CGo dependency.
 
 ---
 
+## Fact Lifecycle (v0.5)
+
+Ragamuffin's pruner subsystem manages the life cycle of structured facts:
+what's current, what's stale, what contradicts itself, and what's been
+superseded. Facts pass through four states:
+
+| State | Meaning | Transition
+|---|---|---|
+| `active` | Current, trusted fact | Default on creation; may be flagged by pruner or manually via review |
+| `needs_review` | Flagged by pruner — stale, low-confidence, or potentially conflicted | Pruner scans auto-set this; resolved via review queue |
+| `superseded` | Replaced by newer information | Manually set via review; original value retained for audit trail |
+| `rejected` | Determined to be incorrect | Manually set via review; preserved for debugging |
+
+All state transitions preserve the original fact data. Facts are never deleted —
+their state determines whether they appear in queries and searches.
+
+### Pruner Scans
+
+The pruner runs three scan types on independent configurable intervals.
+Each scan reads facts, flags candidates, and updates their status to
+`needs_review`. The pruner never deletes or modifies fact values — it marks
+facts for human (or agent) review.
+
+| Scan | What it does | Default interval |
+|---|---|---|
+| **StaleScan** | Flags facts past their `expires_at` or with low `confidence_score` | 24h |
+| **ConflictScan** | Compares fact values for the same or similar keys, flags semantic overlaps | 72h |
+| **SupersedeScan** | Cross-references fact sources against vault files; flags if source has been superseded | 24h |
+
+### Review Queue
+
+Facts flagged by the pruner are surfaced through the review queue — a set of
+REST endpoints for listing, inspecting, and resolving flagged items.
+
+#### `GET /v1/review` — List items needing attention
+
+```bash
+curl -s 'http://localhost:8000/v1/review?reason=stale&limit=20'
+```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `reason` | string | — | Filter: `stale`, `conflict`, `superseded`, `low_confidence` |
+| `tag` | string | — | Filter by fact tag |
+| `source_type` | string | — | Filter by source type |
+| `min_confidence` | float | 0.0 | Minimum confidence threshold |
+| `limit` | int | 100 | Max results per page |
+| `before` | string | — | Cursor pagination from previous response |
+
+**Response:**
+
+```json
+{
+  "items": [
+    {
+      "key": "deployment/url",
+      "value": "https://old-app.example.com",
+      "confidence": 0.7,
+      "expires_at": "2026-05-01T00:00:00Z",
+      "review_reasons": [
+        {"type": "stale", "detail": "fact expired at 2026-05-01T00:00:00Z"}
+      ],
+      "status": "needs_review",
+      "updated_at": "2026-04-01T12:00:00Z"
+    }
+  ],
+  "next_token": "uuid-for-next-page"
+}
+```
+
+#### `POST /v1/review` — Resolve a flagged item
+
+```bash
+curl -s -X POST 'http://localhost:8000/v1/review?key=deployment/url' \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"confirm"}'
+```
+
+| Parameter | Description |
+|---|---|
+| `key` | Fact key to resolve **(query param, required)** |
+| `action` | Action to take: `confirm`, `supersede`, `reject`, `reclassify` **(required)** |
+| `new_value` | New fact value (for `supersede`) |
+| `new_tags` | Updated tags (for `reclassify`) |
+
+| Action | Effect |
+|---|---|
+| `confirm` | Status → `active`, confidence boosted by configured amount |
+| `supersede` | Old fact → `superseded` status; new fact created from `new_value` |
+| `reject` | Status → `rejected`, original value preserved |
+| `reclassify` | Tags updated to `new_tags`, status → `active` |
+
+**Response:**
+
+```json
+{
+  "key": "deployment/url",
+  "status": "active",
+  "action": "confirm",
+  "confidence": 0.8
+}
+```
+
+#### `GET /v1/review/stats` — Review queue summary
+
+```bash
+curl -s http://localhost:8000/v1/review/stats
+```
+
+**Response:**
+
+```json
+{
+  "total_needs_review": 12,
+  "by_reason": {
+    "stale": 5,
+    "low_confidence": 4,
+    "conflict": 2,
+    "superseded": 1
+  },
+  "by_source_type": {
+    "agent": 8,
+    "vault": 4
+  },
+  "oldest_item": "2026-05-01T00:00:00Z",
+  "avg_pending_days": 14.3
+}
+```
+
+### Fact Lifecycle Configuration
+
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_PRUNER_ENABLED` | `false` | Master switch for all pruner scans |
+| `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | `24h` | How often stale scan runs |
+| `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past `expires_at` to flag as stale |
+| `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | `72h` | How often conflict scan runs |
+| `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Number of fact pairs to compare per cycle |
+| `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | `24h` | How often supersede scan runs |
+| `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Facts below this confidence are flagged |
+
+---
+
 ## Configuration
 
 ### Required
@@ -912,6 +1146,68 @@ via slog and returns JSON 500 errors instead of silent connection drops.
 | `RAGAMUFFIN_AUDIT_SAMPLE_SIZE` | `50` | Default sample size for audit checks |
 | `RAGAMUFFIN_AUTO_THRESHOLD` | `0.75` | Auto-mode RAG→full fallback threshold |
 | `RAGAMUFFIN_RATE_LIMIT_ENABLED` | `false` | Enable per-endpoint rate limiting |
+
+---
+
+## Error Codes
+
+All endpoints return errors in a uniform format:
+
+```json
+{
+  "error": true,
+  "code": "ERROR_CODE",
+  "message": "Human-readable description"
+}
+```
+
+### Client Errors (4xx)
+
+| Code | Description | HTTP Status |
+|---|---|---|
+| `INVALID_REQUEST` | Malformed request — missing fields, invalid JSON, wrong method | 400 |
+| `INVALID_INPUT` | Required fields missing or invalid | 400 |
+| `INVALID_DATA` | Corrupt or unparseable stored data | 400 |
+| `INVALID_ACTION` | Invalid review queue action | 400 |
+| `MISSING_KEY` | Required key parameter missing | 400 |
+| `MISSING_KEYS` | Required keys array missing | 400 |
+| `MISSING_ACTION` | Review action field missing | 400 |
+| `KEY_TOO_LONG` | Fact key exceeds 1024 bytes | 400 |
+| `VALUE_TOO_LARGE` | Fact value exceeds 64 KB | 400 |
+| `TAG_TOO_LONG` | Tag string exceeds 256 bytes | 400 |
+| `TOO_MANY_TAGS` | Tag array exceeds 50 entries | 400 |
+| `AGENT_TOO_LONG` | Agent name exceeds 256 bytes | 400 |
+| `TYPE_TOO_LONG` | Log type exceeds 256 bytes | 400 |
+| `EMPTY_TAG` | Empty tag provided | 400 |
+| `BODY_TOO_LARGE` | Request body exceeds endpoint limit | 413 |
+| `METHOD_NOT_ALLOWED` | Wrong HTTP method for endpoint | 405 |
+| `FORBIDDEN` | Insufficient access permissions | 403 |
+| `NOT_FOUND` | Endpoint doesn't exist | 404 |
+| `CONFLICT` | Resource already exists or is in progress | 409 |
+| `INVALID_SUPERSEDE` | Supersede requires new value | 400 |
+
+### Server Errors (5xx)
+
+| Code | Description | HTTP Status |
+|---|---|---|
+| `INTERNAL` | Unexpected server error | 500 |
+| `UPSERT_FAILED` | Failed to create or update a fact | 500 |
+| `SCROLL_FAILED` | Failed to query facts from Qdrant | 500 |
+| `DELETE_FAILED` | Failed to delete a fact | 500 |
+| `READ_FAILED` | Failed to read a fact | 500 |
+| `QUERY_FAILED` | Failed to query logs or review queue | 500 |
+| `ENTRY_NOT_FOUND` | Requested entry not found | 404 |
+| `APPEND_FAILED` | Failed to append log entry to SQLite | 500 |
+| `EMBEDDING_API_ERROR` | Embedding API returned an error | 502 |
+| `SERVICE_UNAVAILABLE` | LLM not configured or unreachable | 503 |
+| `GIT_NOT_CONFIGURED` | PR mode requires git provider config | 400 |
+| `GIT_PROVIDER_ERROR` | Git provider returned an error | 502 |
+
+### Rate Limiting
+
+When rate-limited (requires `RAGAMUFFIN_RATE_LIMIT_ENABLED=true`), the server
+responds with HTTP `429 Too Many Requests` and a `Retry-After` header indicating
+seconds until the rate window resets.
 
 ---
 
