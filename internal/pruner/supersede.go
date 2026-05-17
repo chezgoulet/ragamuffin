@@ -179,7 +179,7 @@ func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
 	}
 
 	marked := 0
-	for prefix, g := range groups {
+	for _, g := range groups {
 		if len(g) < 2 {
 			continue
 		}
