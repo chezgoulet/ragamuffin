@@ -1,0 +1,69 @@
+{
+  "id": "memory-ragamuffin-openclaw",
+  "name": "Memory (Ragamuffin)",
+  "description": "Per-agent Qdrant-isolated memory backed by Ragamuffin. Uses server-side embedding and vault recall for cross-session semantic memory.",
+  "memory": true,
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "endpoint": {
+        "type": "string",
+        "description": "Ragamuffin server URL",
+        "default": "http://localhost:8080",
+        "env_var": "RAGAMUFFIN_ENDPOINT"
+      },
+      "authToken": {
+        "type": "string",
+        "description": "Bearer token for Ragamuffin API auth",
+        "default": "",
+        "env_var": "RAGAMUFFIN_AUTH_TOKEN",
+        "secret": true
+      },
+      "vaultPrefix": {
+        "type": "string",
+        "description": "Prefix for auto-generated vault names",
+        "default": "agent::",
+        "env_var": "RAGAMUFFIN_VAULT_PREFIX"
+      },
+      "autoRecall": {
+        "type": "boolean",
+        "description": "Automatically inject relevant memories before each model turn",
+        "default": true
+      },
+      "autoCapture": {
+        "type": "boolean",
+        "description": "Automatically store important user statements as facts",
+        "default": false
+      },
+      "recallLimit": {
+        "type": "integer",
+        "description": "Max results per recall query",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 50
+      },
+      "recallThreshold": {
+        "type": "number",
+        "description": "Minimum relevance score 0.0-1.0 for recall results",
+        "default": 0.3,
+        "minimum": 0.0,
+        "maximum": 1.0
+      },
+      "recallMaxChars": {
+        "type": "integer",
+        "description": "Max characters sent to recall query",
+        "default": 1000,
+        "minimum": 100,
+        "maximum": 10000
+      },
+      "captureMaxChars": {
+        "type": "integer",
+        "description": "Max characters eligible for auto-capture",
+        "default": 500,
+        "minimum": 100,
+        "maximum": 10000
+      }
+    },
+    "additionalProperties": false
+  }
+}

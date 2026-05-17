@@ -55,6 +55,37 @@ func New(ctx context.Context, url, collection string, vectorSize uint64) (*Clien
 	return c, nil
 }
 
+// CreatePayloadIndex creates a payload field index on the specified collection.
+// fieldType maps from string names ("keyword", "float", "bool") to pb.FieldType.
+func (c *Client) CreatePayloadIndex(ctx context.Context, collection, field, fieldType string) error {
+	var ft pb.FieldType
+	switch fieldType {
+	case "keyword":
+		ft = pb.FieldType_FIELD_TYPE_KEYWORD
+	case "integer":
+		ft = pb.FieldType_FIELD_TYPE_INTEGER
+	case "float":
+		ft = pb.FieldType_FIELD_TYPE_FLOAT
+	case "geo":
+		ft = pb.FieldType_FIELD_TYPE_GEO
+	case "text":
+		ft = pb.FieldType_FIELD_TYPE_TEXT
+	case "bool":
+		ft = pb.FieldType_FIELD_TYPE_BOOL
+	case "datetime":
+		ft = pb.FieldType_FIELD_TYPE_DATETIME
+	case "uuid":
+		ft = pb.FieldType_FIELD_TYPE_UUID
+	default:
+		ft = pb.FieldType_FIELD_TYPE_KEYWORD
+	}
+	_, err := c.collections.CreateFieldIndex(ctx, &pb.CreateFieldIndexRequest{
+		CollectionName: collection,
+		FieldName:      field,
+		FieldType:      &ft,
+	})
+	return err
+
 func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error {
 	// Check if collection exists
 	list, err := c.collections.List(ctx, &pb.ListCollectionsRequest{})
@@ -227,4 +258,9 @@ func (c *Client) Health(ctx context.Context) error {
 // Close shuts down the gRPC connection.
 func (c *Client) Close() error {
 	return c.conn.Close()
+}
+
+// Collection returns the collection name this client was created for.
+func (c *Client) Collection() string {
+	return c.collection
 }

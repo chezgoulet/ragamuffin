@@ -27,3 +27,13 @@ Thumbs.db
 # Build artifacts
 /build/
 /dist/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node (memory-ragamuffin-openclaw plugin)
+node_modules/
+.pnpm-store/
+

@@ -17,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
@@ -130,6 +131,26 @@ func main() {
 			if err := idxManager.Add(name, idx, qc); err != nil {
 				logger.Error("failed to register vault indexer", "vault", name, "error", err)
 				os.Exit(1)
+			}
+
+		// Per-vault LLM client (optional override)
+		if vc.HasLLM() {
+			provider := vc.LLMProvider
+			if provider == "" {
+				provider = cfg.LLMProvider
+			}
+			vlm := llm.New(provider, vc.LLMEndpoint, vc.LLMApiKey, vc.LLMModel, vc.LLMTimeout)
+			if vlm != nil {
+				idxManager.SetLLM(name, vlm)
+				logger.Info("per-vault LLM client configured", "vault", name, "model", vc.LLMModel)
+			}
+		}
+
+			// Per-vault embedding client (optional override)
+			if vc.HasEmbedding() {
+				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel)
+				idxManager.SetEmbedder(name, vec)
+				logger.Info("per-vault embedding client configured", "vault", name, "model", vc.EmbeddingModel)
 			}
 
 			// Start watcher for this vault
@@ -247,6 +268,21 @@ func main() {
 	defer logStore.Close()
 	logger.Info("log store ready", "path", logPath)
 
+	// ── Pruner (fact lifecycle management) ────────────────────────────────────
+	prunerCfg := pruner.DefaultConfig()
+	prunerCfg.Enabled = cfg.PrunerEnabled
+	prunerCfg.StaleScanInterval = cfg.PrunerStaleInterval
+	prunerCfg.ConflictScanInterval = cfg.PrunerConflictInterval
+	prunerCfg.SupersedeScanInterval = cfg.PrunerSupersedeInterval
+	prunerCfg.StaleDays = cfg.PrunerStaleDays
+	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
+	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
+	p := pruner.New(factsQc, qc, ec, lm, logger.With("component", "pruner"), prunerCfg)
+	ctxPruner, cancelPruner := context.WithCancel(context.Background())
+	defer cancelPruner()
+	go p.Run(ctxPruner)
+	logger.Info("pruner started", "enabled", prunerCfg.Enabled)
+
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// Pass qc = first vault's Qdrant client for backward-compat /health checks
 	var qc *qdrant.Client
@@ -260,7 +296,7 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, logger)
 
 	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()

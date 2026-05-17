@@ -19,6 +19,27 @@ type VaultConfig struct {
 	EmbeddingDims        int
 	AuditEntityExtraction bool
 	AuditEntityLLM       string
+
+	// Per-vault LLM overrides. Empty fields fall through to server defaults.
+	LLMProvider       string
+	LLMEndpoint       string
+	LLMApiKey         string
+	LLMModel          string
+	LLMTimeout        time.Duration
+
+	// Per-vault embedding overrides. Empty = use server default.
+	EmbeddingEndpoint string
+	EmbeddingApiKey   string
+}
+
+// HasLLM returns true if per-vault LLM config is provided.
+func (vc *VaultConfig) HasLLM() bool {
+	return vc.LLMEndpoint != "" && vc.LLMApiKey != ""
+}
+
+// HasEmbedding returns true if per-vault embedding config is provided.
+func (vc *VaultConfig) HasEmbedding() bool {
+	return vc.EmbeddingEndpoint != "" && vc.EmbeddingApiKey != ""
 }
 
 // Config holds all Ragamuffin configuration, parsed from environment variables.
@@ -66,6 +87,17 @@ type Config struct {
 	RateLimitLogs     int
 	RateLimitSnapshot int
 	RateLimitReindex   int
+	RateLimitIngest    int
+	RateLimitReview    int
+
+	// Pruner configuration
+	PrunerEnabled                bool
+	PrunerStaleInterval          time.Duration
+	PrunerConflictInterval       time.Duration
+	PrunerSupersedeInterval      time.Duration
+	PrunerStaleDays              int
+	PrunerConflictSampleSize     int
+	PrunerLowConfidenceThreshold float64
 
 	// Optional — LLM
 	LLMProvider string
@@ -114,7 +146,7 @@ func (c *Config) HasGit() bool {
 	return c.GitProviderEnabled && c.GitToken != ""
 }
 
-func validVaultName(name string) bool {
+func ValidVaultName(name string) bool {
 	if len(name) == 0 || len(name) > 32 {
 		return false
 	}
@@ -144,7 +176,7 @@ func (c *Config) Validate() []string {
 	} else if c.IsMultiTenant() {
 		// Multi-tenant: validate all vault paths exist
 		for name, vc := range c.Vaults {
-			if !validVaultName(name) {
+			if !ValidVaultName(name) {
 				errs = append(errs, fmt.Sprintf("invalid vault name %q: must be lowercase alphanumeric with hyphens, max 32 chars", name))
 				continue
 			}
@@ -218,6 +250,17 @@ func (c *Config) Validate() []string {
 	if c.RateLimitReindex < 0 {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REINDEX must be non-negative, got %d", c.RateLimitReindex))
 	}
+	if c.RateLimitIngest < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_INGEST must be non-negative, got %d", c.RateLimitIngest))
+	}
+	if c.RateLimitReview < 0 {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REVIEW must be non-negative, got %d", c.RateLimitReview))
+	}
+
+	// Pruner config: StaleDays must be positive if pruner is enabled
+	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
+		errs = append(errs, "RAGAMUFFIN_PRUNER_STALE_DAYS must be positive when pruner is enabled")
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -279,6 +322,16 @@ func Load() (*Config, error) {
 		RateLimitLogs:     envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
 		RateLimitReindex:   envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
+		RateLimitIngest:    envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
+		RateLimitReview:    envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
+
+		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
+		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),
+		PrunerConflictInterval:       envDuration("RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL", 72*time.Hour),
+		PrunerSupersedeInterval:      envDuration("RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL", 24*time.Hour),
+		PrunerStaleDays:              envInt("RAGAMUFFIN_PRUNER_STALE_DAYS", 90),
+		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
+		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
@@ -359,6 +412,22 @@ func Load() (*Config, error) {
 					if n, err := strconv.Atoi(val); err == nil {
 						vc.EmbeddingDims = n
 					}
+				case "LLM_PROVIDER":
+					vc.LLMProvider = val
+				case "LLM_ENDPOINT":
+					vc.LLMEndpoint = val
+				case "LLM_API_KEY":
+					vc.LLMApiKey = val
+				case "LLM_MODEL":
+					vc.LLMModel = val
+				case "LLM_TIMEOUT":
+					if d, err := time.ParseDuration(val); err == nil {
+						vc.LLMTimeout = d
+					}
+				case "EMBEDDING_ENDPOINT":
+					vc.EmbeddingEndpoint = val
+				case "EMBEDDING_API_KEY":
+					vc.EmbeddingApiKey = val
 				case "AUDIT_ENTITY_EXTRACTION":
 					vc.AuditEntityExtraction = val == "true" || val == "1"
 				case "AUDIT_ENTITY_LLM":

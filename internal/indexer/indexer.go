@@ -286,6 +286,97 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	return nil
 }
 
+// Ingest directly indexes text content into Qdrant without going through
+// the file watcher. Used for agent session persistence and direct memory storage.
+// source should be a unique identifier for the ingested content (e.g., "session/2025-06-17").
+// tags are optional metadata labels (e.g., ["session-log", "agent::dev"]).
+func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []string) error {
+	if idx.embedder == nil {
+		return fmt.Errorf("cannot ingest: embedding client not configured")
+	}
+	if content == "" {
+		return fmt.Errorf("cannot ingest: empty content")
+	}
+
+	chunks := chunker.ChunkFile(content, source, source, time.Now(),
+		chunker.Options{MaxTokens: idx.chunkMaxTokens})
+	if len(chunks) == 0 {
+		return nil
+	}
+
+	// Generate embeddings in batches
+	batchSize := 20
+	for i := 0; i < len(chunks); i += batchSize {
+		end := i + batchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+		batch := chunks[i:end]
+
+		texts := make([]string, len(batch))
+		for j, c := range batch {
+			texts[j] = c.Text
+		}
+
+		vectors, err := idx.embedder.Embed(ctx, texts)
+		if err != nil {
+			return fmt.Errorf("embed batch: %w", err)
+		}
+
+		points := make([]*pb.PointStruct, len(batch))
+		for j, c := range batch {
+			id := pointID(source, c.ChunkIndex)
+
+			// Tags payload
+			tagValues := make([]*pb.Value, len(tags))
+			for ti, tag := range tags {
+				tagValues[ti] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: tag}}
+			}
+
+			// Links to values
+			linksToValues := make([]*pb.Value, len(c.LinksTo))
+			for li, link := range c.LinksTo {
+				linksToValues[li] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: link}}
+			}
+
+			payload := map[string]*pb.Value{
+				"text":              {Kind: &pb.Value_StringValue{StringValue: c.Text}},
+				"source_file":       {Kind: &pb.Value_StringValue{StringValue: c.SourceFile}},
+				"header":            {Kind: &pb.Value_StringValue{StringValue: c.Header}},
+				"chunk_index":       {Kind: &pb.Value_IntegerValue{IntegerValue: int64(c.ChunkIndex)}},
+				"file_last_updated": {Kind: &pb.Value_StringValue{StringValue: c.UpdatedAt.Format(time.RFC3339)}},
+				"links_to":          {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: linksToValues}}},
+			}
+
+			// Add tags if present
+			if len(tags) > 0 {
+				payload["tags"] = &pb.Value{Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: tagValues}}}
+			}
+
+			points[j] = &pb.PointStruct{
+				Id: id,
+				Vectors: &pb.Vectors{
+					VectorsOptions: &pb.Vectors_Vector{
+						Vector: &pb.Vector{Data: vectors[j]},
+					},
+				},
+				Payload: payload,
+			}
+		}
+
+		if err := idx.qdrant.Upsert(ctx, points); err != nil {
+			return fmt.Errorf("upsert batch: %w", err)
+		}
+	}
+
+	idx.mu.Lock()
+	idx.chunkCount += len(chunks)
+	idx.lastIndexed = time.Now()
+	idx.mu.Unlock()
+
+	return nil
+}
+
 func isIndexable(path string) bool {
 	// Skip dot-directories (.git, .github, .ragamuffin) — never useful retrieval targets
 	if strings.Contains(path, "/.") || strings.HasPrefix(path, ".") {

@@ -552,6 +552,197 @@ func TestValidate_NeitherPathNorVaults(t *testing.T) {
 	}
 }
 
+func TestVaultConfig_HasLLM(t *testing.T) {
+	vc := &VaultConfig{}
+	if vc.HasLLM() {
+		t.Error("HasLLM() = true with empty VaultConfig")
+	}
+
+	vc.LLMEndpoint = "http://localhost:8080"
+	if vc.HasLLM() {
+		t.Error("HasLLM() = true with endpoint but no key")
+	}
+
+	vc.LLMApiKey = "sk-test"
+	if !vc.HasLLM() {
+		t.Error("HasLLM() = false with endpoint and key")
+	}
+}
+
+func TestVaultConfig_HasEmbedding(t *testing.T) {
+	vc := &VaultConfig{}
+	if vc.HasEmbedding() {
+		t.Error("HasEmbedding() = true with empty VaultConfig")
+	}
+
+	vc.EmbeddingEndpoint = "http://localhost:8080"
+	if vc.HasEmbedding() {
+		t.Error("HasEmbedding() = true with endpoint but no key")
+	}
+
+	vc.EmbeddingApiKey = "sk-test"
+	if !vc.HasEmbedding() {
+		t.Error("HasEmbedding() = false with endpoint and key")
+	}
+}
+
+func TestLoad_MultiTenantWithLLMOverride(t *testing.T) {
+	dir1 := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s", dir1))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_PROVIDER", "openai")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT", "https://custom-llm.example.com")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_API_KEY", "sk-custom")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_MODEL", "gpt-4o")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_TIMEOUT", "30s")
+	defer func() {
+		for _, k := range []string{
+			"RAGAMUFFIN_VAULTS", "RAGAMUFFIN_QDRANT_URL",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_PROVIDER",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_API_KEY",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_MODEL",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_TIMEOUT",
+		} {
+			os.Unsetenv(k)
+		}
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	docs, ok := cfg.Vaults["docs"]
+	if !ok {
+		t.Fatal("expected vault 'docs'")
+	}
+
+	if docs.LLMProvider != "openai" {
+		t.Errorf("LLMProvider = %q, want openai", docs.LLMProvider)
+	}
+	if docs.LLMEndpoint != "https://custom-llm.example.com" {
+		t.Errorf("LLMEndpoint = %q", docs.LLMEndpoint)
+	}
+	if docs.LLMApiKey != "sk-custom" {
+		t.Errorf("LLMApiKey = %q", docs.LLMApiKey)
+	}
+	if docs.LLMModel != "gpt-4o" {
+		t.Errorf("LLMModel = %q", docs.LLMModel)
+	}
+	if docs.LLMTimeout != 30*time.Second {
+		t.Errorf("LLMTimeout = %v", docs.LLMTimeout)
+	}
+
+	if !docs.HasLLM() {
+		t.Error("HasLLM() = false, expected true")
+	}
+}
+
+func TestLoad_MultiTenantWithEmbeddingOverride(t *testing.T) {
+	dir1 := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s", dir1))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_EMBEDDING_ENDPOINT", "https://custom-embed.example.com")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_EMBEDDING_API_KEY", "sk-embed-custom")
+	defer func() {
+		for _, k := range []string{
+			"RAGAMUFFIN_VAULTS", "RAGAMUFFIN_QDRANT_URL",
+			"RAGAMUFFIN_VAULT_DOCS_EMBEDDING_ENDPOINT",
+			"RAGAMUFFIN_VAULT_DOCS_EMBEDDING_API_KEY",
+		} {
+			os.Unsetenv(k)
+		}
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	docs, ok := cfg.Vaults["docs"]
+	if !ok {
+		t.Fatal("expected vault 'docs'")
+	}
+
+	if docs.EmbeddingEndpoint != "https://custom-embed.example.com" {
+		t.Errorf("EmbeddingEndpoint = %q", docs.EmbeddingEndpoint)
+	}
+	if docs.EmbeddingApiKey != "sk-embed-custom" {
+		t.Errorf("EmbeddingApiKey = %q", docs.EmbeddingApiKey)
+	}
+
+	if !docs.HasEmbedding() {
+		t.Error("HasEmbedding() = false, expected true")
+	}
+}
+
+func TestLoad_MultiTenantPartialLLMOverride(t *testing.T) {
+	// Setting LLM_ENDPOINT without LLM_API_KEY should not enable HasLLM()
+	dir1 := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s", dir1))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT", "https://custom-llm.example.com")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	docs, ok := cfg.Vaults["docs"]
+	if !ok {
+		t.Fatal("expected vault 'docs'")
+	}
+
+	if docs.LLMEndpoint != "https://custom-llm.example.com" {
+		t.Errorf("LLMEndpoint = %q", docs.LLMEndpoint)
+	}
+	if docs.HasLLM() {
+		t.Error("HasLLM() = true with endpoint but no key")
+	}
+}
+
+func TestVaultConfig_HasLLM_InvalidTimeout(t *testing.T) {
+	dir1 := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s", dir1))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_TIMEOUT", "not-a-duration")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT", "http://localhost:8080")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_API_KEY", "sk-test")
+	defer func() {
+		for _, k := range []string{
+			"RAGAMUFFIN_VAULTS", "RAGAMUFFIN_QDRANT_URL",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_TIMEOUT",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT",
+			"RAGAMUFFIN_VAULT_DOCS_LLM_API_KEY",
+		} {
+			os.Unsetenv(k)
+		}
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	docs := cfg.Vaults["docs"]
+	if docs.LLMTimeout != 0 {
+		t.Errorf("expected zero timeout for invalid duration, got %v", docs.LLMTimeout)
+	}
+	if !docs.HasLLM() {
+		t.Error("HasLLM() = false with endpoint and key set")
+	}
+}
+
 func TestValidVaultName(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -575,9 +766,9 @@ func TestValidVaultName(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		got := validVaultName(tt.name)
+		got := ValidVaultName(tt.name)
 		if got != tt.valid {
-			t.Errorf("validVaultName(%q) = %v, want %v", tt.name, got, tt.valid)
+			t.Errorf("ValidVaultName(%q) = %v, want %v", tt.name, got, tt.valid)
 		}
 	}
 }

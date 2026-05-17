@@ -5,22 +5,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
 
-// Manager holds per-vault indexers and their Qdrant clients.
-// Single-tenant mode uses a single entry with name "default".
+// Manager holds per-vault indexers, Qdrant clients, LLM clients, and
+// embedding clients. Single-tenant mode uses name "default".
 type Manager struct {
-	mu       sync.RWMutex
-	indexers map[string]*Indexer
-	clients  map[string]*qdrant.Client
+	mu           sync.RWMutex
+	indexers     map[string]*Indexer
+	clients      map[string]*qdrant.Client
+	llmClients   map[string]*llm.Client
+	embedClients map[string]*embedding.Client
 }
 
 // NewManager creates an empty indexer manager.
 func NewManager() *Manager {
 	return &Manager{
-		indexers: make(map[string]*Indexer),
-		clients:  make(map[string]*qdrant.Client),
+		indexers:     make(map[string]*Indexer),
+		clients:      make(map[string]*qdrant.Client),
+		llmClients:   make(map[string]*llm.Client),
+		embedClients: make(map[string]*embedding.Client),
 	}
 }
 
@@ -50,6 +56,42 @@ func (m *Manager) GetClient(name string) *qdrant.Client {
 	return m.clients[name]
 }
 
+// SetLLM stores a per-vault LLM client. Pass nil to clear.
+func (m *Manager) SetLLM(name string, lm *llm.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if lm != nil {
+		m.llmClients[name] = lm
+	} else {
+		delete(m.llmClients, name)
+	}
+}
+
+// GetLLM returns the per-vault LLM client, or nil if not set.
+func (m *Manager) GetLLM(name string) *llm.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.llmClients[name]
+}
+
+// SetEmbedder stores a per-vault embedding client. Pass nil to clear.
+func (m *Manager) SetEmbedder(name string, ec *embedding.Client) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if ec != nil {
+		m.embedClients[name] = ec
+	} else {
+		delete(m.embedClients, name)
+	}
+}
+
+// GetEmbedder returns the per-vault embedding client, or nil if not set.
+func (m *Manager) GetEmbedder(name string) *embedding.Client {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.embedClients[name]
+}
+
 // VaultCount returns the number of registered indexers.
 func (m *Manager) VaultCount() int {
 	m.mu.RLock()
@@ -77,8 +119,7 @@ func (m *Manager) ForEach(fn func(name string, idx *Indexer)) {
 	}
 }
 
-// VaultStats returns aggregated stats for vault-name-based queries.
-// Returns zeros if vault not found.
+// VaultStats holds aggregated stats for a vault.
 type VaultStats struct {
 	FileCount   int
 	ChunkCount  int

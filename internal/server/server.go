@@ -21,6 +21,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
@@ -51,6 +52,7 @@ type Server struct {
 	ratelimit   *ratelimit.Limiter
 	watcher     watcher.Watcher
 	logStore    *logstore.Store
+	pruner      *pruner.Pruner
 	mcpHandler  *mcp.Handler
 	logger      *slog.Logger
 	started     time.Time
@@ -59,7 +61,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embedding.Client, lm *llm.Client, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -71,6 +73,7 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 		ratelimit:     rl,
 		watcher:       w,
 		logStore:      logStore,
+		pruner:        pr,
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),
@@ -85,6 +88,14 @@ func New(cfg *config.Config, qc *qdrant.Client, factsQc *qdrant.Client, ec *embe
 	rl.SetLimit("/v1/logs", cfg.RateLimitLogs)
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
+	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
+	rl.SetLimit("/v1/review", cfg.RateLimitReview)
+
+	// Ensure payload indexes for facts lifecycle queries
+	s.ensureFactIndexes()
+
+	// Migrate existing facts — set defaults on missing lifecycle fields
+	s.migrateFacts()
 
 	return s
 }
@@ -145,6 +156,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+
+	// Review queue (stats MUST be registered before the prefix match)
+	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
+	mux.HandleFunc("/v1/review", s.withRequestID(s.withRateLimit("/v1/review", s.handleReview)))
+
+	// Ingest — agent session persistence
+	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
@@ -319,6 +337,57 @@ func (s *Server) qdrantFor(ctx context.Context) *qdrant.Client {
 		}
 	}
 	return s.qdrant
+}
+
+// llmFor returns the per-vault LLM client from context,
+// falling back to the server-wide LLM client for backward compatibility.
+// Returns nil if neither is configured.
+func (s *Server) llmFor(ctx context.Context) *llm.Client {
+	if name := vaultFromContext(ctx); name != "" {
+		if lm := s.indexers.GetLLM(name); lm != nil {
+			return lm
+		}
+	}
+	return s.llm
+}
+
+// embeddingFor returns the per-vault embedding client from context,
+// falling back to the server-wide embedder.
+func (s *Server) embeddingFor(ctx context.Context) *embedding.Client {
+	if name := vaultFromContext(ctx); name != "" {
+		if ec := s.indexers.GetEmbedder(name); ec != nil {
+			return ec
+		}
+	}
+	return s.embedder
+}
+
+// ensureFactIndexes creates Qdrant payload field indexes needed for fact
+// lifecycle queries (status filter, expiry scan, etc.). Errors are logged
+// but non-fatal — queries still work without indexes (just slower).
+func (s *Server) ensureFactIndexes() {
+	if s.facts == nil {
+		return
+	}
+	ctx := context.Background()
+	collection := s.cfg.FactsCollection
+
+	indexes := map[string]string{
+		"status":            "keyword",
+		"source_type":       "keyword",
+		"confidence":        "float",
+		"expires_at":        "keyword",
+		"expires_at_unix":   "float",
+		"fact_key":          "keyword",
+		"conflict_resolved": "bool",
+	}
+
+	for field, fieldType := range indexes {
+		if err := s.facts.CreatePayloadIndex(ctx, collection, field, fieldType); err != nil {
+			s.logger.Warn("facts payload index not created (may already exist)",
+				"field", field, "error", err)
+		}
+	}
 }
 
 // withVault wraps a handler to validate vault access. Extracts the vault name

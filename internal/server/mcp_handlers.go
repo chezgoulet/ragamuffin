@@ -109,7 +109,7 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	vector, err := s.embedder.EmbedSingle(ctx, query)
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
@@ -180,7 +180,7 @@ func (s *Server) mcpAsk(ctx context.Context, args map[string]interface{}) (inter
 		return nil, fmt.Errorf("retrieval failed: %w", err)
 	}
 
-	answer, err := s.llm.Synthesize(ctx, query, contextText)
+	answer, err := s.llmFor(ctx).Synthesize(ctx, query, contextText)
 	if err != nil {
 		return nil, fmt.Errorf("LLM call failed: %w", err)
 	}

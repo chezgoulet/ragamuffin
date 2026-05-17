@@ -200,7 +200,7 @@ func (s *Server) checkSemanticConflicts(ctx context.Context, qc *qdrant.Client, 
 		}
 
 		llmCalls++
-		summary, err := s.llm.Compare(ctx, textA, textB, srcA, srcB)
+		summary, err := s.llmFor(ctx).Compare(ctx, textA, textB, srcA, srcB)
 		if err != nil {
 			s.log(ctx).Warn("audit: LLM compare failed", "error", err)
 			continue
@@ -222,4 +222,168 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// checkFactConflicts returns all facts with non-empty contradicts lists
+// (unresolved semantic contradictions detected by the Pruner).
+func (s *Server) checkFactConflicts(ctx context.Context) []map[string]interface{} {
+	if s.facts == nil {
+		return nil
+	}
+
+	// Query facts with non-empty contradicts AND conflict_resolved = false
+	filter := &pb.Filter{
+		Must: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key: "conflict_resolved",
+						Match: &pb.Match{
+							MatchValue: &pb.Match_Bool{
+								Bool: false,
+							},
+						},
+					},
+				},
+			},
+		},
+		MustNot: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key: "contradicts",
+						Match: &pb.Match{
+							MatchValue: &pb.Match_Keyword{
+								Keyword: "",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, filter, 0, "")
+	if err != nil {
+		s.log(ctx).Error("fact conflict check: query failed", "error", err)
+		return nil
+	}
+
+	conflicts := make([]map[string]interface{}, 0, len(points))
+	for _, pt := range points {
+		payload := pt.GetPayload()
+		key, _ := getPayloadString(payload, "fact_key")
+		value, _ := getPayloadString(payload, "fact_value")
+		contradicts := getPayloadStringList(payload, "contradicts")
+
+		conflicts = append(conflicts, map[string]interface{}{
+			"key":         key,
+			"value":       truncate(value, 200),
+			"contradicts": contradicts,
+			"status":      getPayloadStringValue(payload, "status"),
+		})
+	}
+	return conflicts
+}
+
+// checkFactVaultConflicts compares fact values against vault chunks using LLM.
+// Samples vault chunks and recently updated facts, then asks the LLM to
+// identify semantic contradictions between stored knowledge and vault content.
+func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([]map[string]interface{}, int) {
+	if s.facts == nil || s.embedder == nil {
+		return nil, 0
+	}
+
+	// Sample active facts
+	factFilter := &pb.Filter{
+		Must: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key: "status",
+						Match: &pb.Match{
+							MatchValue: &pb.Match_Keyword{
+								Keyword: "active",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	factPoints, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factFilter, uint32(sampleSize), "")
+	if err != nil || len(factPoints) == 0 {
+		s.log(ctx).Warn("fact_vault_conflict: no active facts found", "error", err)
+		return nil, 0
+	}
+
+	// Sample vault chunks (use first vault's client)
+	vaultName := "default"
+	if names := listVaultNames(s.cfg); len(names) > 0 {
+		vaultName = names[0]
+	}
+	vaultQc := s.indexers.GetClient(vaultName)
+	if vaultQc == nil {
+		return nil, 0
+	}
+	chunkPoints, _, err := vaultQc.Scroll(ctx, uint32(sampleSize), nil)
+	if err != nil || len(chunkPoints) == 0 {
+		return nil, 0
+	}
+
+	// Pair each fact with a random chunk and compare via LLM
+	llmCalls := 0
+	conflicts := make([]map[string]interface{}, 0)
+
+	for i, fp := range factPoints {
+		if i >= len(chunkPoints) {
+			break
+		}
+
+		factPayload := fp.GetPayload()
+		factKey, _ := getPayloadString(factPayload, "fact_key")
+		factValue, _ := getPayloadString(factPayload, "fact_value")
+		if factKey == "" || factValue == "" {
+			continue
+		}
+
+		chunkPayload := chunkPoints[i].GetPayload()
+		chunkText, _ := getPayloadString(chunkPayload, "text")
+		if chunkText == "" {
+			continue
+		}
+
+		if !s.cfg.HasLLM() {
+			continue
+		}
+
+		llmCalls++
+		summary, err := s.llmFor(ctx).Compare(ctx, factValue, chunkText, "fact:"+factKey, "vault")
+		if err != nil {
+			s.log(ctx).Warn("fact_vault_conflict: LLM compare failed", "error", err)
+			continue
+		}
+		if summary != "" {
+			conflicts = append(conflicts, map[string]interface{}{
+				"fact_key":   factKey,
+				"fact_value": truncate(factValue, 200),
+				"chunk_text": truncate(chunkText, 200),
+				"summary":    summary,
+			})
+		}
+	}
+
+	return conflicts, llmCalls
+}
+
+// listVaultNames returns all configured vault names.
+func listVaultNames(cfg *config.Config) []string {
+	if cfg.Vaults == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Vaults))
+	for name := range cfg.Vaults {
+		names = append(names, name)
+	}
+	return names
 }
