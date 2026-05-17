@@ -28,7 +28,6 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-)
 
 // nv wraps pb.NewValue, panicking on error.
 func nv(v any) *pb.Value {
