@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 	"runtime/debug"
 	"sync"
@@ -586,7 +587,7 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 
-	if _, exists := s.indexers.Get(req.Name); exists {
+	if s.indexers.Get(req.Name) != nil {
 		writeError(w, 409, "CONFLICT", "vault index already exists")
 		return
 	}
@@ -651,32 +652,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
-}
-
-// ── Per-vault LLM / embedding resolution (#161) ──────────────────────────────
-
-// llmFor returns a per-vault LLM client based on vault name.
-// Uses the indexer manager's cached per-vault LLM clients.
-// Falls through to the server default if no per-vault override exists.
-func (s *Server) llmFor(ctx context.Context, vaultName string) *llm.Client {
-	if vaultName != "" {
-		if lm := s.indexers.GetLLM(vaultName); lm != nil {
-			return lm
-		}
-	}
-	return s.llm
-}
-
-// embeddingFor returns a per-vault embedding client based on vault name.
-// Uses the indexer manager's cached per-vault embedding clients.
-// Falls through to the server default if no per-vault override exists.
-func (s *Server) embeddingFor(ctx context.Context, vaultName string) *embedding.Client {
-	if vaultName != "" {
-		if ec := s.indexers.GetEmbedder(vaultName); ec != nil {
-			return ec
-		}
-	}
-	return s.embedder
 }
 
 // ── /version ──────────────────────────────────────────────────────────────────
