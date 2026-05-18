@@ -189,6 +189,22 @@ func main() {
 		logger.Info("LLM not configured — /ask and semantic conflict audit disabled")
 	}
 
+	// ── Initialize log store ──────────────────────────────────────────────────
+	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
+	if cfg.IsMultiTenant() {
+		for _, vc := range cfg.Vaults {
+			logPath = vc.Path + "/.ragamuffin/logs.db"
+			break
+		}
+	}
+	logStore, err := logstore.Open(logPath)
+	if err != nil {
+		logger.Error("failed to open log store", "error", err)
+		os.Exit(1)
+	}
+	defer logStore.Close()
+	logger.Info("log store ready", "path", logPath)
+
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
 	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker)
@@ -198,7 +214,6 @@ func main() {
 
 	// ── Build vault indexers ─────────────────────────────────────────────────
 	idxManager := indexer.NewManager()
-	logPath := ""
 	ctx := context.Background()
 
 	// Collections for shutdown tracking
@@ -246,10 +261,6 @@ func main() {
 
 			logger.Info("vault indexer started", "vault", name, "path", vc.Path, "collection", collectionName)
 			readyChans = append(readyChans, setup.InitialDone)
-
-			if logPath == "" {
-				logPath = vc.Path + "/.ragamuffin/logs.db"
-			}
 		}
 
 		// Wait for all vaults to complete initial indexing
@@ -273,7 +284,6 @@ func main() {
 		<-setup.InitialDone
 		logger.Info("initial indexing complete")
 
-		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
 	}
 
 	// ── Initialize git provider (optional) ───────────────────────────────────
@@ -290,15 +300,6 @@ func main() {
 	logger.Info("rate limiter ready", "enabled", cfg.RateLimitEnabled,
 		"recall_rpm", cfg.RateLimitRecall, "ask_rpm", cfg.RateLimitAsk,
 		"draft_rpm", cfg.RateLimitDraft, "audit_rpm", cfg.RateLimitAudit)
-
-	// ── Initialize log store ──────────────────────────────────────────────────
-	logStore, err := logstore.Open(logPath)
-	if err != nil {
-		logger.Error("failed to open log store", "error", err)
-		os.Exit(1)
-	}
-	defer logStore.Close()
-	logger.Info("log store ready", "path", logPath)
 
 	// ── Pruner (fact lifecycle management) ────────────────────────────────────
 	prunerCfg := pruner.DefaultConfig()
