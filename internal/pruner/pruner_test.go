@@ -372,7 +372,11 @@ func TestStaleScan_MarksStaleFacts(t *testing.T) {
 
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if offset != "" {
+				return nil, nil // end of pagination
+			}
+
 			// Verify filter shape
 			if filter == nil || len(filter.Must) != 3 {
 				t.Fatalf("expected 3 must conditions, got %d conditions", len(filter.Must))
@@ -420,7 +424,11 @@ func TestLowConfidenceScan_NilClient(t *testing.T) {
 func TestLowConfidenceScan_MarksLowConfidence(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if offset != "" {
+				return nil, nil // end of pagination
+			}
+
 			// Verify confidence filter uses Lt with threshold-0.001
 			if len(filter.Must) != 2 {
 				t.Fatalf("expected 2 must conditions, got %d", len(filter.Must))
@@ -468,7 +476,11 @@ func TestConflictScan_NilClient(t *testing.T) {
 func TestConflictScan_NotEnoughFacts(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if offset != "" {
+				return nil, nil // end of pagination
+			}
+
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key":   nv("k1"),
@@ -485,7 +497,11 @@ func TestConflictScan_NotEnoughFacts(t *testing.T) {
 func TestConflictScan_HighSimilarityFlags(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if offset != "" {
+				return nil, nil // end of pagination
+			}
+
 			// First call: sample active facts (no MustNot filter on conflict_resolved visible at test level)
 			// Second call (from markContradiction): scroll for the target fact_key
 			if len(filter.Must) == 1 && filter.Must[0].GetField().GetKey() == "fact_key" {
@@ -531,7 +547,11 @@ func TestConflictScan_HighSimilarityFlags(t *testing.T) {
 func TestConflictScan_LowSimilaritySkipped(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if offset != "" {
+				return nil, nil // end of pagination
+			}
+
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key":   nv("k1"),
