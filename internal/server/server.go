@@ -577,6 +577,12 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate vault name (lowercase alphanumeric + hyphens, 1-32 chars)
+	if !config.ValidVaultName(req.Name) {
+		writeError(w, 400, "INVALID_INPUT", "invalid vault name: must be 1-32 lowercase alphanumeric characters with optional hyphens")
+		return
+	}
+
 	// Validate path: must be absolute and clean (no traversal)
 	if !filepath.IsAbs(req.Path) {
 		writeError(w, 400, "INVALID_INPUT", "path must be absolute")
@@ -617,6 +623,8 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	if _, exists := s.cfg.Vaults[req.Name]; exists {
 		s.mu.Unlock()
+		// Clean up stale directory created above
+		os.RemoveAll(req.Path)
 		writeError(w, 409, "CONFLICT", "vault already exists (concurrent creation)")
 		return
 	}
@@ -640,9 +648,13 @@ func (s *Server) withRateLimit(endpoint string, next http.HandlerFunc) http.Hand
 	return func(w http.ResponseWriter, r *http.Request) {
 		allowed, retryAfter := s.ratelimit.Allow(endpoint)
 		if !allowed {
-			w.Header().Set("Retry-After", retryAfter.Format(time.RFC1123))
+			retrySeconds := int(time.Until(retryAfter).Seconds())
+			if retrySeconds < 1 {
+				retrySeconds = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySeconds))
 			writeError(w, 429, "RATE_LIMITED",
-				fmt.Sprintf("Too many requests to %s. Retry after: %s", endpoint, retryAfter.Format(time.RFC3339)))
+				fmt.Sprintf("Too many requests to %s. Retry after %d seconds", endpoint, retrySeconds))
 			return
 		}
 		next(w, r)

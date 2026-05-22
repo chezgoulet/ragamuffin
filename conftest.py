@@ -1,4 +1,9 @@
-"""Root conftest: mock Hermes agent modules before any package import."""
+"""Root conftest: mock Hermes agent modules before any package import.
+
+This exists for running `pytest` from the project root targeting the
+Hermes plugin tests. The plugin's own `tests/conftest.py` also seeds
+these mocks as a fallback for running directly from the plugin directory.
+"""
 import sys
 import types
 

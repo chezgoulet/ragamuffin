@@ -327,7 +327,12 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.NewValue != "" {
 			// Create a new fact via implicit POST
-			s.handleReviewSupersedeCreate(w, r, req.NewKey, req.NewValue, payload, now)
+			newPoint, err := s.reviewSupersedeCreate(r, req.NewKey, req.NewValue, payload, now)
+			if err != nil {
+				s.log(r.Context()).Error("review supersede create failed", "error", err)
+				writeError(w, 400, "SUPERSEDE_CREATE_FAILED", err.Error())
+				return
+			}
 			// Then write updated status to the OLD fact
 			payload["updated_at"] = qutil.Nv(now)
 			oldPoint := &qdrant.PointStruct{
@@ -350,6 +355,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 500, "UPSERT_FAILED", "created new fact but failed to update old fact")
 				return
 			}
+			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
 			return
 		}
 
@@ -357,7 +363,8 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		payload["status"] = qutil.Nv("rejected")
 
 	case "reclassify":
-		// Keep existing status, adjust fields
+		// Set status to active (reclassification is a resolution action)
+		payload["status"] = qutil.Nv("active")
 		if req.Confidence != nil {
 			payload["confidence"] = qutil.Nv(*req.Confidence)
 		}
@@ -423,18 +430,15 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleReviewSupersedeCreate creates a new fact when supersede action includes new_value.
-func (s *Server) handleReviewSupersedeCreate(w http.ResponseWriter, r *http.Request, newKey, newValue string, oldPayload map[string]*qdrant.Value, now string) {
+func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string, oldPayload map[string]*qdrant.Value, now string) (*qdrant.PointStruct, error) {
 	if newKey == "" || newValue == "" {
-		writeError(w, 400, "INVALID_SUPERSEDE", "new_key and new_value are required for supersede with new_value")
-		return
+		return nil, fmt.Errorf("new_key and new_value are required for supersede with new_value")
 	}
 	if len(newKey) > 1024 {
-		writeError(w, 400, "KEY_TOO_LONG", "key must be <= 1024 bytes")
-		return
+		return nil, fmt.Errorf("key must be <= 1024 bytes")
 	}
 	if len(newValue) > 64*1024 {
-		writeError(w, 400, "VALUE_TOO_LARGE", "value must be <= 64 KB")
-		return
+		return nil, fmt.Errorf("value must be <= 64 KB")
 	}
 
 	// Inherit fields from old fact
@@ -489,11 +493,9 @@ func (s *Server) handleReviewSupersedeCreate(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
-		s.log(r.Context()).Error("review supersede create failed", "error", err)
-		writeError(w, 500, "UPSERT_FAILED", "failed to create new fact")
-		return
+		return nil, fmt.Errorf("upsert new fact: %w", err)
 	}
-	writeJSON(w, 200, pointToFactResponse(payload, newKey))
+	return point, nil
 }
 
 // ── GET /v1/review/stats ──────────────────────────────────────────────────────
@@ -517,7 +519,8 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, 0, "")
+	// Use a high limit to get all needs_review facts (ScrollFiltered defaults to 10 with limit=0)
+	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, 100000, "")
 	if err != nil {
 		s.log(r.Context()).Error("review stats query failed", "error", err)
 		writeError(w, 500, "QUERY_FAILED", "failed to query review stats")

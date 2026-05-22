@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.5.0 (2026-05-22)
+
+### Features
+- **Fact lifecycle management**: Automated pruner scans for stale facts, fact
+  conflicts, supersession chains, and low-confidence facts. Facts are flagged
+  as `needs_review` and can be resolved via the review queue API.
+- **Review queue API**: `GET /v1/review` lists flagged facts with pagination
+  and filtering by reason type. `POST /v1/review` resolves items via
+  confirm, supersede, reject, or reclassify actions.
+- **Fact update endpoints**: `PUT /v1/facts` (full replace) and
+  `PATCH /v1/facts` (partial update) for programmatic fact management.
+- **Agent memory backend**: Per-agent Qdrant vaults, session ingest stubs,
+  vault provisioning, cross-agent recall. OpenClaw + Hermes plugin adapters
+  for harness integration.
+- **Audit endpoint**: `POST /v1/audit` with configurable checks
+  (stale, semantic_conflict, gap, duplicate) and LLM-powered conflict
+  detection.
+- **Knowledge graph**: Entity-relationship graph via `/graph` and
+  `/vault/{name}/graph` with BFS traversal up to depth 5.
+- **SSE streaming**: Real-time event stream at `/events` for fact lifecycle
+  notifications.
+- **Embedded web UI**: Built-in web dashboard at `http://localhost:8000/` for
+  vault browsing and basic operations.
+
+### Bug Fixes
+- **Pruner data-loss prevention**: `updateFactStatus` and `updateFactPayload`
+  now read-then-merge instead of blind upsert, preventing payload field loss.
+- **PATCH TTL → expires_at_unix**: TTL updates now set `expires_at_unix`
+  in addition to `expires_at`, fixing stale-scan misses.
+- **Review reclassify status**: Reclassification now sets status to `active`
+  as documented.
+- **Review supersede response fix**: Eliminated potential double-write to HTTP
+  response when superseding with new_value.
+- **Ingest body size limit**: Added 10 MB `MaxBytesReader` limit to
+  `POST /v1/ingest`.
+- **Graph depth alignment**: Both REST and MCP graph handlers now support
+  depth 1–5 (was 0–3 on REST).
+- **Vault creation validation**: `POST /vaults` now validates vault name
+  via `config.ValidVaultName()` and removes stale directories on concurrent
+  creation conflicts.
+- **Auth middleware for MCP**: `/mcp` and `/events` added to PublicPaths
+  for protocol-level auth compatibility.
+- **Rate limit Retry-After format**: Changed from RFC1123 date to integer
+  seconds for client simplicity.
+- **Review stats fetch all**: Changed limit from 0 (default 10) to 100000
+  to return all flagged facts.
+- **Low-confidence filter**: Changed from `Lt` with epsilon to `Lte` on
+  threshold, fixing off-by-one.
+- **Go module directive**: `go 1.25.0` → `go 1.25` (patch version removed).
+
+### Plugins
+- **Hermes adapter**: Added `_create_vault` fallback when vault doesn't exist.
+- **OpenClaw adapter**: Fixed facts endpoint from vault-prefixed
+  `/vault/{name}/v1/facts` to global `/v1/facts`. Default port aligned to
+  `8000` (was `8080`).
+- **Plugin port alignment**: Hermes plugin default endpoint changed from
+  `8080` to `8000`.
+
+### Documentation
+- Updated all `/v1/recall` references to `/vault/{name}/recall` or `/recall`
+  as appropriate.
+- Fixed `confidence_score` → `confidence` in SPEC-v0.5.md.
+- Clarified audit check names vs review_reasons types in README.
+- Updated `.env.example` with missing env vars
+  (event webhook URL, auth config, rate limit vars).
+- Updated docker-compose image tag to `0.5`.
+
 ## v0.4.0 (2026-05-16)
 
 ### Security

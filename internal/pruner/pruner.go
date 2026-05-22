@@ -368,8 +368,26 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 }
 
 // updateFactPayload applies a map of payload updates to a fact point.
-func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, payload map[string]*pb.Value) error {
+// Reads the existing point first and merges the updates on top to avoid data loss.
+func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, updates map[string]*pb.Value) error {
 	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Read existing point to avoid wiping payload fields
+	points, err := scrollByPointID(ctx, p.facts, p.cfg.FactsCollection, pointID)
+	if err != nil {
+		return fmt.Errorf("read point %s for payload update: %w", pointID, err)
+	}
+	if len(points) == 0 {
+		return fmt.Errorf("point %s not found for payload update", pointID)
+	}
+
+	payload := make(map[string]*pb.Value)
+	for k, v := range points[0].GetPayload() {
+		payload[k] = v
+	}
+	for k, v := range updates {
+		payload[k] = v
+	}
 	payload["updated_at"] = qutil.Nv(now)
 
 	point := &pb.PointStruct{
@@ -387,6 +405,7 @@ func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, payload 
 			},
 		},
 	}
+
 	return p.facts.Upsert(ctx, []*pb.PointStruct{point})
 }
 

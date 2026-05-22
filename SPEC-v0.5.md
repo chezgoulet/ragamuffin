@@ -23,7 +23,7 @@ background worker with a review queue, not a separate service.
 
 **Key architectural principle:** The Pruner is a *reader and status updater*
 only. It never deletes facts. It marks them `superseded`, `rejected`,
-`needs_review`, or adjusts their `confidence_score` and `expires_at`. The
+`needs_review`, or adjusts their `confidence` and `expires_at`. The
 storage layer remains the single source of truth; pruning is an annotation
 layer on top.
 

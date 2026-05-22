@@ -2,7 +2,7 @@ name: ragamuffin
 
 services:
   ragamuffin:
-    image: chezgoulet/ragamuffin:0.2
+    image: chezgoulet/ragamuffin:0.5
     container_name: ragamuffin
     restart: unless-stopped
     depends_on:

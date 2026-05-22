@@ -377,13 +377,10 @@ func (s *Server) mcpStore(ctx context.Context, args map[string]interface{}) (int
 		vaultName = "default"
 	}
 
-	// Get the indexer for this vault
+	// Get the indexer for this vault, auto-provisioning if needed (consistent with REST)
 	idx := s.indexers.Get(vaultName)
 	if idx == nil {
-		// Auto-provision if not found and in multi-tenant mode
-		if s.cfg.IsMultiTenant() {
-			idx = s.provisionVault(ctx, vaultName)
-		}
+		idx = s.provisionVault(ctx, vaultName)
 		if idx == nil {
 			return nil, fmt.Errorf("vault %q not found and could not be provisioned", vaultName)
 		}
@@ -896,14 +893,10 @@ func (s *Server) mcpStats(ctx context.Context, args map[string]interface{}) (int
 		totalFacts = 0
 	}
 
-	// Compute vault age
+	// vaultAgeDays: approximate from lastIndexed (Stats doesn't expose oldest/newest)
 	vaultAgeDays := 0
-	if idx != nil {
-		var oldest, newest time.Time
-		_, _, _, oldest, newest, _ = idx.Stats()
-		if !oldest.IsZero() {
-			vaultAgeDays = int(time.Since(oldest).Hours() / 24)
-		}
+	if !lastIndexed.IsZero() {
+		vaultAgeDays = int(time.Since(lastIndexed).Hours() / 24)
 	}
 
 	return map[string]interface{}{
