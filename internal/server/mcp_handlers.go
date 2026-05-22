@@ -572,6 +572,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 		ttlDays = int(v)
 	}
 
+		expiresAt := computeExpiresAt(ttlDays)
 	var expiresAtUnix float64
 	if ttlDays > 0 {
 		expiresAtUnix = float64(time.Now().UTC().AddDate(0, 0, ttlDays).Unix())
@@ -591,7 +592,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 		"created_at":         createdAt,
 		"updated_at":         now,
 		"ttl_days":           int64(ttlDays),
-		"expires_at":         expiresAtUnix,
+		"expires_at":         expiresAt,
 		"expires_at_unix":    expiresAtUnix,
 	})
 	payload["contradicts"] = &qdrant.Value{

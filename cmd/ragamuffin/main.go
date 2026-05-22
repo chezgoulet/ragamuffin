@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -85,9 +86,9 @@ func buildVault(
 	}
 	w := watcher.New(vaultPath, interval, l, cfg.WatcherMode)
 
-	rawEvents := make(chan watcher.Event, 100)
-	idxEvents := make(chan watcher.Event, 100)
-	prunevents := make(chan watcher.Event, 100)
+	rawEvents := make(chan watcher.Event, 10000)
+	idxEvents := make(chan watcher.Event, 10000)
+	prunevents := make(chan watcher.Event, 10000)
 	doneCh := make(chan struct{})
 	*watcherDoneChs = append(*watcherDoneChs, doneCh)
 	*prunerEventChs = append(*prunerEventChs, prunevents)
@@ -103,12 +104,12 @@ func buildVault(
 				select {
 				case idxEvents <- e:
 				default:
-					l.Warn("indexer event channel full, dropping event")
+					l.Error("indexer event channel full, dropping event", "path", e.Path, "op", e.Op)
 				}
 				select {
 				case prunevents <- e:
 				default:
-					l.Debug("pruner event channel full, dropping event")
+					l.Error("pruner event channel full, dropping event", "path", e.Path, "op", e.Op)
 				}
 			case <-doneCh:
 				return
@@ -190,11 +191,17 @@ func main() {
 	}
 
 	// ── Initialize log store ──────────────────────────────────────────────────
+	// Single-tenant: store logs under the vault's .ragamuffin directory.
+	// Multi-tenant: use a shared parent directory so no single vault owns the log DB.
 	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
 	if cfg.IsMultiTenant() {
 		for _, vc := range cfg.Vaults {
-			logPath = vc.Path + "/.ragamuffin/logs.db"
+			logPath = filepath.Dir(vc.Path) + "/.ragamuffin/logs.db"
 			break
+		}
+		// Create shared .ragamuffin directory
+		if dir := filepath.Dir(logPath); dir != "." {
+			os.MkdirAll(dir, 0755)
 		}
 	}
 	logStore, err := logstore.Open(logPath)
