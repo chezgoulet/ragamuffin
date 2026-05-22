@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	pb "github.com/qdrant/go-client/qdrant"
 )
 
 // ── MCP Tools ──────────────────────────────────────────────────────────────────
@@ -22,6 +24,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"query":           map[string]interface{}{"type": "string", "description": "Natural-language search query"},
+					"vault":           map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"top_k":           map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 10)"},
 					"score_threshold": map[string]interface{}{"type": "number", "description": "Minimum similarity score 0.0-1.0"},
 					"source_filter":   map[string]interface{}{"type": "string", "description": "Restrict to files under this path prefix"},
@@ -36,10 +39,25 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"type": "object",
 				"properties": map[string]interface{}{
 					"query": map[string]interface{}{"type": "string", "description": "The question to answer"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"mode":  map[string]interface{}{"type": "string", "description": "auto, rag, or full (default: auto)"},
 					"top_k": map[string]interface{}{"type": "integer", "description": "RAG results to retrieve (1-50, default 8)"},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "ragamuffin_store",
+			Description: "Ingest structured content into the vault. The canonical Tier 1 write path — agents contribute knowledge, session summaries, observations, and annotations without going through the filesystem.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"content": map[string]interface{}{"type": "string", "description": "Text content to ingest (markdown, plain text)"},
+					"source":  map[string]interface{}{"type": "string", "description": "Origin identifier (agent name, workflow ID, file path)"},
+					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"tags":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags for filtering"},
+				},
+				"required": []string{"content", "source"},
 			},
 		},
 		{
@@ -52,10 +70,33 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 					"content":     map[string]interface{}{"type": "string", "description": "File content to write. Required unless delete=true."},
 					"target_path": map[string]interface{}{"type": "string", "description": "Vault path relative to vault root"},
 					"mode":        map[string]interface{}{"type": "string", "description": "direct or pr (default: direct)"},
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"description": map[string]interface{}{"type": "string", "description": "Optional PR body"},
 					"delete":      map[string]interface{}{"type": "boolean", "description": "Delete the file instead of writing"},
 				},
 				"required": []string{"title", "target_path"},
+			},
+		},
+		{
+			Name:        "ragamuffin_facts",
+			Description: "Read or write structured key-value facts. List facts by key/prefix/tag/status, or upsert a fact by key. Facts have lifecycle fields (confidence, source, TTL, status, supersession).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"operation":    map[string]interface{}{"type": "string", "description": "list or upsert"},
+					"key":          map[string]interface{}{"type": "string", "description": "Fact key. Required for both operations. Example: org/prefer-rust-cli"},
+					"value":        map[string]interface{}{"type": "string", "description": "Fact value. Required for upsert."},
+					"vault":        map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"tags":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Tags for filtering (upsert)"},
+					"prefix":       map[string]interface{}{"type": "string", "description": "Key prefix filter (list only)"},
+					"tag":          map[string]interface{}{"type": "string", "description": "Tag filter (list only)"},
+					"status":       map[string]interface{}{"type": "string", "description": "Lifecycle status filter: active, needs_review, superseded, rejected (list only)"},
+					"source":       map[string]interface{}{"type": "string", "description": "Origin reference (upsert)"},
+					"source_type":  map[string]interface{}{"type": "string", "description": "manual, pr_discussion, agent_observation, file, conversation, code_review, automated (upsert)"},
+					"confidence":   map[string]interface{}{"type": "number", "description": "How sure? 0.0-1.0 (upsert, default 1.0)"},
+					"ttl_days":     map[string]interface{}{"type": "integer", "description": "Days until auto-expiry. 0 = never. (upsert)"},
+				},
+				"required": []string{"operation"},
 			},
 		},
 		{
@@ -64,25 +105,70 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"stale_days":  map[string]interface{}{"type": "integer", "description": "Days since last update to flag as stale (default: 90)"},
 					"checks":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Which checks to run: stale, semantic_conflict, gap, duplicate"},
 					"sample_size": map[string]interface{}{"type": "integer", "description": "Chunk pairs to LLM-compare (1-200, default 50)"},
 				},
 			},
 		},
+		{
+			Name:        "ragamuffin_graph",
+			Description: "Entity and link graph from the vault. Returns node-relationship data showing entity co-occurrence, file cross-references, and knowledge clustering.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"entity":         map[string]interface{}{"type": "string", "description": "Focus on a specific entity (BFS traversal from this entity)"},
+					"depth":          map[string]interface{}{"type": "integer", "description": "BFS traversal depth (1-5, default 2). Ignored if entity is empty."},
+					"limit":          map[string]interface{}{"type": "integer", "description": "Max nodes to return (1-500, default 100)"},
+					"min_confidence": map[string]interface{}{"type": "number", "description": "Minimum entity co-occurrence confidence (0.0-1.0)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_stats",
+			Description: "Operational metrics for the vault. Returns file counts, chunk counts, fact counts, and vault age.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
 	}
 }
 
+// mcpVaultContext returns a context with the vault name set from MCP args.
+// If no vault arg is present and the context is empty, returns the original context.
+func (s *Server) mcpVaultContext(ctx context.Context, args map[string]interface{}) context.Context {
+	if v, ok := args["vault"].(string); ok && v != "" {
+		ctx = context.WithValue(ctx, vaultNameKey, v)
+	}
+	return ctx
+}
+
 func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
+	// Resolve vault from args for all tools that support multi-tenant routing
+	ctx = s.mcpVaultContext(ctx, args)
+
 	switch toolName {
 	case "ragamuffin_recall":
 		return s.mcpRecall(ctx, args)
 	case "ragamuffin_ask":
 		return s.mcpAsk(ctx, args)
+	case "ragamuffin_store":
+		return s.mcpStore(ctx, args)
 	case "ragamuffin_draft":
 		return s.mcpDraft(ctx, args)
+	case "ragamuffin_facts":
+		return s.mcpFacts(ctx, args)
 	case "ragamuffin_audit":
 		return s.mcpAudit(ctx, args)
+	case "ragamuffin_graph":
+		return s.mcpGraph(ctx, args)
+	case "ragamuffin_stats":
+		return s.mcpStats(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -249,6 +335,566 @@ func (s *Server) mcpDraft(ctx context.Context, args map[string]interface{}) (int
 		"mode":    mode,
 		"path":    cleanPath,
 		"written": true,
+	}, nil
+}
+
+// ── ragamuffin_store ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpStore(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	content, _ := args["content"].(string)
+	if content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
+
+	source, _ := args["source"].(string)
+	if source == "" {
+		return nil, fmt.Errorf("source is required")
+	}
+
+	var tags []string
+	if raw, ok := args["tags"].([]interface{}); ok {
+		for _, t := range raw {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+
+	vaultName := vaultFromContext(ctx)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	// Get the indexer for this vault
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		// Auto-provision if not found and in multi-tenant mode
+		if s.cfg.IsMultiTenant() {
+			idx = s.provisionVault(ctx, vaultName)
+		}
+		if idx == nil {
+			return nil, fmt.Errorf("vault %q not found and could not be provisioned", vaultName)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	if err := idx.Ingest(ctx, content, source, tags); err != nil {
+		return nil, fmt.Errorf("ingest failed: %w", err)
+	}
+
+	_, chunkCount, _, _, _, _ := idx.Stats()
+
+	return map[string]interface{}{
+		"status":      "ok",
+		"vault":       vaultName,
+		"source":      source,
+		"chunk_count": chunkCount,
+	}, nil
+}
+
+// ── ragamuffin_facts ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpFacts(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	operation, _ := args["operation"].(string)
+	if operation == "" {
+		return nil, fmt.Errorf("operation is required: list or upsert")
+	}
+
+	switch operation {
+	case "list":
+		return s.mcpFactsList(ctx, args)
+	case "upsert":
+		return s.mcpFactsUpsert(ctx, args)
+	default:
+		return nil, fmt.Errorf("unknown operation: %q (expected list or upsert)", operation)
+	}
+}
+
+func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	prefix, _ := args["prefix"].(string)
+	tagVal, _ := args["tag"].(string)
+	status, _ := args["status"].(string)
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Exact key lookup
+	if key != "" {
+		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		if err != nil {
+			return nil, fmt.Errorf("facts query failed: %w", err)
+		}
+		if len(points) == 0 {
+			return nil, fmt.Errorf("fact not found: %s", key)
+		}
+		fr := pointToFact(points[0])
+		if fr == nil {
+			return nil, fmt.Errorf("corrupt fact data for key: %s", key)
+		}
+		return map[string]interface{}{"facts": []interface{}{factToMap(fr)}}, nil
+	}
+
+	// Build list filter
+	var conditions []*qdrant.Condition
+	if prefix != "" {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "fact_key",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Text{Text: prefix},
+					},
+				},
+			},
+		})
+	}
+	if tagVal != "" {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "fact_tags",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{Keyword: tagVal},
+					},
+				},
+			},
+		})
+	}
+	if status != "" {
+		conditions = append(conditions, &qdrant.Condition{
+			ConditionOneOf: &qdrant.Condition_Field{
+				Field: &qdrant.FieldCondition{
+					Key: "status",
+					Match: &qdrant.Match{
+						MatchValue: &qdrant.Match_Keyword{Keyword: status},
+					},
+				},
+			},
+		})
+	}
+
+	var filter *qdrant.Filter
+	if len(conditions) > 0 {
+		filter = &qdrant.Filter{Must: conditions}
+	}
+
+	limit := uint32(100)
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 1000 {
+		limit = uint32(v)
+	}
+
+	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, filter, limit, "")
+	if err != nil {
+		return nil, fmt.Errorf("facts query failed: %w", err)
+	}
+
+	facts := make([]interface{}, 0, len(points))
+	for _, p := range points {
+		if fr := pointToFact(p); fr != nil {
+			facts = append(facts, factToMap(fr))
+		}
+	}
+
+	return map[string]interface{}{"facts": facts, "count": len(facts)}, nil
+}
+
+func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required for upsert")
+	}
+	value, _ := args["value"].(string)
+	if value == "" {
+		return nil, fmt.Errorf("value is required for upsert")
+	}
+
+	var tags []string
+	if raw, ok := args["tags"].([]interface{}); ok {
+		for _, t := range raw {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+
+	source, _ := args["source"].(string)
+	sourceType, _ := args["source_type"].(string)
+
+	// The handleFactsPost in facts.go handles all the complex logic
+	// (created_at preservation, UUID generation, payload construction).
+	// Rather than duplicating it, we reuse the same factPayload path.
+	// Build a synthetic "POST" to the REST handler's logic.
+
+	created := false
+
+	// Check if fact exists (reuse the same pattern from handleFactsPost)
+	pointID := factKeyHash(key)
+	exists, err := s.factExists(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check fact existence: %w", err)
+	}
+	if !exists {
+		created = true
+	}
+
+	// Build the fact payload (mirrors handleFactsPost's logic)
+	now := time.Now().UTC().Format(time.RFC3339)
+	var createdAt string
+	var confirmationCount int64 = 1
+	var lastConfirmedAt string
+
+	if exists {
+		// Preserve created_at; read confirmation count
+		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		if err == nil && len(points) > 0 {
+			createdAt, _ = getPayloadString(points[0].GetPayload(), "created_at")
+			if cc, ok := points[0].GetPayload()["confirmation_count"]; ok {
+				confirmationCount = cc.GetIntegerValue() + 1
+			}
+			lastConfirmedAt = now
+		}
+	}
+	if createdAt == "" {
+		createdAt = now
+	}
+
+	confidence := 1.0
+	if v, ok := args["confidence"].(float64); ok && v >= 0 && v <= 1.0 {
+		confidence = v
+	}
+
+	ttlDays := 0
+	if v, ok := args["ttl_days"].(float64); ok && v >= 0 {
+		ttlDays = int(v)
+	}
+
+	var expiresAtUnix float64
+	if ttlDays > 0 {
+		expiresAtUnix = float64(time.Now().UTC().AddDate(0, 0, ttlDays).Unix())
+	}
+
+	payload := qdrant.NewValueMap(map[string]interface{}{
+		"fact_key":           key,
+		"fact_value":         value,
+		"source":             source,
+		"source_type":        sourceType,
+		"confidence":         confidence,
+		"status":             "active",
+		"supersedes":         "",
+		"conflict_resolved":  true,
+		"confirmation_count": confirmationCount,
+		"last_confirmed_at":  lastConfirmedAt,
+		"created_at":         createdAt,
+		"updated_at":         now,
+		"ttl_days":           int64(ttlDays),
+		"expires_at":         expiresAtUnix,
+		"expires_at_unix":    expiresAtUnix,
+	})
+	payload["contradicts"] = &qdrant.Value{
+		Kind: &qdrant.Value_ListValue{
+			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+		},
+	}
+
+	if len(tags) > 0 {
+		tagVals := make([]*qdrant.Value, len(tags))
+		for i, t := range tags {
+			tagVals[i] = nv(t)
+		}
+		payload["fact_tags"] = &qdrant.Value{
+			Kind: &qdrant.Value_ListValue{
+				ListValue: &qdrant.ListValue{Values: tagVals},
+			},
+		}
+	}
+
+	point := &qdrant.PointStruct{
+		Id: &qdrant.PointId{
+			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+		},
+		Payload: payload,
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{Data: []float32{0, 0, 0, 0}},
+			},
+		},
+	}
+
+	if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
+		return nil, fmt.Errorf("failed to store fact: %w", err)
+	}
+
+	return map[string]interface{}{
+		"key":     key,
+		"value":   value,
+		"status":  "active",
+		"created": created,
+	}, nil
+}
+
+// factToMap converts a *factResponse to a plain map for MCP JSON serialization.
+func factToMap(fr *factResponse) map[string]interface{} {
+	m := map[string]interface{}{
+		"key":                fr.Key,
+		"value":              fr.Value,
+		"confidence":         fr.Confidence,
+		"status":             fr.Status,
+		"supersedes":         fr.Supersedes,
+		"conflict_resolved":  fr.ConflictResolved,
+		"confirmation_count": fr.ConfirmationCount,
+		"created_at":         fr.CreatedAt,
+		"updated_at":         fr.UpdatedAt,
+	}
+	if len(fr.Tags) > 0 {
+		tags := make([]string, len(fr.Tags))
+		copy(tags, fr.Tags)
+		m["tags"] = tags
+	}
+	if fr.Source != "" {
+		m["source"] = fr.Source
+	}
+	if fr.SourceType != "" {
+		m["source_type"] = fr.SourceType
+	}
+	if len(fr.Contradicts) > 0 {
+		m["contradicts"] = fr.Contradicts
+	}
+	if fr.LastConfirmedAt != "" {
+		m["last_confirmed_at"] = fr.LastConfirmedAt
+	}
+	return m
+}
+
+// ── ragamuffin_graph ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpGraph(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	entity, _ := args["entity"].(string)
+
+	depth := 2
+	if v, ok := args["depth"].(float64); ok && v >= 0 && v <= 5 {
+		depth = int(v)
+	}
+
+	limit := 100
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 500 {
+		limit = int(v)
+	}
+
+	vaultName := vaultFromContext(ctx)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		return nil, fmt.Errorf("vault %q not found", vaultName)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	if entity == "" {
+		// Full graph
+		qc := s.indexers.GetClient(vaultName)
+		if qc == nil {
+			return map[string]interface{}{"nodes": []interface{}{}, "edges": []interface{}{}}, nil
+		}
+
+		nodes := make(map[string]graphNode)
+		edges := make(map[string]graphEdge)
+		edgeKey := func(s, t, rel string) string { return s + "|" + t + "|" + rel }
+
+		var offset *pb.PointId
+		totalNodes := 0
+
+		for {
+			scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
+			points, nextOffset, err := qc.Scroll(scrollCtx, 100, offset)
+			scrollCancel()
+			if err != nil {
+				break
+			}
+
+			for _, point := range points {
+				if totalNodes >= limit {
+					break
+				}
+
+				sourceFile := point.GetPayload()["source_file"].GetStringValue()
+				if sourceFile == "" {
+					continue
+				}
+
+				fileID := "file:" + sourceFile
+				if _, exists := nodes[fileID]; !exists {
+					nodes[fileID] = graphNode{
+						ID:    fileID,
+						Type:  "file",
+						Label: displayName(sourceFile),
+					}
+					totalNodes++
+				}
+
+				if linksVal := point.GetPayload()["links_to"]; linksVal != nil {
+					for _, linkVal := range linksVal.GetListValue().GetValues() {
+						targetFile := linkVal.GetStringValue()
+						if targetFile == "" {
+							continue
+						}
+						targetID := "file:" + targetFile
+						k := edgeKey(fileID, targetID, "links_to")
+						if _, exists := edges[k]; !exists {
+							edges[k] = graphEdge{
+								Source:       fileID,
+								Target:       targetID,
+								Relationship: "links_to",
+							}
+						}
+					}
+				}
+			}
+
+			if nextOffset == nil || totalNodes >= limit {
+				break
+			}
+			offset = nextOffset
+		}
+
+		nodeList := make([]map[string]interface{}, 0, len(nodes))
+		edgeList := make([]map[string]interface{}, 0, len(edges))
+		for _, n := range nodes {
+			nodeList = append(nodeList, map[string]interface{}{
+				"id": n.ID, "type": n.Type, "label": n.Label,
+			})
+			if len(nodeList) >= limit {
+				break
+			}
+		}
+		for _, e := range edges {
+			edgeList = append(edgeList, map[string]interface{}{
+				"source": e.Source, "target": e.Target, "relationship": e.Relationship,
+			})
+			if len(edgeList) >= limit {
+				break
+			}
+		}
+
+		return map[string]interface{}{"nodes": nodeList, "edges": edgeList}, nil
+	}
+
+	// Entity-focused graph
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		return map[string]interface{}{"nodes": []interface{}{}, "edges": []interface{}{}}, nil
+	}
+
+	eb := newEntityBFS(entity, depth, limit)
+
+	{
+		var scrollOffset *pb.PointId
+		for {
+			scrollCtx, scrollCancel := context.WithTimeout(ctx, 10*time.Second)
+			points, nextOffset, err := qc.Scroll(scrollCtx, 500, scrollOffset)
+			scrollCancel()
+			if err != nil {
+				break
+			}
+			for _, p := range points {
+				if p.GetPayload() == nil {
+					continue
+				}
+
+				src := p.GetPayload()["source_file"].GetStringValue()
+				if src != "" {
+					if text := p.GetPayload()["text"].GetStringValue(); text != "" && strings.Contains(text, entity) {
+						eb.AddMatch(src)
+					}
+					if linksVal := p.GetPayload()["links_to"]; linksVal != nil {
+						for _, linkVal := range linksVal.GetListValue().GetValues() {
+							eb.AddLink(src, linkVal.GetStringValue())
+						}
+					}
+				}
+			}
+			if nextOffset == nil || len(eb.Nodes()) >= limit {
+				break
+			}
+			scrollOffset = nextOffset
+		}
+	}
+
+	eb.Run()
+
+	nodeList := make([]map[string]interface{}, 0, len(eb.Nodes()))
+	edgeList := make([]map[string]interface{}, 0, len(eb.Edges()))
+	for _, n := range eb.Nodes() {
+		nodeList = append(nodeList, map[string]interface{}{
+			"id": n.ID, "type": n.Type, "label": n.Label,
+		})
+	}
+	for _, e := range eb.Edges() {
+		edgeList = append(edgeList, map[string]interface{}{
+			"source": e.Source, "target": e.Target, "relationship": e.Relationship,
+		})
+	}
+
+	return map[string]interface{}{"nodes": nodeList, "edges": edgeList}, nil
+}
+
+// ── ragamuffin_stats ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpStats(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	vaultName := vaultFromContext(ctx)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var fileCount, chunkCount int
+	var lastIndexed time.Time
+
+	idx := s.indexers.Get(vaultName)
+	if idx != nil {
+		fileCount, chunkCount, lastIndexed, _, _, _ = idx.Stats()
+	} else if !s.cfg.IsMultiTenant() {
+		// Fallback to server-wide indexer
+		idx2 := s.indexerFor(ctx)
+		if idx2 != nil {
+			fileCount, chunkCount, lastIndexed, _, _, _ = idx2.Stats()
+		}
+	}
+
+	// Get total facts count
+	factsCtx, factsCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer factsCancel()
+	totalFacts, err := s.facts.Count(factsCtx)
+	if err != nil {
+		s.log(ctx).Warn("mcp stats: facts count failed", "error", err)
+		totalFacts = 0
+	}
+
+	// Compute vault age
+	vaultAgeDays := 0
+	if idx != nil {
+		var oldest, newest time.Time
+		_, _, _, oldest, newest, _ = idx.Stats()
+		if !oldest.IsZero() {
+			vaultAgeDays = int(time.Since(oldest).Hours() / 24)
+		}
+	}
+
+	return map[string]interface{}{
+		"vault":           vaultName,
+		"indexed_files":   fileCount,
+		"total_chunks":    chunkCount,
+		"total_facts":     totalFacts,
+		"last_indexed":    lastIndexed.Format(time.RFC3339),
+		"vault_age_days":  vaultAgeDays,
 	}, nil
 }
 
