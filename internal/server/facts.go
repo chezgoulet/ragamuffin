@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
@@ -304,23 +305,11 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build list filter from optional search text, tag, status, and conflict_resolved
+	// Build list filter from optional tag, status, and conflict_resolved
+	// Note: prefix filtering is applied in Go below (Qdrant has no native string
+	// prefix match for payload fields, and Match_Text performs tokenized full-text
+	// search which produces false positives).
 	var conditions []*qdrant.Condition
-
-	if prefix != "" {
-		conditions = append(conditions, &qdrant.Condition{
-			ConditionOneOf: &qdrant.Condition_Field{
-				Field: &qdrant.FieldCondition{
-					Key: "fact_key",
-					Match: &qdrant.Match{
-						MatchValue: &qdrant.Match_Text{
-							Text: prefix,
-						},
-					},
-				},
-			},
-		})
-	}
 
 	if tag != "" {
 		conditions = append(conditions, &qdrant.Condition{
@@ -394,10 +383,19 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Prefix filtering: Qdrant has no native string prefix match for payload
+	// fields, so we filter in Go. The number of scroll results may exceed the
+	// requested limit; we iterate until we fill the limit or run out.
 	var nextToken string
 	resp := make([]factResponse, 0, limit)
 	for i, p := range points {
-		if i >= limit {
+		if prefix != "" {
+			key := getPayloadString(p.Payload, "fact_key")
+			if !strings.HasPrefix(key, prefix) {
+				continue
+			}
+		}
+		if len(resp) >= limit {
 			if id := p.Id.GetUuid(); id != "" {
 				nextToken = id
 			}
@@ -538,6 +536,10 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Keys) == 0 {
 		writeError(w, 400, "MISSING_KEYS", "keys array is required")
+		return
+	}
+	if len(req.Keys) > 1000 {
+		writeError(w, 400, "TOO_MANY_KEYS", "batch update limited to 1000 keys per request")
 		return
 	}
 
