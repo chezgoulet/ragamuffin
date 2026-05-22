@@ -519,75 +519,88 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Use a high limit to get all needs_review facts (ScrollFiltered defaults to 10 with limit=0)
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, 100000, "")
-	if err != nil {
-		s.log(r.Context()).Error("review stats query failed", "error", err)
-		writeError(w, 500, "QUERY_FAILED", "failed to query review stats")
-		return
-	}
-
+	const pageSize uint32 = 1000
+	var scrollOffset string
 	stats := reviewStatsResponse{
-		TotalNeedsReview: len(points),
-		ByReason:         make(map[string]int),
-		BySourceType:     make(map[string]int),
+		ByReason:     make(map[string]int),
+		BySourceType: make(map[string]int),
 	}
 
 	now := time.Now().UTC()
 	var totalPendingDays float64
 	var oldestTime time.Time
+	var pointCount int
 
-	for _, p := range points {
-		payload := p.GetPayload()
-
-		sourceType, _ := getPayloadString(payload, "source_type")
-		if sourceType != "" {
-			stats.BySourceType[sourceType]++
-		} else {
-			stats.BySourceType["unknown"]++
+	for {
+		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, pageSize, scrollOffset)
+		if err != nil {
+			s.log(r.Context()).Error("review stats query failed", "error", err)
+			writeError(w, 500, "QUERY_FAILED", "failed to query review stats")
+			return
+		}
+		if len(points) == 0 {
+			break
 		}
 
-		// Count reasons
-		expiresAt, _ := getPayloadString(payload, "expires_at")
-		if expiresAt != "" {
-			if expTime, err := time.Parse(time.RFC3339, expiresAt); err == nil && now.After(expTime) {
-				stats.ByReason["stale"]++
+		for _, p := range points {
+			payload := p.GetPayload()
+
+			sourceType, _ := getPayloadString(payload, "source_type")
+			if sourceType != "" {
+				stats.BySourceType[sourceType]++
+			} else {
+				stats.BySourceType["unknown"]++
 			}
-		}
 
-		contradicts := getPayloadStringList(payload, "contradicts")
-		conflictResolved, _ := getPayloadBool(payload, "conflict_resolved")
-		if len(contradicts) > 0 && !conflictResolved {
-			stats.ByReason["contradiction"]++
-		}
-
-		supersedes, _ := getPayloadString(payload, "supersedes")
-		if supersedes != "" {
-			stats.ByReason["supersession"]++
-		}
-
-		confidence, _ := getPayloadFloat(payload, "confidence")
-		if confidence < 0.5 {
-			stats.ByReason["low_confidence"]++
-		}
-
-		// Track oldest
-		createdAt, _ := getPayloadString(payload, "created_at")
-		if createdAt != "" {
-			if ct, err := time.Parse(time.RFC3339, createdAt); err == nil {
-				if oldestTime.IsZero() || ct.Before(oldestTime) {
-					oldestTime = ct
+			expiresAt, _ := getPayloadString(payload, "expires_at")
+			if expiresAt != "" {
+				if expTime, err := time.Parse(time.RFC3339, expiresAt); err == nil && now.After(expTime) {
+					stats.ByReason["stale"]++
 				}
-				totalPendingDays += now.Sub(ct).Hours() / 24
 			}
+
+			contradicts := getPayloadStringList(payload, "contradicts")
+			conflictResolved, _ := getPayloadBool(payload, "conflict_resolved")
+			if len(contradicts) > 0 && !conflictResolved {
+				stats.ByReason["contradiction"]++
+			}
+
+			supersedes, _ := getPayloadString(payload, "supersedes")
+			if supersedes != "" {
+				stats.ByReason["supersession"]++
+			}
+
+			confidence, _ := getPayloadFloat(payload, "confidence")
+			if confidence < 0.5 {
+				stats.ByReason["low_confidence"]++
+			}
+
+			createdAt, _ := getPayloadString(payload, "created_at")
+			if createdAt != "" {
+				if ct, err := time.Parse(time.RFC3339, createdAt); err == nil {
+					if oldestTime.IsZero() || ct.Before(oldestTime) {
+						oldestTime = ct
+					}
+					totalPendingDays += now.Sub(ct).Hours() / 24
+				}
+			}
+		}
+
+		pointCount += len(points)
+
+		if id := points[len(points)-1].GetId().GetUuid(); id != "" {
+			scrollOffset = id
+		} else {
+			break
 		}
 	}
 
+	stats.TotalNeedsReview = pointCount
 	if !oldestTime.IsZero() {
 		stats.OldestItem = oldestTime.Format(time.RFC3339)
 	}
-	if len(points) > 0 {
-		stats.AvgPendingDays = totalPendingDays / float64(len(points))
+	if pointCount > 0 {
+		stats.AvgPendingDays = totalPendingDays / float64(pointCount)
 	}
 
 	writeJSON(w, 200, stats)

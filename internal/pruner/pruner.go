@@ -344,69 +344,27 @@ func (p *Pruner) scrollAllFilteredFacts(ctx context.Context, filter *pb.Filter) 
 }
 
 // updateFactStatus sets the status field on a single fact point.
+// updateFactStatus sets the status on a fact point using Qdrant's SetPayload
+// API, which only touches the specified keys — no data loss from partial upsert.
 func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	point := &pb.PointStruct{
-		Id: &pb.PointId{
-			PointIdOptions: &pb.PointId_Uuid{
-				Uuid: pointID,
-			},
-		},
-		Payload: map[string]*pb.Value{
-			"status":     qutil.Nv(status),
-			"updated_at": qutil.Nv(now),
-		},
-		Vectors: &pb.Vectors{
-			VectorsOptions: &pb.Vectors_Vector{
-				Vector: &pb.Vector{
-					Data: []float32{0, 0, 0, 0},
-				},
-			},
-		},
-	}
-	return p.facts.Upsert(ctx, []*pb.PointStruct{point})
+	return p.facts.SetPayload(ctx, p.facts.Collection(), []*pb.PointId{{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
+	}}, map[string]*pb.Value{
+		"status":     qutil.Nv(status),
+		"updated_at": qutil.Nv(now),
+	})
 }
 
-// updateFactPayload applies a map of payload updates to a fact point.
-// Reads the existing point first and merges the updates on top to avoid data loss.
+// updateFactPayload applies a map of payload updates to a fact point using
+// Qdrant's SetPayload API, which performs field-level merges server-side.
+// This prevents data loss from partial Upsert that wipes unset fields.
 func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, updates map[string]*pb.Value) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-
-	// Read existing point to avoid wiping payload fields
-	points, err := scrollByPointID(ctx, p.facts, p.cfg.FactsCollection, pointID)
-	if err != nil {
-		return fmt.Errorf("read point %s for payload update: %w", pointID, err)
-	}
-	if len(points) == 0 {
-		return fmt.Errorf("point %s not found for payload update", pointID)
-	}
-
-	payload := make(map[string]*pb.Value)
-	for k, v := range points[0].GetPayload() {
-		payload[k] = v
-	}
-	for k, v := range updates {
-		payload[k] = v
-	}
-	payload["updated_at"] = qutil.Nv(now)
-
-	point := &pb.PointStruct{
-		Id: &pb.PointId{
-			PointIdOptions: &pb.PointId_Uuid{
-				Uuid: pointID,
-			},
-		},
-		Payload: payload,
-		Vectors: &pb.Vectors{
-			VectorsOptions: &pb.Vectors_Vector{
-				Vector: &pb.Vector{
-					Data: []float32{0, 0, 0, 0},
-				},
-			},
-		},
-	}
-
-	return p.facts.Upsert(ctx, []*pb.PointStruct{point})
+	updates["updated_at"] = qutil.Nv(now)
+	return p.facts.SetPayload(ctx, p.facts.Collection(), []*pb.PointId{{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
+	}}, updates)
 }
 
 // getPayloadString extracts a string from a Qdrant payload.
