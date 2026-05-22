@@ -388,6 +388,9 @@ func (s *Server) ensureFactIndexes() {
 		"expires_at_unix":   "float",
 		"fact_key":          "keyword",
 		"conflict_resolved": "bool",
+		"fact_tags":         "keyword",
+		"ttl_days":          "float",
+		"supersedes":        "keyword",
 	}
 
 	for field, fieldType := range indexes {
