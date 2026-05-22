@@ -263,8 +263,12 @@ func (c *Client) Health(ctx context.Context) error {
 func (c *Client) SetPayload(ctx context.Context, collection string, points []*pb.PointId, payload map[string]*pb.Value) error {
 	req := &pb.SetPayloadPoints{
 		CollectionName: collection,
-		Points:         points,
-		Payload:        payload,
+		PointsSelector: &pb.PointsSelector{
+			PointsSelectorOneOf: &pb.PointsSelector_Points{
+				Points: &pb.PointsIdsList{Ids: points},
+			},
+		},
+		Payload: payload,
 	}
 	_, err := c.points.SetPayload(ctx, req)
 	return err

@@ -13,6 +13,8 @@ import (
 
 	"log/slog"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
@@ -81,6 +83,9 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	// Default: filter points by status = needs_review
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if offset != "" {
+		return nil, nil // end of pagination
+	}
 	var result []*qdrant.RetrievedPoint
 	for _, p := range m.points {
 		if status, _ := getPayloadString(p.GetPayload(), "status"); status == "needs_review" {
@@ -94,6 +99,7 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	return result, nil
 }
 
+func (m *reviewMockStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
 func (m *reviewMockStore) Health(_ context.Context) error { return nil }
 
 // review helpers
@@ -108,6 +114,9 @@ func newReviewServer(store *reviewMockStore) *Server {
 	logger := slog.New(slog.DiscardHandler)
 	return New(cfg, store, store, nil, nil, idxm, nil, rl, nil, nil, nil, nil, logger)
 }
+
+// nv wraps qutil.Nv for value creation.
+func nv(v any) *qdrant.Value { return qutil.Nv(v) }
 
 func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdrant.RetrievedPoint {
 	payload := map[string]*qdrant.Value{

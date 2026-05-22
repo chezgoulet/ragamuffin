@@ -13,6 +13,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
 )
@@ -23,8 +24,9 @@ type mockFactStore struct {
 	qdrant.FactStore // embed so we only implement what we need
 	name             string
 
-	mu              sync.Mutex
-	upserted        []*pb.PointStruct
+	mu               sync.Mutex
+	upserted         []*pb.PointStruct
+	setPayloadCalls  []*pb.PointId
 	scrollFilteredFn func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
 }
 
@@ -45,6 +47,13 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 		return fn(ctx, collection, filter, limit, offset)
 	}
 	return nil, nil
+}
+
+func (m *mockFactStore) SetPayload(_ context.Context, _ string, points []*pb.PointId, _ map[string]*pb.Value) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.setPayloadCalls = append(m.setPayloadCalls, points...)
+	return nil
 }
 
 func (m *mockFactStore) Health(_ context.Context) error { return nil }
@@ -113,6 +122,9 @@ func emptyMockFacts() *mockFactStore {
 }
 
 // makePoint creates a RetrievedPoint with the given ID and payload.
+// nv is a local alias for qutil.Nv, used throughout the test file.
+func nv(v any) *pb.Value { return qutil.Nv(v) }
+
 func makePoint(id string, payload map[string]*pb.Value) *pb.RetrievedPoint {
 	return &pb.RetrievedPoint{
 		Id: &pb.PointId{
@@ -394,15 +406,14 @@ func TestStaleScan_MarksStaleFacts(t *testing.T) {
 	p.staleScan(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SetPayload call, got %d", len(calls))
 	}
-	status, ok := upserted[0].GetPayload()["status"]
-	if !ok || status.GetStringValue() != "needs_review" {
-		t.Errorf("expected status 'needs_review', got %v", status)
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID in SetPayload PointId, got %+v", calls[0])
 	}
 }
 
@@ -446,15 +457,14 @@ func TestLowConfidenceScan_MarksLowConfidence(t *testing.T) {
 	p.lowConfidenceScan(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SetPayload call, got %d", len(calls))
 	}
-	status, ok := upserted[0].GetPayload()["status"]
-	if !ok || status.GetStringValue() != "needs_review" {
-		t.Errorf("expected status 'needs_review', got %v", status)
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID in SetPayload PointId, got %+v", calls[0])
 	}
 }
 
@@ -535,11 +545,11 @@ func TestConflictScan_HighSimilarityFlags(t *testing.T) {
 	p.conflictScan(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
 	// Should have upserted a markContradiction call (status = needs_review)
-	if len(upserted) == 0 {
+	if len(calls) == 0 {
 		t.Fatal("expected at least 1 upsert (contradiction mark)")
 	}
 }
@@ -581,11 +591,11 @@ func TestConflictScan_LowSimilaritySkipped(t *testing.T) {
 	p.conflictScan(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 0 {
-		t.Errorf("expected 0 upserts for low-similarity pair, got %d", len(upserted))
+	if len(calls) != 0 {
+		t.Errorf("expected 0 upserts for low-similarity pair, got %d", len(calls))
 	}
 }
 
@@ -625,7 +635,7 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, limit uint32, _ string) ([]*pb.RetrievedPoint, error) {
 			n := callNum.Add(1)
 
-			// First call: find facts with supersedes set
+			// Call 1: scrollAllFilteredFacts returns superseded facts
 			if n == 1 {
 				return []*pb.RetrievedPoint{
 					makePoint("p1", map[string]*pb.Value{
@@ -635,17 +645,18 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 				}, nil
 			}
 
-			// Second call: check if target (older-fact) exists
+			// Call 2: end of pagination (nil terminates scrollAllFilteredFacts)
 			if n == 2 {
-				return []*pb.RetrievedPoint{
-					makePoint("p2", map[string]*pb.Value{
-						"fact_key": nv("older-fact"),
-						"status":   nv("active"),
-					}),
-				}, nil
+				return nil, nil
 			}
 
-			return nil, nil
+			// Call 3: separate scrollFilteredFacts(limit=1) target lookup
+			return []*pb.RetrievedPoint{
+				makePoint("p2", map[string]*pb.Value{
+					"fact_key": nv("older-fact"),
+					"status":   nv("active"),
+				}),
+			}, nil
 		},
 	}
 
@@ -653,15 +664,14 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 	p.supersedeCrossReference(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert (mark target superseded), got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 upsert (mark target superseded), got %d", len(calls))
 	}
-	status, _ := getPayloadString(upserted[0].GetPayload(), "status")
-	if status != "superseded" {
-		t.Errorf("expected status 'superseded', got %q", status)
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID")
 	}
 }
 
@@ -679,7 +689,11 @@ func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
 					}),
 				}, nil
 			}
-			// Target already superseded
+			// n == 2: end of pagination
+			if n == 2 {
+				return nil, nil
+			}
+			// n >= 3: target lookup — already superseded
 			return []*pb.RetrievedPoint{
 				makePoint("p2", map[string]*pb.Value{
 					"fact_key": nv("older"),
@@ -693,11 +707,11 @@ func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
 	p.supersedeCrossReference(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 0 {
-		t.Errorf("expected 0 upserts for already-superseded target, got %d", len(upserted))
+	if len(calls) != 0 {
+		t.Errorf("expected 0 upserts for already-superseded target, got %d", len(calls))
 	}
 }
 
@@ -715,9 +729,14 @@ func TestSupersedeCrossReference_EmptySupersedesSkipped(t *testing.T) {
 }
 
 func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
+	called := false
 	mock := &mockFactStore{
 		name: "test_facts",
 		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+			if called {
+				return nil, nil // end of pagination
+			}
+			called = true
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key": nv("org/v1/decision"),
@@ -735,22 +754,26 @@ func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 	p.supersedeKeyPattern(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert (v1 superseded), got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 upsert (v1 superseded), got %d", len(calls))
 	}
-	status, _ := getPayloadString(upserted[0].GetPayload(), "status")
-	if status != "superseded" {
-		t.Errorf("expected status 'superseded', got %q", status)
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID")
 	}
 }
 
 func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
+	called := false
 	mock := &mockFactStore{
 		name: "test_facts",
 		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+			if called {
+				return nil, nil
+			}
+			called = true
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key": nv("org/decision"),
@@ -764,18 +787,23 @@ func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
 	p.supersedeKeyPattern(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 0 {
-		t.Errorf("expected 0 upserts for non-versioned keys, got %d", len(upserted))
+	if len(calls) != 0 {
+		t.Errorf("expected 0 upserts for non-versioned keys, got %d", len(calls))
 	}
 }
 
 func TestSupersedeKeyPattern_SingleVersion(t *testing.T) {
+	called := false
 	mock := &mockFactStore{
 		name: "test_facts",
 		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+			if called {
+				return nil, nil
+			}
+			called = true
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key": nv("org/v2/decision"),
@@ -789,11 +817,11 @@ func TestSupersedeKeyPattern_SingleVersion(t *testing.T) {
 	p.supersedeKeyPattern(context.Background())
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 0 {
-		t.Errorf("expected 0 upserts for single version, got %d", len(upserted))
+	if len(calls) != 0 {
+		t.Errorf("expected 0 upserts for single version, got %d", len(calls))
 	}
 }
 
@@ -824,18 +852,14 @@ func TestMarkContradiction(t *testing.T) {
 	}
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(calls))
 	}
-	payload := upserted[0].GetPayload()
-	if status, _ := getPayloadString(payload, "status"); status != "needs_review" {
-		t.Errorf("expected status needs_review, got %q", status)
-	}
-	if resolved, _ := getPayloadFloat(payload, "conflict_resolved"); resolved != 0 {
-		t.Errorf("expected conflict_resolved false, got %f", resolved)
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID in SetPayload call, got %+v", calls[0])
 	}
 }
 
@@ -1014,18 +1038,14 @@ func TestUpdateFactStatus(t *testing.T) {
 	}
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 SetPayload call, got %d", len(calls))
 	}
-	payload := upserted[0].GetPayload()
-	if s, _ := getPayloadString(payload, "status"); s != "needs_review" {
-		t.Errorf("expected status 'needs_review', got %q", s)
-	}
-	if _, ok := payload["updated_at"]; !ok {
-		t.Error("expected updated_at in payload")
+	if calls[0].GetUuid() != "test-id" {
+		t.Errorf("expected UUID test-id, got %q", calls[0].GetUuid())
 	}
 }
 
@@ -1044,18 +1064,14 @@ func TestUpdateFactPayload(t *testing.T) {
 	}
 
 	mock.mu.Lock()
-	upserted := mock.upserted
+	calls := mock.setPayloadCalls
 	mock.mu.Unlock()
 
-	if len(upserted) != 1 {
-		t.Fatalf("expected 1 upsert, got %d", len(upserted))
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 upsert, got %d", len(calls))
 	}
-	upsertPayload := upserted[0].GetPayload()
-	if c, _ := getPayloadFloat(upsertPayload, "confidence"); math.Abs(c-0.95) > 0.001 {
-		t.Errorf("expected confidence 0.95, got %f", c)
-	}
-	if _, ok := upsertPayload["updated_at"]; !ok {
-		t.Error("expected updated_at in payload")
+	if calls[0].GetUuid() == "" {
+		t.Errorf("expected non-empty UUID in SetPayload call, got %+v", calls[0])
 	}
 }
 

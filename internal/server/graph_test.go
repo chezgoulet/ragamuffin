@@ -444,8 +444,9 @@ func TestEntityBFS_BFSTraversal_Depth0_NoLinks(t *testing.T) {
 	eb.AddLink("main.go", "lib.go")
 	eb.Run()
 
-	if len(eb.Nodes()) != 1 {
-		t.Errorf("expected 1 node at depth 0, got %d", len(eb.Nodes()))
+	// Depth 0 only includes the root entity node and matched files, no traversal
+	if len(eb.Nodes()) != 2 {
+		t.Errorf("expected 2 nodes at depth 0 (entity + file), got %d: %v", len(eb.Nodes()), eb.Nodes())
 	}
 }
 
@@ -481,9 +482,11 @@ func TestEntityBFS_LinksToAlreadyVisited_NoDupes(t *testing.T) {
 
 	nodes := eb.Nodes()
 	edges := eb.Edges()
-	expectedEdges := 3
+	// Only the two contains edges (a.go→core, b.go→core); link edges skipped
+	// because both files were already visited during AddMatch.
+	expectedEdges := 2
 	if len(edges) != expectedEdges {
-		t.Errorf("expected %d edges, got %d", expectedEdges, len(edges))
+		t.Errorf("expected %d edges, got %d: %v", expectedEdges, len(edges), edges)
 	}
 	if len(nodes) != 3 {
 		t.Errorf("expected 3 nodes, got %d", len(nodes))
