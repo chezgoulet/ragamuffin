@@ -30,8 +30,11 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionIngest indexes an agent session log entry.
-// The content is stored in a Qdrant collection named agent::<agent_id>.
+// handleSessionIngest is a placeholder for session persistence.
+// Full implementation is deferred to v0.6 (see ROADMAP.md).
+// The route is kept registered to preserve the API surface for forward
+// compatibility. Clients should use POST /v1/ingest with vault="agent::<id>"
+// instead for v0.5.
 func (s *Server) handleSessionIngest(w http.ResponseWriter, r *http.Request) {
 	var req sessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -43,43 +46,25 @@ func (s *Server) handleSessionIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Normalize agent vault name
 	vaultName := fmt.Sprintf("agent::%s", req.AgentID)
 
-	// Grab the vault's indexer
-	idx := s.indexerForName(vaultName)
-	if idx == nil {
-		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("no vault for agent %q", req.AgentID))
-		return
-	}
-
-	// Ingest the content
-	source := req.Source
-	if source == "" {
-		source = fmt.Sprintf("session:%s", req.SessionID)
-	}
-	if source == "session:" {
-		source = "session:live"
-	}
-
-	// TODO: Wire actual ingestion into the indexer
-	// For now, emit the session event so SSE subscribers see it.
-	s.logger.Info("session ingested",
+	s.logger.Debug("session ingest skipped (deferred to v0.6)",
 		"agent_id", req.AgentID,
 		"vault", vaultName,
 		"content_len", len(req.Content),
-		"source", source,
+		"source", req.Source,
 	)
 
-	writeJSON(w, 201, map[string]interface{}{
-		"status":   "indexed",
-		"agent_id": req.AgentID,
-		"vault":    vaultName,
+	writeJSON(w, 503, map[string]interface{}{
+		"status":  "unavailable",
+		"version": "v0.5",
+		"message": "Session persistence is deferred to v0.6. Use POST /v1/ingest with vault=agent::<id> instead.",
 	})
 }
 
-// handleSessionRecall returns recent session entries for an agent.
-// GET /v1/sessions?agent_id=X&limit=20
+// handleSessionRecall is a placeholder for session recall.
+// Full implementation is deferred to v0.6 (see ROADMAP.md).
+// The route is kept registered to preserve the API surface.
 func (s *Server) handleSessionRecall(w http.ResponseWriter, r *http.Request) {
 	agentID := r.URL.Query().Get("agent_id")
 	if agentID == "" {
@@ -88,22 +73,14 @@ func (s *Server) handleSessionRecall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	vaultName := fmt.Sprintf("agent::%s", agentID)
-	idx := s.indexerForName(vaultName)
-	if idx == nil {
-		writeJSON(w, 200, map[string]interface{}{
-			"agent_id": agentID,
-			"vault":    vaultName,
-			"sessions": []interface{}{},
-		})
-		return
-	}
 
-	_ = idx // Placeholder: wire in logstore recall for agent sessions
 	writeJSON(w, 200, map[string]interface{}{
-		"agent_id": agentID,
-		"vault":    vaultName,
-		"sessions": []interface{}{},
-		"note":     "session recall requires indexer integration (v0.5+)",
+		"status":    "unavailable",
+		"version":   "v0.5",
+		"agent_id":  agentID,
+		"vault":     vaultName,
+		"sessions":  []interface{}{},
+		"message":   "Session recall is deferred to v0.6. Use GET /v1/recall?query=...&vault=agent::<id> instead.",
 	})
 }
 
