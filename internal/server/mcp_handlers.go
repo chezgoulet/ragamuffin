@@ -122,7 +122,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"properties": map[string]interface{}{
 					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"entity":         map[string]interface{}{"type": "string", "description": "Focus on a specific entity (BFS traversal from this entity)"},
-					"depth":          map[string]interface{}{"type": "integer", "description": "BFS traversal depth (1-5, default 2). Ignored if entity is empty."},
+					"depth":          map[string]interface{}{"type": "integer", "description": "BFS traversal depth (1-5, default 1). Ignored if entity is empty."},
 					"limit":          map[string]interface{}{"type": "integer", "description": "Max nodes to return (1-500, default 100)"},
 					"min_confidence": map[string]interface{}{"type": "number", "description": "Minimum entity co-occurrence confidence (0.0-1.0)"},
 				},
@@ -688,8 +688,8 @@ func factToMap(fr *factResponse) map[string]interface{} {
 func (s *Server) mcpGraph(ctx context.Context, args map[string]interface{}) (interface{}, error) {
 	entity, _ := args["entity"].(string)
 
-	depth := 2
-	if v, ok := args["depth"].(float64); ok && v >= 0 && v <= 5 {
+	depth := 1
+	if v, ok := args["depth"].(float64); ok && v >= 1 && v <= 5 {
 		depth = int(v)
 	}
 

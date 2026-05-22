@@ -26,7 +26,15 @@
 
 ### Bug Fixes
 - **Pruner data-loss prevention**: `updateFactStatus` and `updateFactPayload`
-  now read-then-merge instead of blind upsert, preventing payload field loss.
+  now use Qdrant's `SetPayload` API for field-level partial updates, preventing
+  payload field loss without requiring read-then-merge.
+  - Added `SetPayload` to `FactStore` interface, `Client`, and `MockQdrant`.
+- **.env.example**: Added missing `RAGAMUFFIN_QDRANT_URL` to Required section.
+- **Hermes plugin**: Fixed `AttributeError` crash in `_create_vault` — removed
+  uninitialized `self._vault_path` reference.
+- **Graph depth alignment**: REST default changed to 1, both REST and MCP now
+  enforce min 1 (removed unreachable `depth == 0` fast path). MCP tool
+  description now matches (1-5, default 1).
 - **PATCH TTL → expires_at_unix**: TTL updates now set `expires_at_unix`
   in addition to `expires_at`, fixing stale-scan misses.
 - **Review reclassify status**: Reclassification now sets status to `active`

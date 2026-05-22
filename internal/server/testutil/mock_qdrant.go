@@ -22,6 +22,7 @@ type MockQdrant struct {
 	ScrollFn          func(ctx context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error)
 	ScrollFilteredFn  func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
 	UpsertFn          func(ctx context.Context, points []*qdrant.PointStruct) error
+	SetPayloadFn      func(ctx context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error
 	SearchFn          func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*qdrant.ScoredPoint, error)
 	DeleteBySourceFn  func(ctx context.Context, sourceFile string) error
 	CountFn           func(ctx context.Context) (uint64, error)
@@ -34,6 +35,7 @@ type MockQdrant struct {
 	ScrollCallCount          atomic.Int64
 	ScrollFilteredCallCount  atomic.Int64
 	UpsertCallCount          atomic.Int64
+	SetPayloadCallCount      atomic.Int64
 	SearchCallCount          atomic.Int64
 	DeleteBySourceCallCount  atomic.Int64
 	CountCallCount           atomic.Int64
@@ -64,6 +66,14 @@ func (m *MockQdrant) Upsert(ctx context.Context, points []*qdrant.PointStruct) e
 	m.UpsertCallCount.Add(1)
 	if m.UpsertFn != nil {
 		return m.UpsertFn(ctx, points)
+	}
+	return nil
+}
+
+func (m *MockQdrant) SetPayload(ctx context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error {
+	m.SetPayloadCallCount.Add(1)
+	if m.SetPayloadFn != nil {
+		return m.SetPayloadFn(ctx, collection, points, payload)
 	}
 	return nil
 }

@@ -183,7 +183,7 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entity := r.URL.Query().Get("entity")
-	depth := 2
+	depth := 1
 	if d := r.URL.Query().Get("depth"); d != "" {
 		if parsed, err := strconv.Atoi(d); err == nil && parsed >= 1 && parsed <= 5 {
 			depth = parsed
@@ -311,15 +311,6 @@ func (s *Server) fullGraph(w http.ResponseWriter, r *http.Request, vaultName str
 func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, entity string, depth, limit int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-
-	// Depth 0 doesn't need any backend — just return the entity node
-	if depth == 0 {
-		writeJSON(w, 200, graphResponse{
-			Nodes: newEntityBFS(entity, 0, limit).Nodes(),
-			Edges: []graphEdge{},
-		})
-		return
-	}
 
 	qc := s.indexers.GetClient(vaultName)
 	if qc == nil {

@@ -278,7 +278,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
             headers = _build_headers(self._auth_token)
             body = {
                 "name": self._agent_vault,
-                "path": self._vault_path or f"/tmp/vault-{self._agent_vault}",
+                "path": f"/tmp/vault-{self._agent_vault}",
             }
             resp = self._requests.post(
                 url, json=body, headers=headers, timeout=_REQUEST_TIMEOUT
