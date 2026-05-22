@@ -440,10 +440,7 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Direct mode: write to filesystem
-	vaultPath = s.vaultPathFromContext(r.Context())
-	fullPath = filepath.Join(vaultPath, cleanPath)
-
+	// Direct mode: write to filesystem (fullPath from safeVaultPath used directly)
 	if req.Delete {
 		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
 			writeError(w, 500, "INTERNAL", fmt.Sprintf("delete failed: %s", err))

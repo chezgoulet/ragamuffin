@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"runtime/debug"
 	"sync"
@@ -576,7 +577,18 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check vault config access with lock — re-check inside lock to avoid TOCTOU
+	// Validate path: must be absolute and clean (no traversal)
+	if !filepath.IsAbs(req.Path) {
+		writeError(w, 400, "INVALID_INPUT", "path must be absolute")
+		return
+	}
+	cleaned := filepath.Clean(req.Path)
+	if cleaned != req.Path {
+		writeError(w, 400, "INVALID_INPUT", "path must be clean (no extra slashes or dot components)")
+		return
+	}
+
+	// Check vault config access with lock — all existence checks inside one lock
 	s.mu.Lock()
 	if s.cfg.Vaults == nil {
 		s.mu.Unlock()
@@ -588,12 +600,12 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "CONFLICT", "vault already exists")
 		return
 	}
-	s.mu.Unlock()
-
 	if s.indexers.Get(req.Name) != nil {
+		s.mu.Unlock()
 		writeError(w, 409, "CONFLICT", "vault index already exists")
 		return
 	}
+	s.mu.Unlock()
 
 	// Create vault directory on disk (I/O outside lock)
 	if err := os.MkdirAll(req.Path, 0755); err != nil {
