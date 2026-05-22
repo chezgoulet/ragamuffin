@@ -136,7 +136,7 @@ func computeExpiresAt(ttlDays int) string {
 
 // defaultConfidence returns 1.0 if nil/0, otherwise clamps to [0,1].
 func defaultConfidence(c *float64) float64 {
-	if c == nil || *c <= 0 {
+	if c == nil || *c < 0 {
 		return 1.0
 	}
 	if *c > 1.0 {
@@ -591,8 +591,10 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 			payload["ttl_days"] = qutil.Nv(float64(ttl))
 			if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
 				payload["expires_at"] = qutil.Nv(expiresAt)
+				payload["expires_at_unix"] = qutil.Nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
 			} else {
 				payload["expires_at"] = qutil.Nv("")
+				payload["expires_at_unix"] = qutil.Nv(float64(0))
 			}
 		}
 		if req.Updates.Tags != nil {

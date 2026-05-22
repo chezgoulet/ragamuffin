@@ -18,7 +18,7 @@ export class RagamuffinClient {
   #vaultPrefix;
 
   constructor(config) {
-    this.#endpoint = (config.endpoint || "http://localhost:8080").replace(/\/+$/, "");
+    this.#endpoint = (config.endpoint || "http://localhost:8000").replace(/\/+$/, "");
     this.#authToken = config.authToken || "";
     this.#vaultPrefix = config.vaultPrefix || "agent::";
   }
@@ -59,18 +59,24 @@ export class RagamuffinClient {
     return data.results || [];
   }
 
-  /** Store a fact (key-value) in a vault. */
+  /**
+   * Store a fact (key-value). Facts are global, not per-vault.
+   * The vault parameter is used for the recall endpoint only — facts
+   * live in a single global collection on the server.
+   */
   async storeFact(vault, key, value, { tags, source, sourceType } = {}) {
     const body = { key, value };
     if (tags) body.tags = tags;
     if (source) body.source = source;
     if (sourceType) body.source_type = sourceType;
-    return this.#fetch("POST", `/vault/${encodeURIComponent(vault)}/v1/facts`, body);
+    return this.#fetch("POST", `/v1/facts`, body);
   }
 
-  /** Delete a fact by key. */
+  /**
+   * Delete a fact by key. Facts are global — vault parameter is unused.
+   */
   async deleteFact(vault, key) {
-    const url = `${this.#endpoint}/vault/${encodeURIComponent(vault)}/v1/facts?key=${encodeURIComponent(key)}`;
+    const url = `${this.#endpoint}/v1/facts?key=${encodeURIComponent(key)}`;
     const resp = await fetch(url, { method: "DELETE", headers: this.#headers() });
     if (!resp.ok) {
       const text = await resp.text().catch(() => "");
@@ -124,7 +130,7 @@ export function truncate(str, maxChars) {
 
 export default function pluginEntry(api) {
   const cfg = api.pluginConfig || {};
-  const endpoint = cfg.endpoint || process.env.RAGAMUFFIN_ENDPOINT || "http://localhost:8080";
+  const endpoint = cfg.endpoint || process.env.RAGAMUFFIN_ENDPOINT || "http://localhost:8000";
   const authToken = cfg.authToken || process.env.RAGAMUFFIN_AUTH_TOKEN || "";
   const vaultPrefix = cfg.vaultPrefix || process.env.RAGAMUFFIN_VAULT_PREFIX || "agent::";
   const autoRecall = cfg.autoRecall !== false;

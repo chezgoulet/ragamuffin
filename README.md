@@ -16,8 +16,9 @@ curl -s http://localhost:8000/recall \
   -d '{"query":"what do we know about that thing?"}'
 
 # Agent memory mode: recall from a specific agent's private vault
-curl -s http://localhost:8000/v1/recall \
-  -d '{"vault":"agent::dev","query":"what did Christopher ask about?"}'
+curl -s -X POST http://localhost:8000/vault/agent::dev/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query":"what did Christopher ask about?"}'
 ```
 
 Scroll down to [Two Patterns](#two-patterns) for the full picture.
@@ -102,7 +103,8 @@ Ragamuffin minimizes external dependencies. Key libraries:
 |---|---|
 | [`github.com/qdrant/go-client`](https://github.com/qdrant/qdrant-awesome-go) | Qdrant gRPC client + protobuf types |
 | [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) | Pure-Go SQLite driver (no CGo) |
-| [`golang.org/x/crypto`](https://pkg.go.dev/golang.org/x/crypto) | Ed25519 signing for JWTs |
+| [`github.com/golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt) | JWT verification (RSA/ECDSA) |
+| [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys) | Unix syscall helpers for watcher |
 
 No ORM, no web framework, no heavy SDK — the binary stays small and
 self-contained.
@@ -451,7 +453,7 @@ curl -s http://localhost:8000/audit \
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `stale_days` | int | 90 | Days since last update to flag as stale |
-| `checks` | array | all | Which checks: `stale`, `semantic_conflict`, `gap`, `duplicate` |
+| `checks` | array | all | Which audit checks to run: `stale`, `semantic_conflict`, `gap`, `duplicate` (these are audit check names, not review_reasons types — see [review filter](#get-v1review--list-items-needing-attention)) |
 | `sample_size` | int | 50 | Chunk pairs to LLM-compare (1–200, requires LLM) |
 
 ### Agent Memory Endpoints (v0.5)
@@ -522,6 +524,9 @@ curl -s -X POST http://localhost:8000/v1/ingest \
 | `documents[].text` | string | — | Content text **(required)** |
 | `documents[].metadata` | object | `{}` | Optional metadata for filtering |
 
+> **Body size limit:** 10 MB (`MaxBytesReader`). Larger payloads receive
+> `413 Request Entity Too Large` with error code `INVALID_REQUEST`.
+
 **Response:**
 ```json
 {
@@ -530,21 +535,21 @@ curl -s -X POST http://localhost:8000/v1/ingest \
 }
 ```
 
-#### `POST /v1/recall` — Semantic search across vaults
+#### `POST /vault/{name}/recall` — Semantic search across vaults
 
-Extended recall that targets a specific vault by name. Same semantics as `/recall`
-but with vault targeting.
+Vault-prefixed recall targets a specific vault by name. Same semantics as `/recall`
+but with vault scoping. The vault name is part of the URL path, not the body.
 
 ```bash
 # Recall from the calling agent's own vault
-curl -s -X POST http://localhost:8000/v1/recall \
+curl -s -X POST http://localhost:8000/vault/agent::dev/recall \
   -H "Content-Type: application/json" \
-  -d '{"vault":"agent::dev","query":"what did we decide about Qdrant isolation?","limit":5}'
+  -d '{"query":"what did we decide about Qdrant isolation?","limit":5}'
 
 # Cross-agent recall — query another agent's vault
-curl -s -X POST http://localhost:8000/v1/recall \
+curl -s -X POST http://localhost:8000/vault/agent::robot/recall \
   -H "Content-Type: application/json" \
-  -d '{"vault":"agent::robot","query":"what vulnerabilities were found?","limit":3}'
+  -d '{"query":"what vulnerabilities were found?","limit":3}'
 ```
 
 | Field | Type | Default | Description |
@@ -587,6 +592,18 @@ curl -s http://localhost:8000/v1/vaults/agent::dev/health
   "exists": true,
   "collection": "agent::dev",
   "indexed": 142
+}
+```
+
+#### `GET /v1/sessions` — List sessions (placeholder)
+
+Returns `503 Service Unavailable` with a placeholder response. Session
+listing and management is reserved for a future release.
+
+```json
+{
+  "status": "not_implemented",
+  "message": "session listing is available in the upcoming v0.6 release"
 }
 ```
 
@@ -963,6 +980,37 @@ curl -s http://localhost:8000/metrics
 
 Plain-text Prometheus format with counters for requests, durations, indexed files/chunks.
 
+#### `GET /events` — Real-time event stream (SSE)
+
+```bash
+curl -N http://localhost:8000/events
+```
+
+Opens a Server-Sent Events (SSE) stream of vault CloudEvents. Each event is a
+JSON payload in CloudEvents v1.0 format. The connection stays open and pushes
+events as they happen.
+
+**SSE format:**
+
+```
+event: vault.file.changed
+data: {"specversion":"1.0","type":"vault.file.changed","source":"/opt/vault",...}
+```
+
+**Event types:**
+
+| Event | When |
+|---|---|
+| `vault.file.changed` | A file in the vault was created or modified |
+| `vault.file.deleted` | A file in the vault was deleted |
+| `vault.collection.reindexed` | A Qdrant collection was fully reindexed |
+| `ragamuffin.started` | Server started (sent once at boot) |
+| `ragamuffin.healthy` | Server health state change |
+
+> **Note:** The `/events` endpoint does not require authentication — it is
+> intentionally public so SSE clients can connect before tokens are obtained.
+> Slow consumers may have events dropped (buffer: 64 events).
+
 ### Agent Protocol Endpoint
 
 #### `GET /mcp` — SSE stream (long-lived connection)
@@ -1027,7 +1075,7 @@ curl -s 'http://localhost:8000/graph?entity=Qdrant&depth=2'
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `entity` | string | — | Focus on a specific entity |
-| `depth` | int | 1 | Graph traversal depth (0–3) |
+| `depth` | int | 1 | Graph traversal depth (1–5) |
 | `limit` | int | 50 | Max nodes to return (1–200) |
 
 Returns nodes (files and entities) and edges (contains, links_to).
@@ -1082,6 +1130,13 @@ Three modes controlled by `RAGAMUFFIN_AUTH_MODE`:
 - `RAGAMUFFIN_AUTH_JWT_JWKS_URL` — JWKS endpoint for key discovery
 
 JWT must include a `ragamuffin` claim with an `access` field (`read` or `read_write`).
+
+> **Auth exemptions:** The `/events` (SSE) and `/mcp` (SSE + JSON-RPC)
+> endpoints do not require authentication. SSE clients need to connect
+> before obtaining tokens, and MCP uses protocol-level auth via
+> `ragamuffin_store`/`ragamuffin_draft` tool calls rather than HTTP
+> headers. All other endpoints require auth when a mode other than
+> `none` is set.
 
 ### Web UI (v0.4)
 
@@ -1156,10 +1211,10 @@ Both adapters implement the same mapping from harness hooks to Ragamuffin API ca
 | Harness hook | Ragamuffin API call |
 |---|---|
 | Plugin load / agent start | `POST /v1/vaults` — create/confirm agent vault |
-| Pre-turn recall | `POST /v1/recall` — semantic search against agent vault |
+| Pre-turn recall | `POST /vault/{name}/recall` — semantic search against agent vault |
 | Post-turn persist | `POST /v1/ingest` — index the completed turn |
 | Session end | `POST /v1/ingest` — index a session summary artifact |
-| Cross-agent recall | `POST /v1/recall?vault=agent::robot` — query another agent's vault |
+| Cross-agent recall | `POST /vault/agent::robot/recall` — query another agent's vault |
 
 ### Writing an adapter for another harness
 
@@ -1182,9 +1237,12 @@ Per-endpoint rate limiting via environemnt variables. Disabled by default; enabl
 | `/v1/facts` | `RAGAMUFFIN_RATE_LIMIT_FACTS` | 30 |
 | `/v1/logs` | `RAGAMUFFIN_RATE_LIMIT_LOGS` | 60 |
 | `/v1/snapshot` | `RAGAMUFFIN_RATE_LIMIT_SNAPSHOT` | 5 |
+| `/v1/ingest` | `RAGAMUFFIN_RATE_LIMIT_INGEST` | 30 |
+| `/v1/review` | `RAGAMUFFIN_RATE_LIMIT_REVIEW` | 30 |
 | `/reindex` | `RAGAMUFFIN_RATE_LIMIT_REINDEX` | 30 |
 
-When rate-limited, responds with `429 Too Many Requests` and a `Retry-After` header.
+When rate-limited, responds with `429 Too Many Requests` with a `Retry-After`
+header set to the number of seconds to wait (integer, not a date string).
 
 ---
 
@@ -1213,6 +1271,7 @@ uses `modernc.org/sqlite`, no CGo dependency.
 | `/recall`, `/ask`, `/audit` | 64 KB |
 | `/v1/facts` (POST) | 256 KB |
 | `/v1/logs` (POST) | 64 KB |
+| `/v1/ingest` (POST) | 10 MB |
 | `/draft` | 10 MB |
 
 ---
@@ -1270,7 +1329,7 @@ curl -s 'http://localhost:8000/v1/review?reason=stale&limit=20'
 
 ```json
 {
-  "items": [
+  "entries": [
     {
       "key": "deployment/url",
       "value": "https://old-app.example.com",
@@ -1368,7 +1427,7 @@ curl -s http://localhost:8000/v1/review/stats
 |---|---|
 | `RAGAMUFFIN_VAULT_PATH` | Path to the knowledge base directory |
 | `RAGAMUFFIN_QDRANT_URL` | Qdrant gRPC endpoint (e.g. `http://localhost:6334`) |
-| `RAGAMUFFIN_EMBEDDING_API_KEY` | API key for the embedding service |
+| `RAGAMUFFIN_EMBEDDING_API_KEY` | API key for the embedding service (optional unless indexing or /recall is needed) |
 
 ### Embedding
 
@@ -1531,6 +1590,10 @@ All endpoints return errors in a uniform format:
 | `NOT_FOUND` | Endpoint doesn't exist | 404 |
 | `CONFLICT` | Resource already exists or is in progress | 409 |
 | `INVALID_SUPERSEDE` | Supersede requires new value | 400 |
+| `INVALID_SINCE` | Invalid `since` timestamp format | 400 |
+| `INVALID_UNTIL` | Invalid `until` timestamp format | 400 |
+| `INVALID_TIMESTAMP` | Invalid timestamp value | 400 |
+| `TOO_MANY_KEYS` | Too many keys in batch request | 400 |
 
 ### Server Errors (5xx)
 
@@ -1545,6 +1608,13 @@ All endpoints return errors in a uniform format:
 | `ENTRY_NOT_FOUND` | Requested entry not found | 404 |
 | `APPEND_FAILED` | Failed to append log entry to SQLite | 500 |
 | `EMBEDDING_API_ERROR` | Embedding API returned an error | 502 |
+| `LLM_API_ERROR` | LLM API returned an error | 502 |
+| `QDRANT_UNREACHABLE` | Qdrant is unreachable or returned an error | 502 |
+| `INGEST_FAILED` | Failed to index content | 500 |
+| `GIT_NOT_CONFIGURED` | Git operations requested but not configured | 400 |
+| `RETRIEVAL_ERROR` | Failed to retrieve data from storage | 500 |
+| `SERVICE_UNAVAILABLE` | Service temporarily unavailable | 503 |
+| `SUPERSEDE_CREATE_FAILED` | Failed to create superseding fact | 500 |
 | `SERVICE_UNAVAILABLE` | LLM not configured or unreachable | 503 |
 | `GIT_NOT_CONFIGURED` | PR mode requires git provider config | 400 |
 | `GIT_PROVIDER_ERROR` | Git provider returned an error | 502 |

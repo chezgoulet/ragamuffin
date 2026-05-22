@@ -74,7 +74,7 @@ func (s *Server) handleSessionRecall(w http.ResponseWriter, r *http.Request) {
 
 	vaultName := fmt.Sprintf("agent::%s", agentID)
 
-	writeJSON(w, 200, map[string]interface{}{
+	writeJSON(w, 503, map[string]interface{}{
 		"status":    "unavailable",
 		"version":   "v0.5",
 		"agent_id":  agentID,

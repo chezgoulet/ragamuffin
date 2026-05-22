@@ -183,9 +183,9 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	}
 
 	entity := r.URL.Query().Get("entity")
-	depth := 1
+	depth := 2
 	if d := r.URL.Query().Get("depth"); d != "" {
-		if parsed, err := strconv.Atoi(d); err == nil && parsed >= 0 && parsed <= 3 {
+		if parsed, err := strconv.Atoi(d); err == nil && parsed >= 1 && parsed <= 5 {
 			depth = parsed
 		}
 	}

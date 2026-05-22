@@ -7,9 +7,8 @@ import (
 )
 
 // lowConfidenceFilter builds a Qdrant filter for active facts with confidence
-// strictly below the given threshold. Uses a small epsilon to avoid float edge cases.
+// at or below the given threshold. Uses Lte to include threshold-boundary facts.
 func lowConfidenceFilter(threshold float64) *pb.Filter {
-	lt := threshold - 0.001
 	return &pb.Filter{
 		Must: []*pb.Condition{
 			{
@@ -29,7 +28,7 @@ func lowConfidenceFilter(threshold float64) *pb.Filter {
 					Field: &pb.FieldCondition{
 						Key: "confidence",
 						Range: &pb.Range{
-							Lt: &lt,
+							Lte: &threshold,
 						},
 					},
 				},

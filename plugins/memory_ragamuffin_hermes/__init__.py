@@ -4,7 +4,7 @@ Provides per-agent Qdrant-isolated memory with automatic session persistence,
 cross-agent recall, and semantic search via Ragamuffin's HTTP API.
 
 Config via environment variables (profile-scoped via each profile's .env):
-  RAGAMUFFIN_ENDPOINT    — Ragamuffin server URL (default: http://ragamuffin:8080)
+  RAGAMUFFIN_ENDPOINT    — Ragamuffin server URL (default: http://ragamuffin:8000)
   RAGAMUFFIN_AUTH_TOKEN  — API key / JWT for authenticated deployments (optional)
   RAGAMUFFIN_VAULT_PREFIX— Prefix for agent vault names (default: agent::)
 
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # Defaults
 # ---------------------------------------------------------------------------
 
-_DEFAULT_ENDPOINT = "http://ragamuffin:8080"
+_DEFAULT_ENDPOINT = "http://ragamuffin:8000"
 _VAULT_PREFIX = "agent::"
 _REQUEST_TIMEOUT = 15.0  # seconds
 _PREFETCH_TIMEOUT = 3.0  # seconds to wait for background thread
@@ -228,8 +228,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
     def _provision_vault(self) -> bool:
         """GET /vaults to confirm the agent's vault is configured.
 
-        Vaults are configured statically on the server (config file/env).
-        This method does NOT create vaults — it just confirms the vault
+        If the vault doesn't exist, tries POST /vaults to create it
+        dynamically (requires multi-tenant mode).
         exists and the plugin can reach the server.
         """
         if not self._requests:
@@ -255,11 +255,12 @@ class RagamuffinMemoryProvider(MemoryProvider):
                     )
                     return True
                 else:
-                    logger.warning(
-                        "Ragamuffin vault '%s' not found. Configured vaults: %s",
-                        self._agent_vault, vault_names,
+                    # Vault not found — try creating it dynamically
+                    logger.info(
+                        "Ragamuffin vault '%s' not found, attempting creation",
+                        self._agent_vault,
                     )
-                    return False
+                    return self._create_vault()
             else:
                 logger.warning(
                     "Ragamuffin vault check failed: %s %s",
@@ -268,6 +269,34 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 return False
         except Exception as e:
             logger.warning("Ragamuffin vault check error: %s", e)
+            return False
+
+    def _create_vault(self) -> bool:
+        """POST /vaults to create this agent's vault dynamically."""
+        try:
+            url = _build_endpoint(self._endpoint, "/vaults")
+            headers = _build_headers(self._auth_token)
+            body = {
+                "name": self._agent_vault,
+                "path": self._vault_path or f"/tmp/vault-{self._agent_vault}",
+            }
+            resp = self._requests.post(
+                url, json=body, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code in (200, 201):
+                self._vault_ready = True
+                self._available = True
+                logger.info(
+                    "Ragamuffin vault created: %s", self._agent_vault
+                )
+                return True
+            logger.warning(
+                "Ragamuffin vault creation failed: %s %s",
+                resp.status_code, resp.text,
+            )
+            return False
+        except Exception as e:
+            logger.warning("Ragamuffin vault creation error: %s", e)
             return False
 
     def system_prompt_block(self) -> str:

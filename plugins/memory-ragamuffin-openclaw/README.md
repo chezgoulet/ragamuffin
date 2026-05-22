@@ -28,7 +28,7 @@ Set the active memory slot and plugin config in `openclaw.json`:
       "memory-ragamuffin-openclaw": {
         "path": "/path/to/plugins/memory-ragamuffin-openclaw",
         "config": {
-          "endpoint": "http://ragamuffin:8080",
+          "endpoint": "http://ragamuffin:8000",
           "authToken": "${RAGAMUFFIN_AUTH_TOKEN}",
           "vaultPrefix": "agent::",
           "autoRecall": true,
@@ -43,7 +43,7 @@ Set the active memory slot and plugin config in `openclaw.json`:
 ```
 
 All config values can also be set via environment variables:
-- `RAGAMUFFIN_ENDPOINT` (default: `http://localhost:8080`)
+- `RAGAMUFFIN_ENDPOINT` (default: `http://localhost:8000`)
 - `RAGAMUFFIN_AUTH_TOKEN` (default: empty)
 - `RAGAMUFFIN_VAULT_PREFIX` (default: `agent::`)
 
