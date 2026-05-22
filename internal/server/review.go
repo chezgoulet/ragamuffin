@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
 
@@ -307,28 +308,28 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Action {
 	case "confirm":
-		payload["status"] = nv("active")
-		payload["last_confirmed_at"] = nv(now)
+		payload["status"] = qutil.Nv("active")
+		payload["last_confirmed_at"] = qutil.Nv(now)
 		// Increment confirmation_count
 		cc := getPayloadIntValue(payload, "confirmation_count") + 1
-		payload["confirmation_count"] = nv(float64(cc))
+		payload["confirmation_count"] = qutil.Nv(float64(cc))
 		if req.Confidence != nil {
-			payload["confidence"] = nv(*req.Confidence)
+			payload["confidence"] = qutil.Nv(*req.Confidence)
 		}
 		if req.ConflictResolved != nil {
-			payload["conflict_resolved"] = nv(*req.ConflictResolved)
+			payload["conflict_resolved"] = qutil.Nv(*req.ConflictResolved)
 		}
 
 	case "supersede":
-		payload["status"] = nv("superseded")
+		payload["status"] = qutil.Nv("superseded")
 		if req.NewKey != "" {
-			payload["supersedes"] = nv(req.NewKey)
+			payload["supersedes"] = qutil.Nv(req.NewKey)
 		}
 		if req.NewValue != "" {
 			// Create a new fact via implicit POST
 			s.handleReviewSupersedeCreate(w, r, req.NewKey, req.NewValue, payload, now)
 			// Then write updated status to the OLD fact
-			payload["updated_at"] = nv(now)
+			payload["updated_at"] = qutil.Nv(now)
 			oldPoint := &qdrant.PointStruct{
 				Id: &qdrant.PointId{
 					PointIdOptions: &qdrant.PointId_Uuid{
@@ -353,23 +354,23 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case "reject":
-		payload["status"] = nv("rejected")
+		payload["status"] = qutil.Nv("rejected")
 
 	case "reclassify":
 		// Keep existing status, adjust fields
 		if req.Confidence != nil {
-			payload["confidence"] = nv(*req.Confidence)
+			payload["confidence"] = qutil.Nv(*req.Confidence)
 		}
 		if req.TTLDays != nil {
 			ttl := *req.TTLDays
-			payload["ttl_days"] = nv(float64(ttl))
+			payload["ttl_days"] = qutil.Nv(float64(ttl))
 			if ttl > 0 {
 				expiresAt := time.Now().UTC().AddDate(0, 0, ttl).Format(time.RFC3339)
-				payload["expires_at"] = nv(expiresAt)
-				payload["expires_at_unix"] = nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
+				payload["expires_at"] = qutil.Nv(expiresAt)
+				payload["expires_at_unix"] = qutil.Nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
 			} else {
-				payload["expires_at"] = nv("")
-				payload["expires_at_unix"] = nv(float64(0))
+				payload["expires_at"] = qutil.Nv("")
+				payload["expires_at_unix"] = qutil.Nv(float64(0))
 			}
 		}
 		if req.Tags != nil {
@@ -379,13 +380,13 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if req.Source != "" {
-			payload["source"] = nv(req.Source)
+			payload["source"] = qutil.Nv(req.Source)
 		}
 		if req.SourceType != "" {
-			payload["source_type"] = nv(req.SourceType)
+			payload["source_type"] = qutil.Nv(req.SourceType)
 		}
 		if req.ConflictResolved != nil {
-			payload["conflict_resolved"] = nv(*req.ConflictResolved)
+			payload["conflict_resolved"] = qutil.Nv(*req.ConflictResolved)
 		}
 
 	default:
@@ -393,7 +394,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	payload["updated_at"] = nv(now)
+	payload["updated_at"] = qutil.Nv(now)
 
 	point := &qdrant.PointStruct{
 		Id: &qdrant.PointId{

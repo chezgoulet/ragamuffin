@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -602,7 +603,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 	if len(tags) > 0 {
 		tagVals := make([]*qdrant.Value, len(tags))
 		for i, t := range tags {
-			tagVals[i] = nv(t)
+			tagVals[i] = qutil.Nv(t)
 		}
 		payload["fact_tags"] = &qdrant.Value{
 			Kind: &qdrant.Value_ListValue{
