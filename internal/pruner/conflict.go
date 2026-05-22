@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"time"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -221,8 +222,8 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 			ListValue: &pb.ListValue{Values: tagVals},
 		},
 	}
-	payload["conflict_resolved"] = nv(false)
-	payload["status"] = nv("needs_review")
+	payload["conflict_resolved"] = qutil.Nv(false)
+	payload["status"] = qutil.Nv("needs_review")
 
 	return p.updateFactPayload(ctx, pointID, payload)
 }

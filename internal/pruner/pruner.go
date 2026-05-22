@@ -24,19 +24,12 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
 
-// nv wraps pb.NewValue, panicking on error.
-func nv(v any) *pb.Value {
-	r, err := pb.NewValue(v)
-	if err != nil {
-		panic("NewValue: " + err.Error())
-	}
-	return r
-}
 // ── Config ────────────────────────────────────────────────────────────────────
 
 // PrunerConfig controls the Pruner's scan intervals and thresholds.
@@ -360,8 +353,8 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 			},
 		},
 		Payload: map[string]*pb.Value{
-			"status":     nv(status),
-			"updated_at": nv(now),
+			"status":     qutil.Nv(status),
+			"updated_at": qutil.Nv(now),
 		},
 		Vectors: &pb.Vectors{
 			VectorsOptions: &pb.Vectors_Vector{
@@ -377,7 +370,7 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 // updateFactPayload applies a map of payload updates to a fact point.
 func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, payload map[string]*pb.Value) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	payload["updated_at"] = nv(now)
+	payload["updated_at"] = qutil.Nv(now)
 
 	point := &pb.PointStruct{
 		Id: &pb.PointId{
