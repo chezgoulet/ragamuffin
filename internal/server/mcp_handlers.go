@@ -9,6 +9,7 @@ import (
 	"time"
 
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -280,6 +281,11 @@ func (s *Server) mcpAsk(ctx context.Context, args map[string]interface{}) (inter
 }
 
 func (s *Server) mcpDraft(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	// Enforce write access — same as handleDraft in handlers.go
+	if claims := auth.ClaimsFromContext(ctx); claims != nil && !claims.HasAccess("write") {
+		return nil, fmt.Errorf("write access required")
+	}
+
 	title, _ := args["title"].(string)
 	content, _ := args["content"].(string)
 	targetPath, _ := args["target_path"].(string)
@@ -342,6 +348,11 @@ func (s *Server) mcpDraft(ctx context.Context, args map[string]interface{}) (int
 // ── ragamuffin_store ───────────────────────────────────────────────────────────
 
 func (s *Server) mcpStore(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	// Enforce write access — same as handleDraft in handlers.go
+	if claims := auth.ClaimsFromContext(ctx); claims != nil && !claims.HasAccess("write") {
+		return nil, fmt.Errorf("write access required")
+	}
+
 	content, _ := args["content"].(string)
 	if content == "" {
 		return nil, fmt.Errorf("content is required")
@@ -503,6 +514,11 @@ func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) 
 }
 
 func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	// Enforce write access — same as handleFactsPost in facts.go
+	if claims := auth.ClaimsFromContext(ctx); claims != nil && !claims.HasAccess("write") {
+		return nil, fmt.Errorf("write access required")
+	}
+
 	key, _ := args["key"].(string)
 	if key == "" {
 		return nil, fmt.Errorf("key is required for upsert")

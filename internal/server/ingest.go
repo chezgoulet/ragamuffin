@@ -154,10 +154,12 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 	}
 
 	// Store the vault config so vaultPathFromContext works
+	s.mu.Lock()
 	if s.cfg.Vaults == nil {
 		s.cfg.Vaults = make(map[string]*config.VaultConfig)
 	}
 	s.cfg.Vaults[name] = &config.VaultConfig{Path: vaultPath}
+	s.mu.Unlock()
 
 	s.log(ctx).Info("vault provisioned", "vault", name, "path", vaultPath, "collection", collectionName)
 	return idx
