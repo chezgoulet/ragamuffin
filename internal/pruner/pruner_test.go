@@ -926,14 +926,14 @@ func TestRecordResolved(t *testing.T) {
 
 func TestRecordScanRun(t *testing.T) {
 	p := newTestPruner(nil, nil, nil, nil)
-	p.recordScanRun("TestScan")
-	p.recordScanRun("TestScan")
+	p.recordScanRun("StaleScan")
+	p.recordScanRun("StaleScan")
 
 	// Verify via health
 	hr := p.Health()
-	scan, ok := hr.Scans["TestScan"]
+	scan, ok := hr.Scans["StaleScan"]
 	if !ok {
-		t.Fatal("expected TestScan in health report")
+		t.Fatal("expected StaleScan in health report")
 	}
 	if scan.TotalRuns != 2 {
 		t.Errorf("expected 2 runs, got %d", scan.TotalRuns)
