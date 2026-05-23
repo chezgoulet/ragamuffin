@@ -83,7 +83,13 @@ func (eb *entityBFS) AddMatch(sourceFile string) {
 	if sourceFile == "" || eb.visited[sourceFile] {
 		return
 	}
+	// At depth 0, only the entity root node is returned — no file matches.
+	// Visiting the file still prevents duplicate processing but we skip
+	// adding file nodes and edges since we won't traverse at this depth.
 	eb.visited[sourceFile] = true
+	if eb.depth == 0 {
+		return
+	}
 	fileID := "file:" + sourceFile
 	eb.nodes[fileID] = graphNode{
 		ID:    fileID,
@@ -185,7 +191,7 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 	entity := r.URL.Query().Get("entity")
 	depth := 1
 	if d := r.URL.Query().Get("depth"); d != "" {
-		if parsed, err := strconv.Atoi(d); err == nil && parsed >= 1 && parsed <= 5 {
+		if parsed, err := strconv.Atoi(d); err == nil && parsed >= 0 && parsed <= 5 {
 			depth = parsed
 		}
 	}

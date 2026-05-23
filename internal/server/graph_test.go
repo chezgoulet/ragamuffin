@@ -478,7 +478,9 @@ func TestEntityBFS_LinksToAlreadyVisited_NoDupes(t *testing.T) {
 
 	nodes := eb.Nodes()
 	edges := eb.Edges()
-	expectedEdges := 3
+	// Only the two contains edges (a.go→core, b.go→core); link edges skipped
+	// because both files were already visited during AddMatch.
+	expectedEdges := 2
 	if len(edges) != expectedEdges {
 		t.Errorf("expected %d edges, got %d", expectedEdges, len(edges))
 	}
