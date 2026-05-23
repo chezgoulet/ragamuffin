@@ -314,6 +314,13 @@ func (s *Server) entityGraph(w http.ResponseWriter, r *http.Request, vaultName, 
 
 	qc := s.indexers.GetClient(vaultName)
 	if qc == nil {
+		// At depth 0, return the entity node itself even without Qdrant.
+		// For depth > 0, we need Qdrant to find files containing the entity.
+		if depth == 0 {
+			eb := newEntityBFS(entity, depth, limit)
+			writeJSON(w, 200, graphResponse{Nodes: eb.Nodes(), Edges: eb.Edges()})
+			return
+		}
 		writeJSON(w, 200, graphResponse{Nodes: []graphNode{}, Edges: []graphEdge{}})
 		return
 	}
