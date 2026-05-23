@@ -804,9 +804,14 @@ func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 }
 
 func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
+	called := false
 	mock := &mockFactStore{
 		name: "test_facts",
 		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+			if called {
+				return nil, nil
+			}
+			called = true
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key": nv("org/decision"),
