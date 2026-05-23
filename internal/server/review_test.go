@@ -94,6 +94,8 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	return result, nil
 }
 
+func (m *reviewMockStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
+
 func (m *reviewMockStore) Health(_ context.Context) error { return nil }
 
 // review helpers
