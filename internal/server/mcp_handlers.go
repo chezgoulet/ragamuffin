@@ -473,21 +473,21 @@ func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) 
 		})
 	}
 	if status != "" {
-		conditions = append(conditions, &qdrant.Condition{
-			ConditionOneOf: &qdrant.Condition_Field{
-				Field: &qdrant.FieldCondition{
+		conditions = append(conditions, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
 					Key: "status",
-					Match: &qdrant.Match{
-						MatchValue: &qdrant.Match_Keyword{Keyword: status},
+					Match: &pb.Match{
+						MatchValue: &pb.Match_Keyword{Keyword: status},
 					},
 				},
 			},
 		})
 	}
 
-	var filter *qdrant.Filter
+	var filter *pb.Filter
 	if len(conditions) > 0 {
-		filter = &qdrant.Filter{Must: conditions}
+		filter = &pb.Filter{Must: conditions}
 	}
 
 	limit := uint32(100)
@@ -591,7 +591,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 		expiresAtUnix = float64(time.Now().UTC().AddDate(0, 0, ttlDays).Unix())
 	}
 
-	payload := qdrant.NewValueMap(map[string]interface{}{
+	payload := pb.NewValueMap(map[string]interface{}{
 		"fact_key":           key,
 		"fact_value":         value,
 		"source":             source,
@@ -608,37 +608,37 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 		"expires_at":         expiresAt,
 		"expires_at_unix":    expiresAtUnix,
 	})
-	payload["contradicts"] = &qdrant.Value{
-		Kind: &qdrant.Value_ListValue{
-			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+	payload["contradicts"] = &pb.Value{
+		Kind: &pb.Value_ListValue{
+			ListValue: &pb.ListValue{Values: []*pb.Value{}},
 		},
 	}
 
 	if len(tags) > 0 {
-		tagVals := make([]*qdrant.Value, len(tags))
+		tagVals := make([]*pb.Value, len(tags))
 		for i, t := range tags {
 			tagVals[i] = qutil.Nv(t)
 		}
-		payload["fact_tags"] = &qdrant.Value{
-			Kind: &qdrant.Value_ListValue{
-				ListValue: &qdrant.ListValue{Values: tagVals},
+		payload["fact_tags"] = &pb.Value{
+			Kind: &pb.Value_ListValue{
+				ListValue: &pb.ListValue{Values: tagVals},
 			},
 		}
 	}
 
-	point := &qdrant.PointStruct{
-		Id: &qdrant.PointId{
-			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+	point := &pb.PointStruct{
+		Id: &pb.PointId{
+			PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
 		},
 		Payload: payload,
-		Vectors: &qdrant.Vectors{
-			VectorsOptions: &qdrant.Vectors_Vector{
-				Vector: &qdrant.Vector{Data: []float32{0, 0, 0, 0}},
+		Vectors: &pb.Vectors{
+			VectorsOptions: &pb.Vectors_Vector{
+				Vector: &pb.Vector{Data: []float32{0, 0, 0, 0}},
 			},
 		},
 	}
 
-	if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
+	if err := s.facts.Upsert(ctx, []*pb.PointStruct{point}); err != nil {
 		return nil, fmt.Errorf("failed to store fact: %w", err)
 	}
 
