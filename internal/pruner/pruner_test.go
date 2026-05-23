@@ -2,6 +2,7 @@ package pruner
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -45,6 +46,31 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 		return fn(ctx, collection, filter, limit, offset)
 	}
 	return nil, nil
+}
+
+func (m *mockFactStore) SetPayload(_ context.Context, _ string, ids []*pb.PointId, payload map[string]*pb.Value) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Track payloads for points — create skeleton entries if not already upserted
+	for _, id := range ids {
+		found := false
+		for _, pt := range m.upserted {
+			if id.GetUuid() == pt.GetId().GetUuid() {
+				for k, v := range payload {
+					pt.Payload[k] = v
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.upserted = append(m.upserted, &pb.PointStruct{
+				Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: id.GetUuid()}},
+				Payload: payload,
+			})
+		}
+	}
+	return nil
 }
 
 func (m *mockFactStore) Health(_ context.Context) error { return nil }
@@ -119,6 +145,22 @@ func makePoint(id string, payload map[string]*pb.Value) *pb.RetrievedPoint {
 			PointIdOptions: &pb.PointId_Uuid{Uuid: id},
 		},
 		Payload: payload,
+	}
+}
+
+// ── Value helper ──────────────────────────────────────────────────────────────
+
+// nv converts a Go value to a qdrant Value for test payload construction.
+func nv(v interface{}) *pb.Value {
+	switch val := v.(type) {
+	case string:
+		return &pb.Value{Kind: &pb.Value_StringValue{StringValue: val}}
+	case float64:
+		return &pb.Value{Kind: &pb.Value_DoubleValue{DoubleValue: val}}
+	case bool:
+		return &pb.Value{Kind: &pb.Value_BoolValue{BoolValue: val}}
+	default:
+		panic(fmt.Sprintf("nv: unsupported type %T", v))
 	}
 }
 
@@ -619,14 +661,12 @@ func TestSupersedeScan_NilClient(t *testing.T) {
 }
 
 func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
-	callNum := new(atomic.Int32)
+	returnedP2 := false
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, limit uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			n := callNum.Add(1)
-
-			// First call: find facts with supersedes set
-			if n == 1 {
+		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// First scroll (paginated, limit=200): find facts with supersedes set
+			if limit == 200 && offset == "" {
 				return []*pb.RetrievedPoint{
 					makePoint("p1", map[string]*pb.Value{
 						"fact_key":   nv("newer-fact"),
@@ -634,9 +674,13 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 					}),
 				}, nil
 			}
-
-			// Second call: check if target (older-fact) exists
-			if n == 2 {
+			// Pagination: no more pages
+			if limit == 200 && offset != "" {
+				return nil, nil
+			}
+			// Second scroll (target lookup, limit=1): return the target fact
+			if limit == 1 && !returnedP2 {
+				returnedP2 = true
 				return []*pb.RetrievedPoint{
 					makePoint("p2", map[string]*pb.Value{
 						"fact_key": nv("older-fact"),
@@ -666,12 +710,12 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 }
 
 func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
-	callNum := new(atomic.Int32)
+	returnedP2 := false
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			n := callNum.Add(1)
-			if n == 1 {
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// First scroll (paginated, limit=200): find facts with supersedes
+			if limit == 200 && offset == "" {
 				return []*pb.RetrievedPoint{
 					makePoint("p1", map[string]*pb.Value{
 						"fact_key":   nv("newer"),
@@ -679,13 +723,21 @@ func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
 					}),
 				}, nil
 			}
-			// Target already superseded
-			return []*pb.RetrievedPoint{
-				makePoint("p2", map[string]*pb.Value{
-					"fact_key": nv("older"),
-					"status":   nv("superseded"),
-				}),
-			}, nil
+			// Pagination: no more pages
+			if limit == 200 && offset != "" {
+				return nil, nil
+			}
+			// Target lookup (limit=1): target already superseded
+			if limit == 1 && !returnedP2 {
+				returnedP2 = true
+				return []*pb.RetrievedPoint{
+					makePoint("p2", map[string]*pb.Value{
+						"fact_key": nv("older"),
+						"status":   nv("superseded"),
+					}),
+				}, nil
+			}
+			return nil, nil
 		},
 	}
 
@@ -717,17 +769,21 @@ func TestSupersedeCrossReference_EmptySupersedesSkipped(t *testing.T) {
 func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			return []*pb.RetrievedPoint{
-				makePoint("p1", map[string]*pb.Value{
-					"fact_key": nv("org/v1/decision"),
-					"status":   nv("active"),
-				}),
-				makePoint("p2", map[string]*pb.Value{
-					"fact_key": nv("org/v2/decision"),
-					"status":   nv("active"),
-				}),
-			}, nil
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// Only return data on first page, stop pagination on subsequent calls
+			if limit == 200 && offset == "" {
+				return []*pb.RetrievedPoint{
+					makePoint("p1", map[string]*pb.Value{
+						"fact_key": nv("org/v1/decision"),
+						"status":   nv("active"),
+					}),
+					makePoint("p2", map[string]*pb.Value{
+						"fact_key": nv("org/v2/decision"),
+						"status":   nv("active"),
+					}),
+				}, nil
+			}
+			return nil, nil
 		},
 	}
 
@@ -748,9 +804,14 @@ func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 }
 
 func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
+	called := false
 	mock := &mockFactStore{
 		name: "test_facts",
 		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
+			if called {
+				return nil, nil
+			}
+			called = true
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key": nv("org/decision"),
@@ -775,13 +836,16 @@ func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
 func TestSupersedeKeyPattern_SingleVersion(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			return []*pb.RetrievedPoint{
-				makePoint("p1", map[string]*pb.Value{
-					"fact_key": nv("org/v2/decision"),
-					"status":   nv("active"),
-				}),
-			}, nil
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if limit == 200 && offset == "" {
+				return []*pb.RetrievedPoint{
+					makePoint("p1", map[string]*pb.Value{
+						"fact_key": nv("org/v2/decision"),
+						"status":   nv("active"),
+					}),
+				}, nil
+			}
+			return nil, nil
 		},
 	}
 
@@ -862,14 +926,14 @@ func TestRecordResolved(t *testing.T) {
 
 func TestRecordScanRun(t *testing.T) {
 	p := newTestPruner(nil, nil, nil, nil)
-	p.recordScanRun("TestScan")
-	p.recordScanRun("TestScan")
+	p.recordScanRun("StaleScan")
+	p.recordScanRun("StaleScan")
 
 	// Verify via health
 	hr := p.Health()
-	scan, ok := hr.Scans["TestScan"]
+	scan, ok := hr.Scans["StaleScan"]
 	if !ok {
-		t.Fatal("expected TestScan in health report")
+		t.Fatal("expected StaleScan in health report")
 	}
 	if scan.TotalRuns != 2 {
 		t.Errorf("expected 2 runs, got %d", scan.TotalRuns)

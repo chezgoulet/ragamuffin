@@ -388,9 +388,9 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	// requested limit; we iterate until we fill the limit or run out.
 	var nextToken string
 	resp := make([]factResponse, 0, limit)
-	for i, p := range points {
+	for _, p := range points {
 		if prefix != "" {
-			key := getPayloadString(p.Payload, "fact_key")
+			key, _ := getPayloadString(p.Payload, "fact_key")
 			if !strings.HasPrefix(key, prefix) {
 				continue
 			}

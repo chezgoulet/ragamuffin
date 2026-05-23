@@ -81,6 +81,9 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	// Default: filter points by status = needs_review
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if offset != "" {
+		return nil, nil // end of pagination
+	}
 	var result []*qdrant.RetrievedPoint
 	for _, p := range m.points {
 		if status, _ := getPayloadString(p.GetPayload(), "status"); status == "needs_review" {
@@ -93,6 +96,8 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	}
 	return result, nil
 }
+
+func (m *reviewMockStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
 
 func (m *reviewMockStore) Health(_ context.Context) error { return nil }
 
@@ -147,6 +152,20 @@ func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdra
 			},
 		},
 		Payload: payload,
+	}
+}
+
+// nv converts a Go value to a qdrant Value for test payload construction.
+func nv(v interface{}) *qdrant.Value {
+	switch val := v.(type) {
+	case string:
+		return &qdrant.Value{Kind: &qdrant.Value_StringValue{StringValue: val}}
+	case float64:
+		return &qdrant.Value{Kind: &qdrant.Value_DoubleValue{DoubleValue: val}}
+	case bool:
+		return &qdrant.Value{Kind: &qdrant.Value_BoolValue{BoolValue: val}}
+	default:
+		panic(fmt.Sprintf("nv: unsupported type %T", v))
 	}
 }
 
