@@ -103,7 +103,8 @@ func TestHandleIngest_ProvisionInvalidName(t *testing.T) {
 	cfg := &config.Config{
 		Vaults: map[string]*config.VaultConfig{},
 	}
-	srv := &Server{cfg: cfg, indexers: indexer.NewManager()}
+	rl := ratelimit.New(false)
+	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, rl, nil, nil, nil, nil, slog.Default())
 	body, _ := json.Marshal(ingestRequest{
 		Vault:   "INVALID_NAME!",
 		Content: "hello",
@@ -121,7 +122,7 @@ func TestHandleIngest_ProvisionInvalidName(t *testing.T) {
 // ── provisionVault ────────────────────────────────────────────────────────────
 
 func TestProvisionVault_InvalidName(t *testing.T) {
-	srv := &Server{cfg: &config.Config{}, indexers: indexer.NewManager()}
+	srv := New(&config.Config{}, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, slog.Default())
 
 	idx := srv.provisionVault(context.Background(), "")
 	if idx != nil {
@@ -142,7 +143,7 @@ func TestProvisionVault_NoQdrant_ReturnsNil(t *testing.T) {
 		QdrantURL: "http://localhost:19999", // nothing listening — provisioning fails gracefully
 		VaultPath: "/tmp",
 	}
-	srv := &Server{cfg: cfg, indexers: indexer.NewManager()}
+	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, slog.Default())
 
 	idx := srv.provisionVault(context.Background(), "agent-dev")
 	if idx != nil {
