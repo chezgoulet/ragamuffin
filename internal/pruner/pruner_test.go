@@ -661,14 +661,12 @@ func TestSupersedeScan_NilClient(t *testing.T) {
 }
 
 func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
-	callNum := new(atomic.Int32)
+	returnedP2 := false
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, limit uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			n := callNum.Add(1)
-
-			// First call: find facts with supersedes set
-			if n == 1 {
+		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// First scroll (paginated, limit=200): find facts with supersedes set
+			if limit == 200 && offset == "" {
 				return []*pb.RetrievedPoint{
 					makePoint("p1", map[string]*pb.Value{
 						"fact_key":   nv("newer-fact"),
@@ -676,9 +674,13 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 					}),
 				}, nil
 			}
-
-			// Second call: check if target (older-fact) exists
-			if n == 2 {
+			// Pagination: no more pages
+			if limit == 200 && offset != "" {
+				return nil, nil
+			}
+			// Second scroll (target lookup, limit=1): return the target fact
+			if limit == 1 && !returnedP2 {
+				returnedP2 = true
 				return []*pb.RetrievedPoint{
 					makePoint("p2", map[string]*pb.Value{
 						"fact_key": nv("older-fact"),
@@ -708,22 +710,26 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 }
 
 func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
-	callNum := new(atomic.Int32)
+	returnedP2 := false
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			n := callNum.Add(1)
-			if n == 1 {
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// First scroll (paginated, limit=200): find facts with supersedes
+			if limit == 200 && offset == "" {
 				return []*pb.RetrievedPoint{
 					makePoint("p1", map[string]*pb.Value{
 						"fact_key":   nv("newer"),
 						"supersedes": nv("older"),
 					}),
 				}, nil
-			}			
-			// Second call: check if target (older-fact) exists
-			if n == 2 {
-				// Target already superseded
+			}
+			// Pagination: no more pages
+			if limit == 200 && offset != "" {
+				return nil, nil
+			}
+			// Target lookup (limit=1): target already superseded
+			if limit == 1 && !returnedP2 {
+				returnedP2 = true
 				return []*pb.RetrievedPoint{
 					makePoint("p2", map[string]*pb.Value{
 						"fact_key": nv("older"),
@@ -731,7 +737,6 @@ func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
 					}),
 				}, nil
 			}
-			// Call 3+: no more points — break pagination
 			return nil, nil
 		},
 	}
@@ -764,17 +769,21 @@ func TestSupersedeCrossReference_EmptySupersedesSkipped(t *testing.T) {
 func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			return []*pb.RetrievedPoint{
-				makePoint("p1", map[string]*pb.Value{
-					"fact_key": nv("org/v1/decision"),
-					"status":   nv("active"),
-				}),
-				makePoint("p2", map[string]*pb.Value{
-					"fact_key": nv("org/v2/decision"),
-					"status":   nv("active"),
-				}),
-			}, nil
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			// Only return data on first page, stop pagination on subsequent calls
+			if limit == 200 && offset == "" {
+				return []*pb.RetrievedPoint{
+					makePoint("p1", map[string]*pb.Value{
+						"fact_key": nv("org/v1/decision"),
+						"status":   nv("active"),
+					}),
+					makePoint("p2", map[string]*pb.Value{
+						"fact_key": nv("org/v2/decision"),
+						"status":   nv("active"),
+					}),
+				}, nil
+			}
+			return nil, nil
 		},
 	}
 
