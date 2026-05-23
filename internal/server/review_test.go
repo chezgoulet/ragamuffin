@@ -316,6 +316,7 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		var result []*qdrant.RetrievedPoint
+	outer:
 		for _, p := range store.points {
 			if status, _ := getPayloadString(p.GetPayload(), "status"); status != "needs_review" {
 				continue
@@ -326,7 +327,7 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 					if fc := cond.GetField(); fc != nil && fc.Key == "confidence" {
 						if rng := fc.GetRange(); rng != nil {
 							if conf, _ := getPayloadFloat(p.GetPayload(), "confidence"); rng.Lt != nil && conf >= *rng.Lt {
-								continue
+								continue outer
 							}
 						}
 					}
@@ -751,10 +752,11 @@ func TestFactsPatch_BulkUpdate(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp []map[string]any
+	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
-	if len(resp) != 2 {
-		t.Errorf("expected 2 results, got %d", len(resp))
+	results := resp["results"].([]any)
+	if len(results) != 2 {
+		t.Errorf("expected 2 results, got %d", len(results))
 	}
 }
 
