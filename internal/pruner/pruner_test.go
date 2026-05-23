@@ -48,24 +48,28 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 	return nil, nil
 }
 
-func (m *mockFactStore) SetPayload(_ context.Context, _ string, points []*pb.PointId, payload map[string]*pb.Value) error {
+func (m *mockFactStore) SetPayload(_ context.Context, _ string, ids []*pb.PointId, payload map[string]*pb.Value) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Update upserted points' payloads in-place
-	upserted := make([]*pb.PointStruct, 0, len(m.upserted))
-	for _, pt := range m.upserted {
-	ptLoop:
-		for _, id := range points {
+	// Track payloads for points — create skeleton entries if not already upserted
+	for _, id := range ids {
+		found := false
+		for _, pt := range m.upserted {
 			if id.GetUuid() == pt.GetId().GetUuid() {
 				for k, v := range payload {
 					pt.Payload[k] = v
 				}
-				break ptLoop
+				found = true
+				break
 			}
 		}
-		upserted = append(upserted, pt)
+		if !found {
+			m.upserted = append(m.upserted, &pb.PointStruct{
+				Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: id.GetUuid()}},
+				Payload: payload,
+			})
+		}
 	}
-	m.upserted = upserted
 	return nil
 }
 
@@ -716,14 +720,19 @@ func TestSupersedeCrossReference_AlreadyMarkedSkipped(t *testing.T) {
 						"supersedes": nv("older"),
 					}),
 				}, nil
+			}			
+			// Second call: check if target (older-fact) exists
+			if n == 2 {
+				// Target already superseded
+				return []*pb.RetrievedPoint{
+					makePoint("p2", map[string]*pb.Value{
+						"fact_key": nv("older"),
+						"status":   nv("superseded"),
+					}),
+				}, nil
 			}
-			// Target already superseded
-			return []*pb.RetrievedPoint{
-				makePoint("p2", map[string]*pb.Value{
-					"fact_key": nv("older"),
-					"status":   nv("superseded"),
-				}),
-			}, nil
+			// Call 3+: no more points — break pagination
+			return nil, nil
 		},
 	}
 
