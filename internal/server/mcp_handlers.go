@@ -447,26 +447,26 @@ func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) 
 	}
 
 	// Build list filter
-	var conditions []*qdrant.Condition
+	var conditions []*pb.Condition
 	if prefix != "" {
-		conditions = append(conditions, &qdrant.Condition{
-			ConditionOneOf: &qdrant.Condition_Field{
-				Field: &qdrant.FieldCondition{
+		conditions = append(conditions, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
 					Key: "fact_key",
-					Match: &qdrant.Match{
-						MatchValue: &qdrant.Match_Text{Text: prefix},
+					Match: &pb.Match{
+						MatchValue: &pb.Match_Text{Text: prefix},
 					},
 				},
 			},
 		})
 	}
 	if tagVal != "" {
-		conditions = append(conditions, &qdrant.Condition{
-			ConditionOneOf: &qdrant.Condition_Field{
-				Field: &qdrant.FieldCondition{
+		conditions = append(conditions, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
 					Key: "fact_tags",
-					Match: &qdrant.Match{
-						MatchValue: &qdrant.Match_Keyword{Keyword: tagVal},
+					Match: &pb.Match{
+						MatchValue: &pb.Match_Keyword{Keyword: tagVal},
 					},
 				},
 			},

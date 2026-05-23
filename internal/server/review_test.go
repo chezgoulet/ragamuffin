@@ -150,6 +150,20 @@ func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdra
 	}
 }
 
+// nv converts a Go value to a qdrant Value for test payload construction.
+func nv(v interface{}) *qdrant.Value {
+	switch val := v.(type) {
+	case string:
+		return &qdrant.Value{Kind: &qdrant.Value_StringValue{StringValue: val}}
+	case float64:
+		return &qdrant.Value{Kind: &qdrant.Value_DoubleValue{DoubleValue: val}}
+	case bool:
+		return &qdrant.Value{Kind: &qdrant.Value_BoolValue{BoolValue: val}}
+	default:
+		panic(fmt.Sprintf("nv: unsupported type %T", v))
+	}
+}
+
 func nvList(items []string) *qdrant.Value {
 	values := make([]*qdrant.Value, len(items))
 	for i, s := range items {

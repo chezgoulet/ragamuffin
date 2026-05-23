@@ -2,6 +2,7 @@ package pruner
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -119,6 +120,22 @@ func makePoint(id string, payload map[string]*pb.Value) *pb.RetrievedPoint {
 			PointIdOptions: &pb.PointId_Uuid{Uuid: id},
 		},
 		Payload: payload,
+	}
+}
+
+// ── Value helper ──────────────────────────────────────────────────────────────
+
+// nv converts a Go value to a qdrant Value for test payload construction.
+func nv(v interface{}) *pb.Value {
+	switch val := v.(type) {
+	case string:
+		return &pb.Value{Kind: &pb.Value_StringValue{StringValue: val}}
+	case float64:
+		return &pb.Value{Kind: &pb.Value_DoubleValue{DoubleValue: val}}
+	case bool:
+		return &pb.Value{Kind: &pb.Value_BoolValue{BoolValue: val}}
+	default:
+		panic(fmt.Sprintf("nv: unsupported type %T", v))
 	}
 }
 
