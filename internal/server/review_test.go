@@ -78,18 +78,14 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	if fn != nil {
 		return fn(ctx, collection, filter, limit, offset)
 	}
-	// Default: filter points by status = needs_review, respect pagination
+	// Default: filter points by status = needs_review
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if offset != "" {
+		return nil, nil // end of pagination
+	}
 	var result []*qdrant.RetrievedPoint
 	for _, p := range m.points {
-		// If offset is set, skip points up to and including the offset point
-		if offset != "" {
-			if id := p.GetId().GetUuid(); id == offset {
-				offset = "" // clear offset after reaching it, include subsequent points
-			}
-			continue
-		}
 		if status, _ := getPayloadString(p.GetPayload(), "status"); status == "needs_review" {
 			result = append(result, p)
 		}
