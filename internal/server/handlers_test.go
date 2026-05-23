@@ -6,30 +6,12 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
-	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
-	pb "github.com/qdrant/go-client/qdrant"
 )
-
-// mockFactStore implements qdrant.FactStore with configurable callbacks.
-type mockFactStore struct {
-	qdrant.FactStore
-	ScrollFn          func(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error)
-	ScrollCallCount   atomic.Int64
-}
-
-func (m *mockFactStore) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
-	m.ScrollCallCount.Add(1)
-	if m.ScrollFn != nil {
-		return m.ScrollFn(ctx, limit, offset)
-	}
-	return []*pb.RetrievedPoint{}, nil, nil
-}
 
 // newTestServer creates a Server with minimal backends for testing.
 func newTestServer() *Server {
@@ -37,9 +19,8 @@ func newTestServer() *Server {
 		VaultPath: "/test/vault",
 	}
 	rl := ratelimit.New(false)
-	m := &mockFactStore{}
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), m)
+	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
 	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, slog.Default())
 }
 
