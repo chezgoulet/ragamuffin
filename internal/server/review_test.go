@@ -308,7 +308,11 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 			"confidence": float64(0.1),
 		}),
 	}
+	// Set a scrollFilteredFn that respects pagination offset and applies min_confidence filter
 	store.scrollFilteredFn = func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
+		if offset != "" {
+			return nil, nil // end of pagination
+		}
 		store.mu.Lock()
 		defer store.mu.Unlock()
 		var result []*qdrant.RetrievedPoint
