@@ -127,3 +127,4 @@
 ### Enhancement
 - **Web UI 404 for non-SPA paths**: Added `Accept: application/json` check
   to the static catch-all. API tooling now gets proper JSON 404s. (#123)
+
