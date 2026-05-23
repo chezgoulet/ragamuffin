@@ -831,13 +831,16 @@ func TestSupersedeKeyPattern_NoVersionedKeys(t *testing.T) {
 func TestSupersedeKeyPattern_SingleVersion(t *testing.T) {
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			return []*pb.RetrievedPoint{
-				makePoint("p1", map[string]*pb.Value{
-					"fact_key": nv("org/v2/decision"),
-					"status":   nv("active"),
-				}),
-			}, nil
+		scrollFilteredFn: func(_ context.Context, _ string, _ *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error) {
+			if limit == 200 && offset == "" {
+				return []*pb.RetrievedPoint{
+					makePoint("p1", map[string]*pb.Value{
+						"fact_key": nv("org/v2/decision"),
+						"status":   nv("active"),
+					}),
+				}, nil
+			}
+			return nil, nil
 		},
 	}
 
