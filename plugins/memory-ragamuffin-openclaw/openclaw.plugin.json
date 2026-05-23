@@ -9,7 +9,7 @@
       "endpoint": {
         "type": "string",
         "description": "Ragamuffin server URL",
-        "default": "http://localhost:8080",
+        "default": "http://localhost:8000",
         "env_var": "RAGAMUFFIN_ENDPOINT"
       },
       "authToken": {

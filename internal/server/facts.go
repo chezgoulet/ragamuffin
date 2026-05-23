@@ -341,7 +341,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	if conflictResolvedStr != "" && status != "" {
+	if conflictResolvedStr != "" {
 		cr, err := strconv.ParseBool(conflictResolvedStr)
 		if err == nil {
 			conditions = append(conditions, &qdrant.Condition{

@@ -98,7 +98,7 @@ class TestConfig:
         assert provider._vault_prefix == "agent::"
 
     def test_available_when_endpoint_set(self):
-        with patch.dict(os.environ, {"RAGAMUFFIN_ENDPOINT": "http://rag:8080"}):
+        with patch.dict(os.environ, {"RAGAMUFFIN_ENDPOINT": "http://rag:8000"}):
             provider = RagamuffinMemoryProvider()
             assert provider.is_available()
 
@@ -128,9 +128,9 @@ class TestConfig:
 class TestUtilityFunctions:
 
     def test_build_endpoint(self):
-        assert _build_endpoint("http://rag:8080", "/v1/recall") == "http://rag:8080/v1/recall"
-        assert _build_endpoint("http://rag:8080/", "/v1/ingest") == "http://rag:8080/v1/ingest"
-        assert _build_endpoint("http://rag:8080", "v1/vaults") == "http://rag:8080/v1/vaults"
+        assert _build_endpoint("http://rag:8000", "/v1/recall") == "http://rag:8000/v1/recall"
+        assert _build_endpoint("http://rag:8000/", "/v1/ingest") == "http://rag:8000/v1/ingest"
+        assert _build_endpoint("http://rag:8000", "v1/vaults") == "http://rag:8000/v1/vaults"
 
     def test_build_headers_no_auth(self):
         h = _build_headers()
@@ -281,7 +281,7 @@ class TestPrefetch:
         provider = make_provider()
         provider._available = True
         provider._vault_ready = True
-        provider._endpoint = "http://ragamuffin:8080"
+        provider._endpoint = "http://ragamuffin:8000"
         provider._agent_vault = "agent::dev"
         provider._requests.post.return_value = make_mock_response(200, {
             "results": [{"text": "Use physical isolation", "score": 0.89}],
@@ -314,7 +314,7 @@ class TestPrefetch:
         provider = make_provider()
         provider._available = True
         provider._vault_ready = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._agent_vault = "agent::test"
         provider._requests.post.return_value = make_mock_response(200, {"results": []})
 
@@ -339,7 +339,7 @@ class TestSyncTurn:
         provider = make_provider()
         provider._available = True
         provider._vault_ready = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._agent_vault = "agent::dev"
         provider._agent_identity = "dev"
         provider._session_id = "sess_abc"
@@ -384,7 +384,7 @@ class TestSessionEnd:
         provider = make_provider()
         provider._available = True
         provider._vault_ready = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._agent_vault = "agent::dev"
         provider._agent_identity = "dev"
         provider._session_id = "sess_xyz"
@@ -429,7 +429,7 @@ class TestToolCall:
     def test_ragamuffin_recall_tool(self):
         provider = make_provider()
         provider._available = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._agent_vault = "agent::dev"
         provider._requests.post.return_value = make_mock_response(200, {
             "results": [
@@ -453,7 +453,7 @@ class TestToolCall:
     def test_recall_with_explicit_vault(self):
         provider = make_provider()
         provider._available = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._requests.post.return_value = make_mock_response(200, {
             "results": [{"text": "Scan results", "score": 0.95}],
         })
@@ -480,7 +480,7 @@ class TestToolCall:
     def test_recall_server_error(self):
         provider = make_provider()
         provider._available = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._requests.post.return_value = make_mock_response(502, {
             "error": True, "code": "QDRANT_UNAVAILABLE",
         })
@@ -494,7 +494,7 @@ class TestToolCall:
     def test_recall_no_results(self):
         provider = make_provider()
         provider._available = True
-        provider._endpoint = "http://rag:8080"
+        provider._endpoint = "http://rag:8000"
         provider._requests.post.return_value = make_mock_response(200, {
             "results": [],
         })
@@ -584,7 +584,7 @@ class TestConfigSchema:
         schema = provider.get_config_schema()
         ep_field = [f for f in schema if f["key"] == "endpoint"][0]
         assert ep_field["required"] is True
-        assert ep_field["default"] == "http://ragamuffin:8080"
+        assert ep_field["default"] == "http://ragamuffin:8000"
         assert ep_field["env_var"] == "RAGAMUFFIN_ENDPOINT"
 
     def test_auth_token_is_secret(self):

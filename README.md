@@ -35,7 +35,7 @@ docker run -d \
   -v /path/to/vault:/opt/vault:ro \
   -e RAGAMUFFIN_VAULT_PATH=/opt/vault \
   -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6334 \
-  -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-... \
+  -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-...  # optional — omit to run without /recall
   chezgoulet/ragamuffin:latest
 
 # 3. Wait for indexing, then search
@@ -66,7 +66,7 @@ go build -o ragamuffin ./cmd/ragamuffin
 ### Run Locally
 
 ```bash
-# Set minimum config
+# Set minimum config (embedding API key is optional — omit to run without /recall)
 export RAGAMUFFIN_VAULT_PATH=./test-vault
 export RAGAMUFFIN_QDRANT_URL=http://localhost:6334
 export RAGAMUFFIN_EMBEDDING_API_KEY=sk-...
@@ -462,35 +462,32 @@ These endpoints support the agent memory backend pattern. Harness plugin adapter
 call them transparently — agents don't curl these directly. But you can, for
 debugging and manual inspection.
 
-#### `POST /v1/vaults` — Create or confirm an agent vault
+#### `POST /vaults` — Create a new runtime vault
 
-Each agent gets its own isolated vault. Calling this endpoint ensures the vault
-exists (idempotent — returns `created: false` if already present).
+Creates a vault on disk at the given path. Only available in multi-tenant mode.
 
 ```bash
-curl -s -X POST http://localhost:8000/v1/vaults \
+curl -s -X POST http://localhost:8000/vaults \
   -H "Content-Type: application/json" \
-  -d '{"name":"agent::dev","label":"Dev agent working memory"}'
+  -d '{"name":"my-app","path":"/data/vaults/my-app"}'
 ```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | — | Vault name **(required)** — use `agent::<name>` convention |
-| `label` | string | `""` | Human-readable label for the vault |
+| `name` | string | — | Vault name **(required)** — lowercase alphanumeric + hyphens, 1-32 chars |
+| `path` | string | — | Absolute filesystem path **(required)** |
 
-**Response:**
+**Response:** `HTTP 201 Created`
 ```json
 {
-  "name": "agent::dev",
-  "label": "Dev agent working memory",
-  "created": true,
-  "collection": "agent::dev"
+  "name": "my-app",
+  "path": "/data/vaults/my-app"
 }
 ```
 
-`created: false` means the vault already existed. Vault operations are
-deterministic — name hashes to a Qdrant collection name. Safe to call on
-every agent startup.
+Returns `409 Conflict` if the vault already exists. For auto-provisioning,
+use `POST /v1/ingest` with the `vault` field — the vault will be created
+automatically on first ingest.
 
 #### `POST /v1/ingest` — Index content into an agent vault
 
@@ -604,6 +601,20 @@ listing and management is reserved for a future release.
 {
   "status": "not_implemented",
   "message": "session listing is available in the upcoming v0.6 release"
+}
+```
+
+#### `POST /v1/sessions` — Index a completed session
+
+Indexes content under the `agent::<id>` vault. A convenience wrapper around
+`POST /v1/ingest` — clients should use `POST /v1/ingest` with
+`vault="agent::<id>"` instead. May be removed in a future release.
+
+**Response:**
+```json
+{
+  "status": "deferred",
+  "message": "Session persistence is deferred to v0.6. Use POST /v1/ingest with vault=agent::<id> instead."
 }
 ```
 
@@ -1168,7 +1179,7 @@ Configure in `openclaw.json`:
       "memory-ragamuffin": {
         enabled: true,
         config: {
-          endpoint: "http://ragamuffin:8080",
+          endpoint: "http://ragamuffin:8000",
           vaultPrefix: "agent::",
           autoRecall: true,
           autoCapture: true,
@@ -1196,7 +1207,7 @@ Configure in `config.yaml`:
 memory:
   provider: ragamuffin
   ragamuffin:
-    endpoint: "http://ragamuffin:8080"
+    endpoint: "http://ragamuffin:8000"
     vault_prefix: "agent::"
 ```
 
@@ -1210,7 +1221,7 @@ Both adapters implement the same mapping from harness hooks to Ragamuffin API ca
 
 | Harness hook | Ragamuffin API call |
 |---|---|
-| Plugin load / agent start | `POST /v1/vaults` — create/confirm agent vault |
+| Plugin load / agent start | `POST /v1/ingest` — auto-provisions vault on first ingest |
 | Pre-turn recall | `POST /vault/{name}/recall` — semantic search against agent vault |
 | Post-turn persist | `POST /v1/ingest` — index the completed turn |
 | Session end | `POST /v1/ingest` — index a session summary artifact |
@@ -1301,7 +1312,8 @@ facts for human (or agent) review.
 
 | Scan | What it does | Default interval |
 |---|---|---|
-| **StaleScan** | Flags facts past their `expires_at` or with low `confidence_score` | 24h |
+| **StaleScan** | Flags facts past their `expires_at` | 24h |
+| **LowConfidenceScan** | Flags facts with `confidence` below the configured threshold | 24h |
 | **ConflictScan** | Compares fact values for the same or similar keys, flags semantic overlaps | 72h |
 | **SupersedeScan** | Cross-references fact sources against vault files; flags if source has been superseded | 24h |
 

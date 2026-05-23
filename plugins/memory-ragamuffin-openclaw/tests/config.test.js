@@ -17,7 +17,7 @@ function makeApi(overrides = {}) {
 
   return {
     pluginConfig: {
-      endpoint: "http://ragamuffin:8080",
+      endpoint: "http://ragamuffin:8000",
       authToken: "",
       vaultPrefix: "agent::",
       autoRecall: true,
@@ -192,14 +192,14 @@ describe("config resolution (env vars)", () => {
     pluginEntry(api);
 
     return runTool(api, "memory_recall", { query: "test" }).then(() => {
-      assert.ok(capturedUrl.startsWith("http://localhost:8080"));
+      assert.ok(capturedUrl.startsWith("http://localhost:8000"));
     });
   });
 
   it("disables auto-capture when config not set", () => {
     const hooks = {};
     const api = {
-      pluginConfig: { endpoint: "http://r:8080", authToken: "", vaultPrefix: "agent::", recallLimit: 5, recallThreshold: 0.3, recallMaxChars: 1000, captureMaxChars: 500 },
+      pluginConfig: { endpoint: "http://r:8000", authToken: "", vaultPrefix: "agent::", recallLimit: 5, recallThreshold: 0.3, recallMaxChars: 1000, captureMaxChars: 500 },
       registerTool: () => {},
       registerCli: () => {},
       registerService: () => {},
