@@ -445,9 +445,9 @@ func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string,
 	source, _ := getPayloadString(oldPayload, "source")
 	sourceType, _ := getPayloadString(oldPayload, "source_type")
 	tags := getPayloadStringList(oldPayload, "fact_tags")
-	confidence := getPayloadFloatValue(oldPayload, "confidence")
-	if confidence == 0 {
-		confidence = 1.0
+	confidence := 1.0
+	if raw, ok := getPayloadFloat(oldPayload, "confidence"); ok {
+		confidence = raw
 	}
 
 	payload := qdrant.NewValueMap(map[string]any{
@@ -501,6 +501,12 @@ func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string,
 // ── GET /v1/review/stats ──────────────────────────────────────────────────────
 
 func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+
 	// Query all needs_review facts
 	filter := &qdrant.Filter{
 		Must: []*qdrant.Condition{
@@ -571,7 +577,7 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 			}
 
 			confidence, _ := getPayloadFloat(payload, "confidence")
-			if confidence < 0.5 {
+			if confidence < s.cfg.PrunerLowConfidenceThreshold {
 				stats.ByReason["low_confidence"]++
 			}
 
@@ -620,6 +626,5 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// ── Payload extraction (duplicated from facts.go for convenience) ─────────────
 
 

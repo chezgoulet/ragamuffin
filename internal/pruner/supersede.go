@@ -29,7 +29,7 @@ func (p *Pruner) supersedeScan(ctx context.Context) {
 	p.supersedeKeyPattern(ctx)
 }
 
-// supersedeCrossReference checks that facts with superseeds set point to
+// supersedeCrossReference checks that facts with supersedes set point to
 // existing keys, and marks the target as superseded if still active.
 func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 	// Find facts with a non-empty supersedes field

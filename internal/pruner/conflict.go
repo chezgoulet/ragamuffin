@@ -173,7 +173,7 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 // markContradiction adds the other fact's key to this fact's contradicts list
 // and sets conflict_resolved = false, status = needs_review.
 func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string) error {
-	// Re-read the point to get current state
+	// Read the target fact to get current contradicts list (the only field we need)
 	keyFilter := &pb.Filter{
 		Must: []*pb.Condition{
 			{
@@ -195,13 +195,9 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 		return fmt.Errorf("read target fact: %w", err)
 	}
 
-	payload := make(map[string]*pb.Value)
-	for k, v := range points[0].GetPayload() {
-		payload[k] = v
-	}
-
-	// Append to contradicts list (dedup)
-	existing := getPayloadStringList(payload, "contradicts")
+	// Use the existing GetPayload directly — no need to copy all fields
+	sourcePayload := points[0].GetPayload()
+	existing := getPayloadStringList(sourcePayload, "contradicts")
 	for _, s := range existing {
 		if s == otherKey {
 			return nil // already listed
@@ -217,13 +213,15 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 		}
 		tagVals[i] = v
 	}
-	payload["contradicts"] = &pb.Value{
-		Kind: &pb.Value_ListValue{
-			ListValue: &pb.ListValue{Values: tagVals},
-		},
-	}
-	payload["conflict_resolved"] = qutil.Nv(false)
-	payload["status"] = qutil.Nv("needs_review")
 
-	return p.updateFactPayload(ctx, pointID, payload)
+	// Use SetPayload (via updateFactPayload) to update only the fields that changed
+	return p.updateFactPayload(ctx, pointID, map[string]*pb.Value{
+		"contradicts": {
+			Kind: &pb.Value_ListValue{
+				ListValue: &pb.ListValue{Values: tagVals},
+			},
+		},
+		"conflict_resolved": qutil.Nv(false),
+		"status":            qutil.Nv("needs_review"),
+	})
 }

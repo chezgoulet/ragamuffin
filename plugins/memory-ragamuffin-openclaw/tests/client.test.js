@@ -67,7 +67,7 @@ describe("RagamuffinClient", () => {
 
   beforeEach(() => {
     client = new RagamuffinClient({
-      endpoint: "http://ragamuffin:8080",
+      endpoint: "http://ragamuffin:8000",
       authToken: "",
       vaultPrefix: "agent::",
     });
@@ -88,7 +88,7 @@ describe("RagamuffinClient", () => {
 
     it("uses custom prefix", () => {
       const c = new RagamuffinClient({
-        endpoint: "http://r:8080",
+        endpoint: "http://r:8000",
         vaultPrefix: "tenant::",
       });
       assert.equal(c.vaultName("alice"), "tenant::alice");
@@ -252,7 +252,7 @@ describe("RagamuffinClient", () => {
   describe("auth headers", () => {
     it("includes bearer token when configured", async () => {
       const authed = new RagamuffinClient({
-        endpoint: "http://r:8080",
+        endpoint: "http://r:8000",
         authToken: "sekret",
         vaultPrefix: "agent::",
       });

@@ -8,7 +8,7 @@
 // Architectural principle (from SPEC-v0.5):
 //   The Pruner is a reader and status updater only. It never deletes facts.
 //   It marks them superseded, rejected, needs_review, or adjusts their
-//   confidence_score and expires_at. The storage layer remains the single
+//   confidence and expires_at. The storage layer remains the single
 //   source of truth; pruning is an annotation layer on top.
 package pruner
 
@@ -343,7 +343,6 @@ func (p *Pruner) scrollAllFilteredFacts(ctx context.Context, filter *pb.Filter) 
 	return all, nil
 }
 
-// updateFactStatus sets the status field on a single fact point.
 // updateFactStatus sets the status on a fact point using Qdrant's SetPayload
 // API, which only touches the specified keys — no data loss from partial upsert.
 func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status string) error {

@@ -12,7 +12,7 @@ RUN CGO_ENABLED=0 go build \
     -X 'github.com/chezgoulet/ragamuffin/internal/server.Version=${VERSION}' \
     -X 'github.com/chezgoulet/ragamuffin/internal/server.Commit=${COMMIT}' \
     -X 'github.com/chezgoulet/ragamuffin/internal/server.BuildDate=${BUILD_DATE}' \
-    -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=go1.25.0'" \
+    -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=$(go version | cut -d' ' -f3)'" \
   -o ragamuffin ./cmd/ragamuffin
 
 FROM alpine:3.21

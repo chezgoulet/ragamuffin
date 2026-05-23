@@ -21,7 +21,7 @@ function makeApi() {
 
   return {
     pluginConfig: {
-      endpoint: "http://ragamuffin:8080",
+      endpoint: "http://ragamuffin:8000",
       authToken: "",
       vaultPrefix: "agent::",
       autoRecall: true,
