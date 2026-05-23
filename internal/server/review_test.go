@@ -308,6 +308,30 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 			"confidence": float64(0.1),
 		}),
 	}
+	store.scrollFilteredFn = func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		var result []*qdrant.RetrievedPoint
+		for _, p := range store.points {
+			if status, _ := getPayloadString(p.GetPayload(), "status"); status != "needs_review" {
+				continue
+			}
+			// Apply min_confidence filter if present
+			if filter != nil && len(filter.Must) > 0 {
+				for _, cond := range filter.Must {
+					if fc := cond.GetField(); fc != nil && fc.Key == "confidence" {
+						if rng := fc.GetRange(); rng != nil {
+							if conf, _ := getPayloadFloat(p.GetPayload(), "confidence"); rng.Lt != nil && conf >= *rng.Lt {
+								continue
+							}
+						}
+					}
+				}
+			}
+			result = append(result, p)
+		}
+		return result, nil
+	}
 	srv := newReviewServer(store)
 
 	req := httptest.NewRequest("GET", "/v1/review?min_confidence=0.5", nil)
@@ -516,9 +540,9 @@ func TestReviewPost_Reclassify(t *testing.T) {
 	if ttl != 30 {
 		t.Errorf("expected ttl_days 30, got %d", ttl)
 	}
-	// Status should be preserved (remains needs_review)
-	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "needs_review" {
-		t.Errorf("expected status preserved as 'needs_review', got %q", s)
+	// Reclassify sets status to active
+	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "active" {
+		t.Errorf("expected status 'active' after reclassify, got %q", s)
 	}
 }
 
@@ -666,7 +690,7 @@ func TestFactsPut_UpdateFields(t *testing.T) {
 	}
 	srv := newReviewServer(store)
 
-	body := `{"fact_value":"updated-val","confidence":0.99}`
+	body := `{"value":"updated-val","confidence":0.99}`
 	req := httptest.NewRequest("PUT", "/v1/facts?key=put-key", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
@@ -713,7 +737,7 @@ func TestFactsPatch_BulkUpdate(t *testing.T) {
 	}
 	srv := newReviewServer(store)
 
-	body := `{"bulk-1":{"fact_value":"updated-1","confidence":0.8},"bulk-2":{"fact_value":"updated-2","confidence":0.9}}`
+	body := `{"keys":["bulk-1","bulk-2"],"updates":{"value":"updated","confidence":0.8}}`
 	req := httptest.NewRequest("PATCH", "/v1/facts", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
