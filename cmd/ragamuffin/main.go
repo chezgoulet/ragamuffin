@@ -104,12 +104,12 @@ func buildVault(
 				select {
 				case idxEvents <- e:
 				default:
-					l.Error("indexer event channel full, dropping event", "path", e.Path, "op", e.Op)
+					l.Error("indexer event channel full, dropping event", "path", e.Path, "action", e.Action)
 				}
 				select {
 				case prunevents <- e:
 				default:
-					l.Error("pruner event channel full, dropping event", "path", e.Path, "op", e.Op)
+					l.Error("pruner event channel full, dropping event", "path", e.Path, "action", e.Action)
 				}
 			case <-doneCh:
 				return

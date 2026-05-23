@@ -48,6 +48,27 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 	return nil, nil
 }
 
+func (m *mockFactStore) SetPayload(_ context.Context, _ string, points []*pb.PointId, payload map[string]*pb.Value) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Update upserted points' payloads in-place
+	upserted := make([]*pb.PointStruct, 0, len(m.upserted))
+	for _, pt := range m.upserted {
+	ptLoop:
+		for _, id := range points {
+			if id.GetUuid() == pt.GetId().GetUuid() {
+				for k, v := range payload {
+					pt.Payload[k] = v
+				}
+				break ptLoop
+			}
+		}
+		upserted = append(upserted, pt)
+	}
+	m.upserted = upserted
+	return nil
+}
+
 func (m *mockFactStore) Health(_ context.Context) error { return nil }
 func (m *mockFactStore) Close() error                    { return nil }
 
