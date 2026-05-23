@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 )
 
 // ── handleIngest ──────────────────────────────────────────────────────────────
@@ -82,11 +84,9 @@ func TestHandleIngest_SingleTenantDefaultsToDefault(t *testing.T) {
 	cfg := &config.Config{
 		VaultPath: "/tmp/vault",
 	}
+	rl := ratelimit.New(false)
 	idxManager := indexer.NewManager()
-	srv := &Server{
-		cfg:      cfg,
-		indexers: idxManager,
-	}
+	srv := New(cfg, nil, nil, nil, nil, idxManager, nil, rl, nil, nil, nil, nil, slog.Default())
 
 	// No indexer for "default" → provisioning attempt, expect failure
 	body, _ := json.Marshal(ingestRequest{Content: "hello", Source: "test"})
