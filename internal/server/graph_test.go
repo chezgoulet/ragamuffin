@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"testing"
+
+	pb "github.com/qdrant/go-client/qdrant"
 )
 
 // ── displayName ──────────────────────────────────────────────────────────────
@@ -127,6 +130,20 @@ func TestHandleGraph_EntityDepth1(t *testing.T) {
 
 func TestHandleGraph_EntityWithSpaces(t *testing.T) {
 	srv := newTestServer()
+	m, ok := srv.indexers.GetClient("default").(*mockFactStore)
+	if !ok {
+		t.Fatal("expected *mockFactStore")
+	}
+	m.ScrollFn = func(_ context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+		return []*pb.RetrievedPoint{{
+			Id: &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: "test-1"}},
+			Payload: map[string]*pb.Value{
+				"source_file": {Kind: &pb.Value_StringValue{StringValue: "docs/John Doe.md"}},
+				"text":        {Kind: &pb.Value_StringValue{StringValue: "John Doe is a person"}},
+			},
+		}}, nil, nil
+	}
+
 	req := httptest.NewRequest("GET", "/graph?entity=John+Doe&depth=0", nil)
 	w := httptest.NewRecorder()
 	srv.handleGraph(w, req)
