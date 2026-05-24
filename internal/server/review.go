@@ -21,7 +21,7 @@ type reviewResponse struct {
 	Tags          []string       `json:"tags,omitempty"`
 	Source        string         `json:"source,omitempty"`
 	SourceType    string         `json:"source_type,omitempty"`
-	Confidence    float64        `json:"confidence"`
+	Confidence    *float64       `json:"confidence,omitempty"`
 	Status        string         `json:"status"`
 	ReviewReasons []reviewReason `json:"review_reasons,omitempty"`
 	LastConfirmedAt string       `json:"last_confirmed_at,omitempty"`
@@ -185,21 +185,21 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 		return nil
 	}
 
+	var confidence *float64
+	if c, ok := getPayloadFloat(payload, "confidence"); ok {
+		confidence = &c
+	}
 	r := &reviewResponse{
 		Key:     key,
 		Value:   value,
 		Tags:    getPayloadStringList(payload, "fact_tags"),
 		Source:  getPayloadStringValue(payload, "source"),
 		SourceType: getPayloadStringValue(payload, "source_type"),
-		Confidence: getPayloadFloatValue(payload, "confidence"),
+		Confidence: confidence,
 		Status:  status,
 		LastConfirmedAt: getPayloadStringValue(payload, "last_confirmed_at"),
 		CreatedAt: getPayloadStringValue(payload, "created_at"),
 		UpdatedAt: getPayloadStringValue(payload, "updated_at"),
-	}
-
-	if r.Confidence == 0 {
-		r.Confidence = 1.0
 	}
 
 	// Compute review reasons dynamically from payload fields
@@ -230,10 +230,10 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	}
 
 	// Low confidence check
-	if r.Confidence < 0.5 {
+	if r.Confidence != nil && *r.Confidence < 0.5 {
 		reasons = append(reasons, reviewReason{
 			Type:   "low_confidence",
-			Detail: fmt.Sprintf("Confidence is %.2f (below threshold 0.5)", r.Confidence),
+			Detail: fmt.Sprintf("Confidence is %.2f (below threshold 0.5)", *r.Confidence),
 		})
 	}
 
