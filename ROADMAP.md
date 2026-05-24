@@ -224,7 +224,152 @@ login form when auth is enabled.
 
 ---
 
-## Deferred
+## v0.9 — Operational Maturity
+
+Everything in v0.6–0.8 is about building the machine. v0.9 is about proving it
+won't fall over. Every item in this tier was chosen because it would have caused
+a real incident during the first week of unattended production on TrueNAS.
+
+### 11. OIDC-Native Authentication
+
+**The problem:** Ragamuffin's auth model uses static pre-shared API keys
+(`AUTH_READ_KEY`, `AUTH_WRITE_KEY`). Every agent shares the same key for a given
+access tier. There's no way to scope access per-agent, rotate credentials per-agent,
+or integrate with the House's Authentik-based SSO layer. LibreFang will run 12+
+Hands — a shared write key means any compromised Hand is a compromised system.
+
+**The approach:** Authentik OIDC as the primary auth provider. Agents authenticate
+with Authentik-issued JWT tokens. Ragamuffin validates the token against
+Authentik's JWKS endpoint and maps claims to access control:
+
+- `ragamuffin/vaults` — which vaults this agent can read/write
+- `ragamuffin/write` — write permission bool
+- `ragamuffin/pruner` — pruner admin permission bool
+
+The existing API key auth (`AUTH_READ_KEY`, `AUTH_WRITE_KEY`) becomes a fallback
+for deployments without OIDC. New deployments should be OIDC-first.
+
+Also: add a `POST /v1/auth/check` endpoint that returns the caller's scoped
+permissions, intended for agent startup self-diagnostics.
+
+Storage: A `ragamuffin_agents` SQLite table maps Authentik user IDs to vault
+access, or the JWT claims are self-contained (authorization at the token level).
+Prefer self-contained claims — no additional database dependency for auth.
+
+Reference: This is the credential model already established for n8n as the
+House's deterministic spine; Ragamuffin inherits the same Authentik OIDC pattern.
+
+### 12. Graceful TrueNAS Lifecycle
+
+**The problem:** Ragamuffin assumes Qdrant is always reachable. If Qdrant
+restarts (TrueNAS update, power blip, Docker restart), the in-memory Qdrant
+client handle goes stale. Requests fail with opaque gRPC errors until Ragamuffin
+itself restarts.
+
+**The approach:**
+
+1. **Qdrant reconnection with backoff.** On gRPC connection error, enter a
+   reconnection loop: 1s, 5s, 30s, 60s backoff. Return 503 with
+   `{"status": "degraded", "detail": "qdrant reconnecting"}` during recovery.
+2. **Health-aware routing.** `GET /health` reports each dependency's status
+   (`qdrant: ok | reconnecting | down`, `sqlite: ok | error`). A 200 means
+   fully operational; dependencies in recovery return 200 with degraded
+   status flags so monitoring still alerts without paging.
+3. **Startup ordering.** On first boot, retry `provisionVault` with exponential
+   backoff if Qdrant's collection isn't available yet. No crash loops on
+   boot-order races.
+
+### 13. ZFS-Native Watcher
+
+**The problem:** The current watcher polls the filesystem at a configurable
+interval. On TrueNAS ZFS, polling misses rapid write bursts (multi-file ingestion
+completing between ticks) and adds latency proportional to scan depth.
+
+**The approach:** Add an inotify-based watch mode as the default on Linux. On
+TrueNAS ZFS, fall back to `inotify` on the dataset mount point — it works on
+the filesystem level, not the ZFS level, and captures all file create/modify/delete
+events. The polling mode stays as a configurable fallback for NFS mounts.
+
+Also: add a `POST /v1/refresh` endpoint for manual re-scan of specific vaults
+or files, so the operator can trigger a scan without waiting for the watcher
+tick.
+
+### 14. Graceful Shutdown and Logstore Hygiene
+
+**The problem:** `logstore` writes to SQLite. SQLite doesn't rotate itself.
+Without a plan, the database files grow without bound. On shutdown, in-flight
+SQLite writes may be truncated.
+
+**The approach:**
+
+1. **Auto-vacuum.** Enable SQLite `auto_vacuum=INCREMENTAL` on the logstore
+   database, with an `integrity_check` and `PRAGMA shrink_memory` on startup.
+2. **Max-row soft limit.** Per-vault and system-wide configurable max row
+   counts for each table (`audit_log`, `events`, `watch_history`). When
+   exceeded, the oldest rows are bulk-deleted (`DELETE FROM ... WHERE id IN
+   (SELECT id FROM ... ORDER BY id LIMIT ...)` — never `DELETE FROM ...` without
+   a bound).
+3. **SIGTERM handler.** On `SIGTERM`, flush pending writes, close SQLite
+   connections gracefully (journal commit), then wait up to 5 seconds for
+   in-flight Qdrant writes before exiting. If the deadline expires, log a
+   warning and exit anyway.
+
+### 15. Restore-from-Snapshot Test
+
+**The problem:** The library lives on a TrueNAS ZFS dataset. When the dataset
+is restored to yesterday's snapshot (file restore, hardware migration, rollback),
+Ragamuffin's index is stale — it references chunks and facts for files that
+no longer exist or have changed content. Without explicit handling, this produces
+ghost chunks, hard-to-diagnose recall results, and fact-to-file desync.
+
+**The approach:** On startup, add a consistency check between the filesystem and
+the index:
+
+1. For each vault, compare file mtimes in the index against filesystem mtimes.
+2. If more than N% of files show a mismatch (configurable, default: 10%),
+   flag a "possible snapshot restore" state and offer re-index.
+3. Re-indexing: delete all chunks for the affected vault, re-ingest from scratch.
+   Facts referencing deleted files are flagged `needs_review` with reason
+   `source_deleted`.
+
+This check runs only on startup (not every watcher tick) and only on the vault
+level — not on individual files — so it's fast even for large datasets.
+
+---
+
+## v1.0 — The Shipping Criteria
+
+The three definitions of "done" for Ragamuffin 1.0:
+
+**For the operator:** Survives TrueNAS reboots, Qdrant restarts, ZFS snapshots,
+and a week without attention. Graceful startup ordering, logstore auto-vacuum,
+and health reporting that distinguishes "everything fine" from "working but
+degraded."
+
+**For the agents:** API-complete. Everything an agent currently does through the
+old vault model works through Ragamuffin alone — sessions with history, vault
+isolation, fact read/write with confidence preservation, recall, ask, and
+pruner audit. No filesystem fallback needed.
+
+**For external consumers:** SPEC-MCP.md marked `status: stable`. The MCP tool
+surface is stable — no breaking changes without a deprecation period and
+migration path. The REST foundation is the contract; MCP is a transport
+adaptation.
+
+Checklist:
+
+- [ ] v0.6: Sessions, vault-isolated facts, configurable embedding dims
+- [ ] v0.7: Fact-to-chunk bridge, adaptive pruner, webhooks, versioned supersede
+- [ ] v0.8: MCP adapter refactor, utility extraction, review dashboard
+- [ ] v0.9: OIDC auth, graceful TrueNAS lifecycle, ZFS watcher, logstore hygiene,
+      restore-from-snapshot recovery
+- [ ] SPEC-MCP.md stable (no breaking changes on main for 30 days)
+- [ ] Operator verification: Ragamuffin runs 7 days unattended on TrueNAS, survives
+      2 unplanned restarts, no manual intervention required
+
+All six must be green before the v1.0 tag is created. Nothing ships until CI
+is green on `main`, and CI must pass on a TrueNAS-equivalent environment
+(container restart test, Qdrant kill test, logstore rotation test).
 
 Items that are real but don't make the current priority cut.
 
@@ -245,4 +390,4 @@ Items that are real but don't make the current priority cut.
 
 ---
 
-*Last updated: 2026-05-23*
+*Last updated: 2026-05-24*
