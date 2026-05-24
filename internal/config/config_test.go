@@ -559,7 +559,7 @@ func TestVaultConfig_HasLLM(t *testing.T) {
 		t.Error("HasLLM() = true with empty VaultConfig")
 	}
 
-	vc.LLMEndpoint = "http://localhost:8080"
+	vc.LLMEndpoint = "http://localhost:8000"
 	if vc.HasLLM() {
 		t.Error("HasLLM() = true with endpoint but no key")
 	}
@@ -576,7 +576,7 @@ func TestVaultConfig_HasEmbedding(t *testing.T) {
 		t.Error("HasEmbedding() = true with empty VaultConfig")
 	}
 
-	vc.EmbeddingEndpoint = "http://localhost:8080"
+	vc.EmbeddingEndpoint = "http://localhost:8000"
 	if vc.HasEmbedding() {
 		t.Error("HasEmbedding() = true with endpoint but no key")
 	}
@@ -717,7 +717,7 @@ func TestVaultConfig_HasLLM_InvalidTimeout(t *testing.T) {
 	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("docs:%s", dir1))
 	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
 	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_TIMEOUT", "not-a-duration")
-	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT", "http://localhost:8080")
+	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_ENDPOINT", "http://localhost:8000")
 	os.Setenv("RAGAMUFFIN_VAULT_DOCS_LLM_API_KEY", "sk-test")
 	defer func() {
 		for _, k := range []string{

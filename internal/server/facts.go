@@ -47,7 +47,7 @@ type factResponse struct {
 	Tags             []string `json:"tags,omitempty"`
 	Source           string   `json:"source,omitempty"`
 	SourceType       string   `json:"source_type,omitempty"`
-	Confidence       float64  `json:"confidence"`
+	Confidence       *float64 `json:"confidence,omitempty"`
 	Status           string   `json:"status"`
 	Supersedes       string   `json:"supersedes"`
 	Contradicts      []string `json:"contradicts,omitempty"`
@@ -860,7 +860,9 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.Tags = getPayloadStringList(payload, "fact_tags")
 	fr.Source, _ = getPayloadString(payload, "source")
 	fr.SourceType, _ = getPayloadString(payload, "source_type")
-	fr.Confidence, _ = getPayloadFloat(payload, "confidence")
+	if c, ok := getPayloadFloat(payload, "confidence"); ok {
+		fr.Confidence = &c
+	}
 	fr.Status, _ = getPayloadString(payload, "status")
 	fr.Supersedes, _ = getPayloadString(payload, "supersedes")
 	fr.Contradicts = getPayloadStringList(payload, "contradicts")
@@ -873,9 +875,6 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 
 	if fr.Status == "" {
 		fr.Status = "active"
-	}
-	if fr.Confidence == 0 {
-		fr.Confidence = 1.0
 	}
 
 	return fr

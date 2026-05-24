@@ -281,7 +281,7 @@ decisions, conclusions, and facts worth sharing across harness boundaries.
     },
     required: ["vault", "query"],
   },
-  handler: "http://ragamuffin:8080/v1/recall",
+  handler: "http://ragamuffin:8000/v1/recall",
 }
 ```
 
@@ -292,7 +292,7 @@ tools:
   - name: ragamuffin_recall
     description: "Search an agent's knowledge vault"
     handler:
-      url: "http://ragamuffin:8080/v1/recall"
+      url: "http://ragamuffin:8000/v1/recall"
       method: POST
       headers:
         Content-Type: application/json
@@ -331,7 +331,7 @@ all requests. The adapter should support configuration for:
 
 ```yaml
 ragamuffin:
-  endpoint: "http://ragamuffin:8080"
+  endpoint: "http://ragamuffin:8000"
   vault_prefix: "agent::"
   auth_token: "sk-..."    # optional, for auth-enabled deployments
 ```

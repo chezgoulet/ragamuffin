@@ -48,7 +48,7 @@ func TestNew_ServerStarted(t *testing.T) {
 		Commit:    "abc123",
 		GoVersion: "1.25",
 		Host:      "localhost",
-		Port:      "8080",
+		Port:      "8000",
 	}
 	evt := New(TypeServerStarted, "ragamuffin", data)
 
@@ -304,7 +304,7 @@ func TestFileDeletedData_JSON(t *testing.T) {
 }
 
 func TestServerStartedData_JSON(t *testing.T) {
-	d := ServerStartedData{Version: "0.4.0", Commit: "abc123", GoVersion: "1.25", Host: "localhost", Port: "8080"}
+	d := ServerStartedData{Version: "0.4.0", Commit: "abc123", GoVersion: "1.25", Host: "localhost", Port: "8000"}
 	data, err := json.Marshal(d)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
