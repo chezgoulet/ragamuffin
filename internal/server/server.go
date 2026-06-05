@@ -177,8 +177,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
 	mux.HandleFunc("/v1/review", s.withRequestID(s.withRateLimit("/v1/review", s.handleReview)))
 
-	// Ingest — agent session persistence
+	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
+	mux.HandleFunc("/v1/ingest/conversation", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngestConversation)))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))

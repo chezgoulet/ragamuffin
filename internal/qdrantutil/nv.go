@@ -16,3 +16,16 @@ func Nv(v any) *qdrant.Value {
 	}
 	return r
 }
+
+// NvList creates a Qdrant list value from a string slice.
+func NvList(items []string) *qdrant.Value {
+	values := make([]*qdrant.Value, len(items))
+	for i, s := range items {
+		values[i] = Nv(s)
+	}
+	return &qdrant.Value{
+		Kind: &qdrant.Value_ListValue{
+			ListValue: &qdrant.ListValue{Values: values},
+		},
+	}
+}
