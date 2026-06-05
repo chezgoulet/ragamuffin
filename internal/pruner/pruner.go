@@ -387,52 +387,22 @@ func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, updates 
 
 // getPayloadString extracts a string from a Qdrant payload.
 func getPayloadString(payload map[string]*pb.Value, key string) (string, bool) {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return "", false
-	}
-	return v.GetStringValue(), true
+	return qutil.GetPayloadString(payload, key)
 }
 
 // getPayloadFloat extracts a float64 from a Qdrant payload.
 func getPayloadFloat(payload map[string]*pb.Value, key string) (float64, bool) {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return 0, false
-	}
-	return v.GetDoubleValue(), true
+	return qutil.GetPayloadFloat(payload, key)
 }
 
 // getPayloadStringList extracts a []string from a Qdrant payload list value.
 func getPayloadStringList(payload map[string]*pb.Value, key string) []string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return nil
-	}
-	if s := v.GetStringValue(); s != "" {
-		return []string{s}
-	}
-	values := v.GetListValue()
-	if values == nil {
-		return nil
-	}
-	items := values.GetValues()
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if s := item.GetStringValue(); s != "" {
-			result = append(result, s)
-		}
-	}
-	return result
+	return qutil.GetPayloadStringList(payload, key)
 }
 
 // getPayloadInt extracts an int from a Qdrant payload (stored as double).
 func getPayloadInt(payload map[string]*pb.Value, key string) (int, bool) {
-	f, ok := getPayloadFloat(payload, key)
-	if !ok {
-		return 0, false
-	}
-	return int(f), true
+	return qutil.GetPayloadInt(payload, key)
 }
 
 // cosineSimilarity computes cosine similarity between two vectors.
