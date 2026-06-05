@@ -241,7 +241,7 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request, sessio
 		TurnCount: sess.TurnCount,
 		CreatedAt: sess.CreatedAt,
 		UpdatedAt: sess.UpdatedAt,
-		Turns:     turnResp,
+		Turns:     turnsResp,
 	})
 }
 
