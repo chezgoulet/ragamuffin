@@ -265,10 +265,10 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 				topScore = r.Score
 			}
 			if src, ok := r.Payload["source_file"]; ok {
-				s := src.GetStringValue()
-				if !seenSources[s] {
-					sources = append(sources, s)
-					seenSources[s] = true
+				sv := src.GetStringValue()
+				if !seenSources[sv] {
+					sources = append(sources, sv)
+					seenSources[sv] = true
 				}
 			}
 			if text, ok := r.Payload["text"]; ok {
@@ -301,10 +301,10 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		var fileOrder []string
 		for _, r := range results {
 			if src, ok := r.Payload["source_file"]; ok {
-				s := src.GetStringValue()
-				if !topFiles[s] {
-					topFiles[s] = true
-					fileOrder = append(fileOrder, s)
+				sv := src.GetStringValue()
+				if !topFiles[sv] {
+					topFiles[sv] = true
+					fileOrder = append(fileOrder, sv)
 				}
 			}
 		}
@@ -322,10 +322,10 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			}
 			for _, r := range fileResults {
 				if src, ok := r.Payload["source_file"]; ok {
-					s := src.GetStringValue()
-					if !sourceSet[s] {
-						sources = append(sources, s)
-						sourceSet[s] = true
+					sv := src.GetStringValue()
+					if !sourceSet[sv] {
+						sources = append(sources, sv)
+						sourceSet[sv] = true
 					}
 				}
 				if text, ok := r.Payload["text"]; ok {
