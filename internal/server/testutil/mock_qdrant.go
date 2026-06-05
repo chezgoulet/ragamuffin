@@ -78,10 +78,10 @@ func (m *MockQdrant) SetPayload(ctx context.Context, collection string, points [
 	return nil
 }
 
-func (m *MockQdrant) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*qdrant.ScoredPoint, error) {
+func (m *MockQdrant) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error) {
 	m.SearchCallCount.Add(1)
 	if m.SearchFn != nil {
-		return m.SearchFn(ctx, vector, limit, scoreThreshold, sourceFilter)
+		return m.SearchFn(ctx, vector, limit, scoreThreshold, sourceFilter, filter)
 	}
 	return []*qdrant.ScoredPoint{}, nil
 }

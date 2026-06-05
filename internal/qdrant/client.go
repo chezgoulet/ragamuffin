@@ -154,7 +154,7 @@ func (c *Client) Upsert(ctx context.Context, points []*pb.PointStruct) error {
 
 // Search performs a vector similarity search.
 // source_filter uses Match_Keyword for exact prefix matching.
-func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*pb.ScoredPoint, error) {
+func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *pb.Filter) ([]*pb.ScoredPoint, error) {
 	req := &pb.SearchPoints{
 		CollectionName: c.collection,
 		Vector:         vector,
@@ -163,7 +163,10 @@ func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, sco
 		WithPayload:    pb.NewWithPayload(true),
 	}
 
-	if sourceFilter != "" {
+	switch {
+	case filter != nil:
+		req.Filter = filter
+	case sourceFilter != "":
 		req.Filter = &pb.Filter{
 			Must: []*pb.Condition{
 				{

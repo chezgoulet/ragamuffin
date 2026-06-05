@@ -263,7 +263,7 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 		return nil, fmt.Errorf("embedding failed: %w", err)
 	}
 
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), scoreThreshold, sourceFilter)
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), scoreThreshold, sourceFilter, nil)
 	if err != nil {
 		return nil, fmt.Errorf("search failed: %w", err)
 	}
