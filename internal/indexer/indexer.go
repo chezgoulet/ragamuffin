@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +14,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/chunker"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -384,19 +384,7 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 }
 
 func isIndexable(path string) bool {
-	// Skip dot-directories (.git, .github, .ragamuffin) — never useful retrieval targets
-	if strings.Contains(path, "/.") || strings.HasPrefix(path, ".") {
-		return false
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".md", ".txt", ".org", ".rst":
-		return true
-	case "":
-		return true
-	default:
-		return false
-	}
+	return indexutil.IsIndexable(path)
 }
 
 // pointID generates a deterministic UUID from a file path and chunk index.
