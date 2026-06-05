@@ -193,16 +193,19 @@ func main() {
 	// ── Initialize log store ──────────────────────────────────────────────────
 	// Single-tenant: store logs under the vault's .ragamuffin directory.
 	// Multi-tenant: use a shared parent directory so no single vault owns the log DB.
-	logPath := cfg.VaultPath + "/.ragamuffin/logs.db"
-	if cfg.IsMultiTenant() {
-		for _, vc := range cfg.Vaults {
-			logPath = filepath.Dir(vc.Path) + "/.ragamuffin/logs.db"
-			break
+	logPath := cfg.LogStorePath
+	if logPath == "" {
+		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
+		if cfg.IsMultiTenant() {
+			for _, vc := range cfg.Vaults {
+				logPath = filepath.Dir(vc.Path) + "/.ragamuffin/logs.db"
+				break
+			}
 		}
-		// Create shared .ragamuffin directory
-		if dir := filepath.Dir(logPath); dir != "." {
-			os.MkdirAll(dir, 0755)
-		}
+	}
+	// Create parent directory if needed
+	if dir := filepath.Dir(logPath); dir != "." {
+		os.MkdirAll(dir, 0755)
 	}
 	logStore, err := logstore.Open(logPath)
 	if err != nil {

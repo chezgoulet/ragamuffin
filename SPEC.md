@@ -561,6 +561,11 @@ RAGAMUFFIN_HOST=0.0.0.0
 RAGAMUFFIN_LOG_LEVEL=info
 # RAGAMUFFIN_EVENT_WEBHOOK_URL=https://hooks.example.com/ragamuffin
 # RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD=0.1
+
+# ── Optional — Log Store (session/event persistence) ─────────────────────────
+# RAGAMUFFIN_LOGSTORE_PATH=/opt/data/ragamuffin/logs.db
+# RAGAMUFFIN_LOGSTORE_MAX_ROWS=100000
+
 # RAGAMUFFIN_AUDIT_SAMPLE_SIZE=50
 # RAGAMUFFIN_AUTO_THRESHOLD=0.75
 # RAGAMUFFIN_AUDIT_ENTITY_EXTRACTION=false
@@ -628,6 +633,8 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | no | `50` | Fact pairs to compare per conflict scan |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | no | `0.5` | Below this → flag `needs_review` |
 | `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | no | `0.1` | Snapshot restore drift tolerance (0.0–1.0) |
+| `RAGAMUFFIN_LOGSTORE_PATH` | no | heuristic | Explicit path for `logs.db` (default: vault-root `/.ragamuffin/logs.db`) |
+| `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | no | `100000` | Max rows before pruning session log |
 | `RAGAMUFFIN_EVENT_WEBHOOK_URL` | no | — | CloudEvents v1.0 webhook for fact lifecycle |
 | `RAGAMUFFIN_AUDIT_SAMPLE_SIZE` | no | `50` | Chunk pairs to LLM-compare in semantic conflict audit |
 | `RAGAMUFFIN_AUDIT_ENTITY_EXTRACTION` | no | `false` | Enable LLM entity extraction in audit |

@@ -103,7 +103,8 @@ type Config struct {
 	PrunerLowConfidenceThreshold float64
 
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
-	LogstoreMaxRows int // 0 = unlimited
+	LogStorePath        string          // explicit path for log.db; empty = heuristic
+	LogstoreMaxRows     int             // 0 = unlimited
 
 	// Optional — LLM
 	LLMProvider string
@@ -364,7 +365,8 @@ func Load() (*Config, error) {
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
-		LogstoreMaxRows:              envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
+		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
 
 		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
