@@ -53,7 +53,11 @@ func buildVault(
 ) (*vaultSetup, error) {
 	// ── Connect to Qdrant ──────────────────────────────────────────────
 	ctxQ, cancelQ := context.WithTimeout(ctx, 10*time.Second)
-	qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, 1536)
+	chunkVectorSize := uint64(cfg.EmbeddingDims)
+	if cfg.ChunkVectorSize > 0 {
+		chunkVectorSize = cfg.ChunkVectorSize
+	}
+	qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, chunkVectorSize)
 	cancelQ()
 	if err != nil {
 		return nil, fmt.Errorf("qdrant connect for vault %q: %w", name, err)

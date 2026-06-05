@@ -134,7 +134,7 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 	collectionName := fmt.Sprintf("ragamuffin_%s", name)
 	qdrantCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	qc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, 1536)
+	qc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, uint64(s.cfg.EmbeddingDims))
 	if err != nil {
 		s.log(ctx).Error("failed to connect to Qdrant for provisioned vault",
 			"vault", name, "collection", collectionName, "error", err)
