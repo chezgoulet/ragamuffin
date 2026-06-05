@@ -324,6 +324,13 @@ func main() {
 			body += " error=" + errStr
 		}
 		logStore.Append(context.Background(), "pruner", "scan", body, []string{"pruner", scanName, "scan"}, time.Now())
+
+		// Emit fact lifecycle event
+		emitter.Emit(events.TypePrunerComplete, events.PrunerCompleteData{
+			ScanName: scanName,
+			Duration: dur.String(),
+			Flagged:  flagged,
+		})
 	}
 	p := pruner.New(factsQc, nil, ec, lm, logger.With("component", "pruner"), prunerCfg)
 	ctxPruner, cancelPruner := context.WithCancel(context.Background())
@@ -349,7 +356,7 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, eventBroker, logger)
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger)
 
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)

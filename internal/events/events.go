@@ -28,6 +28,10 @@ const (
 	TypeCollectionIndex  = "vault.collection.reindexed"
 	TypeServerStarted    = "ragamuffin.started"
 	TypeServerHealthy    = "ragamuffin.healthy"
+	TypeFactCreated      = "fact.created"
+	TypeFactFlagged      = "fact.flagged"
+	TypeFactReviewed     = "fact.reviewed"
+	TypePrunerComplete   = "pruner.scan.complete"
 )
 
 // FileChangedData is the payload for vault.file.changed.
@@ -49,6 +53,35 @@ type CollectionIndexData struct {
 	FileCount  int    `json:"file_count"`
 	ChunkCount int    `json:"chunk_count"`
 	Duration   string `json:"duration"`
+}
+
+// FactCreatedData is the payload for fact.created.
+type FactCreatedData struct {
+	Key        string  `json:"key"`
+	Value      string  `json:"value"`
+	Source     string  `json:"source,omitempty"`
+	Vault      string  `json:"vault,omitempty"`
+	Confidence float64 `json:"confidence"`
+}
+
+// FactFlaggedData is the payload for fact.flagged.
+type FactFlaggedData struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+	Detail string `json:"detail"`
+}
+
+// FactReviewedData is the payload for fact.reviewed.
+type FactReviewedData struct {
+	Key    string `json:"key"`
+	Action string `json:"action"` // approve, reject, reclassify
+}
+
+// PrunerCompleteData is the payload for pruner.scan.complete.
+type PrunerCompleteData struct {
+	ScanName string `json:"scan_name"`
+	Duration string `json:"duration"`
+	Flagged  int    `json:"flagged"`
 }
 
 // ServerStartedData is the payload for ragamuffin.started.
