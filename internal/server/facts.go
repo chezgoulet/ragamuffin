@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -299,6 +300,16 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	if s.embedder != nil && fp.Value != "" {
 		go s.linkFactToChunks(fp.Key, fp.Value, vaultName)
 	}
+
+	// Emit fact lifecycle event
+	if s.emitter != nil {
+		s.emitter.Emit(events.TypeFactCreated, events.FactCreatedData{
+			Key:        fp.Key,
+			Value:      fp.Value,
+			Source:     fp.Source,
+			Vault:      vaultFromContext(r.Context()),
+			Confidence: confidence,
+		})
 	}
 
 	resp := pointToFactResponse(point.Payload, fp.Key)

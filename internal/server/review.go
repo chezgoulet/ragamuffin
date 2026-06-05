@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -355,6 +356,19 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 500, "UPSERT_FAILED", "created new fact but failed to update old fact")
 				return
 			}
+			// Emit fact lifecycle events for supersede with new value
+			if s.emitter != nil {
+				s.emitter.Emit(events.TypeFactCreated, events.FactCreatedData{
+					Key:        req.NewKey,
+					Value:      req.NewValue,
+					Vault:      vaultFromContext(r.Context()),
+					Confidence: defaultConfidence(nil),
+				})
+				s.emitter.Emit(events.TypeFactReviewed, events.FactReviewedData{
+					Key:    key,
+					Action: "supersede",
+				})
+			}
 			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
 			return
 		}
@@ -423,6 +437,14 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		s.log(r.Context()).Error("review upsert failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to update fact")
 		return
+	}
+
+	// Emit fact lifecycle event
+	if s.emitter != nil {
+		s.emitter.Emit(events.TypeFactReviewed, events.FactReviewedData{
+			Key:    key,
+			Action: req.Action,
+		})
 	}
 
 	resp := pointToFactResponse(payload, key)

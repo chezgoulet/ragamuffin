@@ -56,6 +56,7 @@ type Server struct {
 	watcher     watcher.Watcher
 	logStore    *logstore.Store
 	pruner      *pruner.Pruner
+	emitter     *events.Emitter // webhook + SSE event publisher
 	mcpHandler  *mcp.Handler
 	broker      *events.Broker  // SSE subscriber registry
 	logger      *slog.Logger
@@ -68,7 +69,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, br *events.Broker, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger) *Server {
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -81,6 +82,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		watcher:       w,
 		logStore:      logStore,
 		pruner:        pr,
+		emitter:       emitter,
 		broker:        br,
 		logger:        logger,
 		started:       time.Now(),
