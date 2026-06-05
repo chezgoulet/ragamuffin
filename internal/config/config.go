@@ -31,6 +31,7 @@ type VaultConfig struct {
 	// Per-vault embedding overrides. Empty = use server default.
 	EmbeddingEndpoint string
 	EmbeddingApiKey   string
+	EmbeddingTimeout  time.Duration
 }
 
 // HasLLM returns true if per-vault LLM config is provided.
@@ -468,6 +469,10 @@ func Load() (*Config, error) {
 					vc.EmbeddingEndpoint = val
 				case "EMBEDDING_API_KEY":
 					vc.EmbeddingApiKey = val
+				case "EMBEDDING_TIMEOUT":
+					if d, err := time.ParseDuration(val); err == nil {
+						vc.EmbeddingTimeout = d
+					}
 				case "AUDIT_ENTITY_EXTRACTION":
 					vc.AuditEntityExtraction = val == "true" || val == "1"
 				case "AUDIT_ENTITY_LLM":

@@ -18,8 +18,12 @@ type Client struct {
 	client   *http.Client
 }
 
-// New creates an embedding client.
+// New creates an embedding client with the given HTTP timeout.
+// A zero timeout means no timeout (use with caution).
 func New(baseURL, apiKey, model string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  apiKey,

@@ -46,7 +46,7 @@ func TestEmbed_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "test-key", "text-embedding-3-small")
+	c := New(srv.URL, "test-key", "text-embedding-3-small", 0)
 	results, err := c.Embed(context.Background(), []string{"hello", "world"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -69,7 +69,7 @@ func TestEmbed_EmptyInput(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	results, err := c.Embed(context.Background(), []string{})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -96,7 +96,7 @@ func TestEmbed_NoAPIKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "", "model") // no API key
+	c := New(srv.URL, "", "model", 0) // no API key
 	results, err := c.Embed(context.Background(), []string{"test"})
 	if err != nil {
 		t.Fatalf("Embed: %v", err)
@@ -113,7 +113,7 @@ func TestEmbed_APIError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "bad-key", "model")
+	c := New(srv.URL, "bad-key", "model", 0)
 	_, err := c.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for 401")
@@ -125,7 +125,7 @@ func TestEmbed_ServerDown(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	_, err := c.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for closed server")
@@ -139,7 +139,7 @@ func TestEmbed_Non200(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	_, err := c.Embed(context.Background(), []string{"test"})
 	if err == nil {
 		t.Fatal("expected error for 429")
@@ -165,7 +165,7 @@ func TestEmbedSingle_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	vec, err := c.EmbedSingle(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("EmbedSingle: %v", err)
@@ -181,7 +181,7 @@ func TestEmbedSingle_Error(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	_, err := c.EmbedSingle(context.Background(), "test")
 	if err == nil {
 		t.Fatal("expected error for 500")
@@ -204,7 +204,7 @@ func TestHealth_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	if err := c.Health(context.Background()); err != nil {
 		t.Errorf("Health: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestHealth_Failure(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL, "key", "model")
+	c := New(srv.URL, "key", "model", 0)
 	if err := c.Health(context.Background()); err == nil {
 		t.Error("expected error for 503")
 	}

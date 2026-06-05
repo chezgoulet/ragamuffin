@@ -15,7 +15,7 @@ func testLLM() *llm.Client {
 
 // testEmbedder creates a non-nil embedding client for testing.
 func testEmbedder() *embedding.Client {
-	return embedding.New("http://localhost", "sk-test", "text-embedding-3-small", 30*time.Second)
+	return embedding.New("http://localhost", "sk-test", "text-embedding-3-small", 0)
 }
 
 // ── SetLLM / GetLLM ──────────────────────────────────────────────────────────

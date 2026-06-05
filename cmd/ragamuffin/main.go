@@ -270,7 +270,7 @@ func main() {
 
 			// Per-vault embedding client (optional override)
 			if vc.HasEmbedding() {
-				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel, cfg.EmbeddingTimeout)
+				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel, vc.EmbeddingTimeout)
 				idxManager.SetEmbedder(name, vec)
 				logger.Info("per-vault embedding client configured", "vault", name, "model", vc.EmbeddingModel)
 			}
