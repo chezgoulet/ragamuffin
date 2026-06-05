@@ -33,6 +33,8 @@ func (s *factGraphTestStore) Upsert(_ context.Context, _ []*pb.PointStruct) erro
 	return nil
 }
 
+func (s *factGraphTestStore) Close() error { return nil }
+
 func (s *factGraphTestStore) Collection() string { return "test_facts" }
 
 func factGraphMatchesFilter(pt *pb.RetrievedPoint, filter *pb.Filter) bool {
