@@ -223,9 +223,9 @@ func (s *Server) handleSessionGet(w http.ResponseWriter, r *http.Request, sessio
 		return
 	}
 
-	turnResp := make([]turnResp, len(turns))
+	turnsResp := make([]turnResp, len(turns))
 	for i, t := range turns {
-		turnResp[i] = turnResp{
+		turnsResp[i] = turnResp{
 			ID:        t.ID,
 			Content:   t.Content,
 			Role:      t.Role,
