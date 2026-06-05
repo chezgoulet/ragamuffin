@@ -67,6 +67,11 @@ func (idx *Indexer) OnFileEvent(cb FileEventCallback) {
 	idx.onFileEvent = cb
 }
 
+// VaultPath returns the filesystem path this indexer watches.
+func (idx *Indexer) VaultPath() string {
+	return idx.vaultPath
+}
+
 // SetChunkMaxTokens configures the maximum tokens per chunk (0 = unlimited).
 func (idx *Indexer) SetChunkMaxTokens(n int) {
 	idx.chunkMaxTokens = n

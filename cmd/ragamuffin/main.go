@@ -350,6 +350,20 @@ func main() {
 
 	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, eventBroker, logger)
 
+	// ── Snapshot restore detection ───────────────────────────────────────
+	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
+	restoreDetected, affected, err := srv.RestoreConsistencyCheck(ctxCheck, cfg.RestoreMismatchThreshold)
+	cancelCheck()
+	if err != nil {
+		logger.Warn("restore consistency check failed", "error", err)
+	} else if restoreDetected {
+		logger.Warn("possible snapshot restore detected", "affected_vaults", affected)
+		for _, v := range affected {
+			logger.Info("re-indexing vault due to snapshot restore", "vault", v)
+			idxManager.Reindex(v)
+		}
+	}
+
 	authenticator := srv.BuildAuth()
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
