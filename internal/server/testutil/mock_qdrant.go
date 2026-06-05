@@ -23,7 +23,7 @@ type MockQdrant struct {
 	ScrollFilteredFn  func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
 	UpsertFn          func(ctx context.Context, points []*qdrant.PointStruct) error
 	SetPayloadFn      func(ctx context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error
-	SearchFn          func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*qdrant.ScoredPoint, error)
+	SearchFn          func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error)
 	DeleteBySourceFn  func(ctx context.Context, sourceFile string) error
 	CountFn           func(ctx context.Context) (uint64, error)
 	CountFilesFn      func(ctx context.Context) (int, error)
