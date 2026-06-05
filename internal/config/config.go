@@ -125,14 +125,15 @@ type Config struct {
 	AutoThreshold   float64
 
 	// Optional — Auth
-	AuthMode        string
-	AuthReadKey     string
-	AuthWriteKey    string
-	AuthJWTIssuer   string
-	AuthJWTAudience string
-	AuthJWKSURL     string
-	AuthOIDCIssuer   string
-	AuthOIDCClientID string
+	AuthMode           string
+	AuthReadKey        string
+	AuthWriteKey       string
+	AuthJWTIssuer      string
+	AuthJWTAudience    string
+	AuthJWKSURL        string
+	AuthOIDCIssuer     string
+	AuthOIDCClientID   string
+	AutoProvisionVaults bool
 
 	// Optional — Logging
 	LogLevel string
@@ -378,7 +379,8 @@ func Load() (*Config, error) {
 		AuthJWTAudience:  os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
 		AuthJWKSURL:      os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
 		AuthOIDCIssuer:   os.Getenv("RAGAMUFFIN_AUTH_OIDC_ISSUER"),
-		AuthOIDCClientID: os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
+		AutoProvisionVaults: envBool("RAGAMUFFIN_AUTO_PROVISION_VAULTS"),
+	AuthOIDCClientID:    os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),

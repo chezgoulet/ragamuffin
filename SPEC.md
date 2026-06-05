@@ -530,6 +530,7 @@ RAGAMUFFIN_AUTH_MODE=none                     # none | api_key | jwt | oidc
 # RAGAMUFFIN_AUTH_JWT_JWKS_URL=https://auth.example.com/.well-known/jwks.json
 # RAGAMUFFIN_AUTH_OIDC_ISSUER=https://accounts.example.com
 # RAGAMUFFIN_AUTH_OIDC_CLIENT_ID=ragamuffin
+# RAGAMUFFIN_AUTO_PROVISION_VAULTS=true
 
 # ── Optional — Rate Limiting ───────────────────────────────────────────────────
 # RAGAMUFFIN_RATE_LIMIT_ENABLED=true
@@ -606,6 +607,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_AUTH_JWT_JWKS_URL` | no | — | JWKS endpoint URL (`jwt` mode) |
 | `RAGAMUFFIN_AUTH_OIDC_ISSUER` | no | — | OIDC issuer URL (`oidc` mode — auto-discovers JWKS) |
 | `RAGAMUFFIN_AUTH_OIDC_CLIENT_ID` | no | — | OIDC client ID (`oidc` mode) |
+| `RAGAMUFFIN_AUTO_PROVISION_VAULTS` | no | `false` | Enable auto-provisioning for `/v1/ingest` (requires write access) |
 | `RAGAMUFFIN_RATE_LIMIT_ENABLED` | no | `false` | Enable per-endpoint rate limiting |
 | `RAGAMUFFIN_RATE_LIMIT_RECALL` | no | `60` | Requests per minute for `/recall` |
 | `RAGAMUFFIN_RATE_LIMIT_ASK` | no | `10` | Requests per minute for `/ask` |
