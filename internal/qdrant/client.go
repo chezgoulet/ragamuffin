@@ -153,10 +153,7 @@ func (c *Client) Upsert(ctx context.Context, points []*pb.PointStruct) error {
 }
 
 // Search performs a vector similarity search.
-// source_filter uses Match_Text, which does substring matching, not strict prefix matching.
-// A filter of "team/" will match "other-team/file.md". For exact directory prefix filtering,
-// ensure your directory names are distinct enough that substring collisions don't occur.
-// A proper prefix filter would require Qdrant payload index changes (Phase 2).
+// source_filter uses Match_Keyword for exact prefix matching.
 func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*pb.ScoredPoint, error) {
 	req := &pb.SearchPoints{
 		CollectionName: c.collection,
@@ -174,8 +171,8 @@ func (c *Client) Search(ctx context.Context, vector []float32, limit uint64, sco
 						Field: &pb.FieldCondition{
 							Key: "source_file",
 							Match: &pb.Match{
-								MatchValue: &pb.Match_Text{
-									Text: sourceFilter,
+								MatchValue: &pb.Match_Keyword{
+									Keyword: sourceFilter,
 								},
 							},
 						},
