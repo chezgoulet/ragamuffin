@@ -285,3 +285,75 @@ func (c *Client) Close() error {
 func (c *Client) Collection() string {
 	return c.collection
 }
+
+// GetVectorSize probes the vector dimension of a named collection by calling
+// DescribeCollection via the gRPC CollectionsClient. Returns 0 if the
+// collection does not exist or the size cannot be determined.
+func (c *Client) GetVectorSize(ctx context.Context, collectionName string) (uint64, error) {
+	resp, err := c.collections.Get(ctx, &pb.GetCollectionInfoRequest{
+		CollectionName: collectionName,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("get collection info: %w", err)
+	}
+
+	// Navigate to the vector config params size
+	if resp == nil || resp.Result == nil {
+		return 0, fmt.Errorf("empty collection info response")
+	}
+
+	// Try the primary vectors config
+	if cfg := resp.Result.GetConfig(); cfg != nil {
+		if params := cfg.GetParams(); params != nil {
+			if vectors := params.GetVectorsConfig(); vectors != nil {
+				if params := vectors.GetParams(); params != nil {
+					return params.Size, nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("could not determine vector size from collection info")
+}
+
+// ProbeQdrantCollection is a standalone helper that connects to Qdrant,
+// describes a collection by name, and returns its vector dimension. This
+// is useful at startup to auto-detect embedding dimensions instead of
+// relying on hardcoded values or env overrides.
+func ProbeQdrantCollection(qdrantURL, collectionName string) (uint64, error) {
+	target := grpcTarget(qdrantURL)
+
+	conn, err := grpc.NewClient(target,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+	)
+	if err != nil {
+		return 0, fmt.Errorf("probe: connect: %w", err)
+	}
+	defer conn.Close()
+
+	collections := pb.NewCollectionsClient(conn)
+	ctx := context.Background()
+
+	resp, err := collections.Get(ctx, &pb.GetCollectionInfoRequest{
+		CollectionName: collectionName,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("probe: get collection info: %w", err)
+	}
+
+	if resp == nil || resp.Result == nil {
+		return 0, fmt.Errorf("probe: empty response")
+	}
+
+	if cfg := resp.Result.GetConfig(); cfg != nil {
+		if params := cfg.GetParams(); params != nil {
+			if vectors := params.GetVectorsConfig(); vectors != nil {
+				if params := vectors.GetParams(); params != nil {
+					return params.Size, nil
+				}
+			}
+		}
+	}
+
+	return 0, fmt.Errorf("probe: could not determine vector size")
+}
