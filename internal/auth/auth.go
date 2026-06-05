@@ -85,7 +85,6 @@ var PublicPaths = map[string]bool{
 	"/health":  true,
 	"/version": true,
 	"/events":  true, // SSE — clients connect before they have tokens
-	"/mcp":     true, // MCP uses its own protocol-level auth, not HTTP headers
 }
 
 // Middleware wraps an HTTP handler with authentication.
