@@ -453,8 +453,6 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 // handleReviewSupersedeCreate creates a new fact when supersede action includes new_value.
 func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string, oldPayload map[string]*qdrant.Value, now string) (*qdrant.PointStruct, error) {
-	s.log(r.Context()).Error("SUPERSEDE_DEBUG", "creating new fact", "newKey", newKey, "newValue", newValue)
-
 	if newKey == "" || newValue == "" {
 		return nil, fmt.Errorf("new_key and new_value are required for supersede with new_value")
 	}

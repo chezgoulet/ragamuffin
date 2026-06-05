@@ -50,7 +50,9 @@ func staleFilter(nowUnix float64) *pb.Filter {
 }
 
 // staleScan queries active facts whose expires_at_unix is in the past
-// and marks them as needs_review.
+// and marks them as needs_review. Facts referenced by graph edges
+// (supersedes, refines, contradicts, supports) are skipped — their
+// relevance is tied to the referencing fact's lifecycle.
 func (p *Pruner) staleScan(ctx context.Context) {
 	if p.facts == nil {
 		p.logger.Warn("staleScan: no facts client available")
@@ -71,12 +73,27 @@ func (p *Pruner) staleScan(ctx context.Context) {
 		return
 	}
 
+	// Collect keys referenced by active graph edges so we don't prune them.
+	referencedKeys, err := p.collectReferencedKeys(ctx)
+	if err != nil {
+		p.logger.Warn("staleScan: failed to collect referenced keys, proceeding without edge check", "error", err)
+		referencedKeys = nil
+	}
+
 	marked := 0
+	skippedEdges := 0
 	for _, pt := range points {
 		pointID := pt.GetId().GetUuid()
 		if pointID == "" {
 			continue
 		}
+
+		key, _ := getPayloadString(pt.GetPayload(), "fact_key")
+		if key != "" && referencedKeys[key] {
+			skippedEdges++
+			continue
+		}
+
 		if err := p.updateFactStatus(ctx, pointID, "needs_review"); err != nil {
 			p.logger.Error("staleScan: failed to mark fact", "point_id", pointID, "error", err)
 			continue
@@ -84,8 +101,65 @@ func (p *Pruner) staleScan(ctx context.Context) {
 		marked++
 	}
 
-	p.logger.Info("staleScan complete", "found", len(points), "marked", marked)
+	p.logger.Info("staleScan complete", "found", len(points), "skipped_due_to_edges", skippedEdges, "marked", marked)
 	if marked > 0 {
 		p.RecordFlagged(marked)
 	}
+}
+
+// collectReferencedKeys scrolls all active facts and returns the set of
+// fact keys referenced by edge fields (supersedes, refines, contradicts,
+// supports). Used by staleScan to avoid pruning facts that are part of
+// the active graph.
+func (p *Pruner) collectReferencedKeys(ctx context.Context) (map[string]bool, error) {
+	// Scroll all active facts — we'll check edge fields in Go code
+	// rather than building complex nested Qdrant filters for list non-emptiness.
+	activeFilter := &pb.Filter{
+		Must: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key: "status",
+						Match: &pb.Match{
+							MatchValue: &pb.Match_Keyword{
+								Keyword: "active",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	points, err := p.scrollFilteredFacts(ctx, activeFilter, 0)
+	if err != nil {
+		return nil, err
+	}
+
+	keys := make(map[string]bool, len(points)/2)
+	for _, pt := range points {
+		payload := pt.GetPayload()
+		if payload == nil {
+			continue
+		}
+
+		if s, _ := getPayloadString(payload, "supersedes"); s != "" {
+			keys[s] = true
+		}
+		if s, _ := getPayloadString(payload, "refines"); s != "" {
+			keys[s] = true
+		}
+		for _, t := range getPayloadStringList(payload, "contradicts") {
+			if t != "" {
+				keys[t] = true
+			}
+		}
+		for _, t := range getPayloadStringList(payload, "supports") {
+			if t != "" {
+				keys[t] = true
+			}
+		}
+	}
+
+	return keys, nil
 }
