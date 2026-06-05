@@ -8,7 +8,7 @@
 **Ragamuffin** serves two roles in one binary:
 
 1. **Vault Knowledge Server** — point it at a directory, it watches for changes, indexes everything into [Qdrant](https://qdrant.tech), and serves a REST API that any agent can curl. No bridge. No translation layer.
-2. **Agent Memory Backend (v0.5)** — plug it into OpenClaw or Hermes via a harness plugin adapter, and every agent gets isolated, persistent, cross-session memory backed by per-agent Qdrant collections. No agent discipline required.
+2. **Agent Memory Backend (v0.6)** — plug it into OpenClaw or Hermes via a harness plugin adapter, and every agent gets isolated, persistent, cross-session memory backed by per-agent Qdrant collections. No agent discipline required.
 
 ```bash
 # Vault mode: semantic search over watched directories
@@ -456,7 +456,7 @@ curl -s http://localhost:8000/audit \
 | `checks` | array | all | Which audit checks to run: `stale`, `semantic_conflict`, `gap`, `duplicate` (these are audit check names, not review_reasons types — see [review filter](#get-v1review--list-items-needing-attention)) |
 | `sample_size` | int | 50 | Chunk pairs to LLM-compare (1–200, requires LLM) |
 
-### Agent Memory Endpoints (v0.5)
+### Agent Memory Endpoints (v0.6)
 
 These endpoints support the agent memory backend pattern. Harness plugin adapters
 call them transparently — agents don't curl these directly. But you can, for
@@ -594,29 +594,69 @@ curl -s http://localhost:8000/v1/vaults/agent::dev/health
 
 #### `GET /v1/sessions` — List sessions (placeholder)
 
-Returns `503 Service Unavailable` with a placeholder response. Session
-listing and management is reserved for a future release.
+#### `GET /v1/sessions` — List sessions
 
-```json
-{
-  "status": "not_implemented",
-  "message": "session listing is available in the upcoming v0.6 release"
-}
+Lists sessions filtered by agent or vault. Returns metadata without turn content.
+
+```bash
+# List all sessions for an agent
+curl -s "http://localhost:8000/v1/sessions?agent_id=dev&limit=10"
+
+# List sessions for a specific vault
+curl -s "http://localhost:8000/v1/sessions?vault=agent::dev&limit=10"
 ```
-
-#### `POST /v1/sessions` — Index a completed session
-
-Indexes content under the `agent::<id>` vault. A convenience wrapper around
-`POST /v1/ingest` — clients should use `POST /v1/ingest` with
-`vault="agent::<id>"` instead. May be removed in a future release.
 
 **Response:**
 ```json
 {
-  "status": "deferred",
-  "message": "Session persistence is deferred to v0.6. Use POST /v1/ingest with vault=agent::<id> instead."
+  "sessions": [{"id": "uuid", "vault": "agent::dev", "agent_id": "dev", "turn_count": 12, "created_at": "...", "updated_at": "..."}],
+  "count": 1
 }
 ```
+
+#### `GET /v1/sessions/{id}` — Get a session with turns
+
+Retrieves a session with its turn content.
+
+```bash
+curl -s "http://localhost:8000/v1/sessions/<session_id>?turns=50"
+```
+
+Returns full session metadata plus up to `turns` (default 50) most recent turns.
+
+#### `POST /v1/sessions` — Create a session
+
+Creates a new conversation session.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"agent_id": "dev", "content": "Initial context...", "vault": "agent::dev"}'
+```
+
+`agent_id` is required. `vault` defaults to `agent::<agent_id>` if omitted.
+`content` is optional — if provided, it becomes the first turn.
+
+#### `POST /v1/sessions/{id}/turns` — Append a turn
+
+Appends a turn to an existing session.
+
+```bash
+curl -s -X POST "http://localhost:8000/v1/sessions/<session_id>/turns" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "User message...", "role": "user"}'
+```
+
+`role` can be `user`, `assistant`, or `system` (defaults to `user`).
+Max 10 MB per turn.
+
+#### `DELETE /v1/sessions/{id}` — Delete a session
+
+```bash
+curl -s -X DELETE "http://localhost:8000/v1/sessions/<session_id>"
+```
+
+Returns `{"status": "deleted", "id": "<session_id>"}`.
 
 ### Structured Data Endpoints (v0.3)
 
@@ -1159,7 +1199,7 @@ API routes take priority over static file serving.
 
 ---
 
-## Harness Integration (v0.5)
+## Harness Integration (v0.6)
 
 Ragamuffin ships as the memory backend for both OpenClaw and Hermes agents.
 The adapters are reference implementations — any harness with a pluggable memory
@@ -1287,7 +1327,7 @@ uses `modernc.org/sqlite`, no CGo dependency.
 
 ---
 
-## Fact Lifecycle (v0.5)
+## Fact Lifecycle (v0.6)
 
 Ragamuffin's pruner subsystem manages the life cycle of structured facts:
 what's current, what's stale, what contradicts itself, and what's been
@@ -1676,14 +1716,15 @@ seconds until the rate window resets.
 
 ## Status
 
-Active development. v0.5 adds agent memory backend support — per-agent Qdrant
-collections, session ingest endpoint, cross-agent recall, and harness plugin
-adapters for OpenClaw and Hermes.
+Active development. v0.6 adds OIDC auth, per-vault fact isolation,
+embeddings auto-detect, versioned supersede, snapshot restore detection,
+Qdrant reconnection, webhook event emitters, session CRUD, and SSE events.
 
 ### Release History
 
 | Version | Highlights |
 |---|---|
+| v0.6 | OIDC-native auth with discovery flow, per-vault fact isolation (dedicated Qdrant collections), configurable embedding dimensions with auto-detect probe, versioned supersede with integer version field, restore-from-snapshot detection, graceful Qdrant lifecycle with reconnection loop, webhook event emitters for fact lifecycle, fact-to-chunk bridge with source stale scan, sessions API (CRUD), SSE event stream, full documentation update |
 | v0.5 | Fact lifecycle management (Pruner: stale, conflict, supersede scans), review queue API (`GET/POST /v1/review`, `GET /v1/review/stats`), fact update endpoints (`PUT/PATCH /v1/facts`), agent memory backend (per-agent Qdrant collections, session ingest, vault provisioning, cross-agent recall, OpenClaw + Hermes plugin adapters), SSE streaming, lint pass, test infrastructure |
 | v0.4 | Multi-tenancy, authentication (API key + JWT), knowledge graph, CloudEvents, LLM timeout config, embedded web UI, built-in web dashboard |
 | v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |

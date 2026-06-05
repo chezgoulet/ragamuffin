@@ -27,11 +27,9 @@ only. It never deletes facts. It marks them `superseded`, `rejected`,
 storage layer remains the single source of truth; pruning is an annotation
 layer on top.
 
-**Note on v0.4 dependency:** The spec references v0.4 (multi-tenancy, auth)
-which is not yet implemented. The Pruner as described here assumes a
-single-vault, single facts-client topology. When v0.4 lands, the Pruner
-will need a vault-keyed redesign (one pruner per vault, or a multi-vault
-pruner that iterates over all vaults). For now, single-tenant is correct.
+**Note:** Multi-tenancy, auth, and per-vault fact isolation are all implemented
+as of v0.6. The Pruner works in both single-tenant and multi-tenant modes.
+Per-vault facts use physically separate Qdrant collections.
 
 ---
 

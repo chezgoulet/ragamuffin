@@ -2,7 +2,7 @@
 
 Know an agent that needs to read, search, and write to a knowledge base?
 Ragamuffin is a REST API that turns a directory of files into a queryable
-vector store — and in v0.5, it's also the memory backend that powers your
+vector store — and in v0.6, it's also the memory backend that powers your
 agent's persistent, isolated cross-session recall.
 
 Two modes:
@@ -57,6 +57,7 @@ endpoint), because the harness authenticates and authorizes the request.
 - Write structured facts → `POST /v1/facts` (for small, persistent data)
 - Write log entries → `POST /v1/logs` (for what you did, when)
 - Read shared vaults → `POST /recall` with `source_filter`
+- Create and manage sessions → `POST /v1/sessions`
 
 ### Hybrid mode: don't swap your slot, just add tools
 
@@ -172,7 +173,7 @@ curl -s -X POST http://ragamuffin:8000/v1/facts \
 
 **Retrieve by exact key:**
 ```bash
-curl -s "http://ragamuffin:8000/v1/facts?key=db/url"
+curl -s "http://ragamuffin:8000/v1/facts?key=***"
 ```
 
 **Search by text fragment (substring match on key):**
@@ -185,9 +186,23 @@ curl -s "http://ragamuffin:8000/v1/facts?prefix=db/"
 curl -s "http://ragamuffin:8000/v1/facts?tag=prod&prefix=db/"
 ```
 
+**Update (full replace):**
+```bash
+curl -s -X PUT "http://ragamuffin:8000/v1/facts?key=***" \
+  -H "Content-Type: application/json" \
+  -d '{"value": "postgres://new-url...", "tags": ["prod", "updated"]}'
+```
+
+**Update (partial patch):**
+```bash
+curl -s -X PATCH "http://ragamuffin:8000/v1/facts?key=***" \
+  -H "Content-Type: application/json" \
+  -d '{"value": "postgres://new-url..."}'
+```
+
 **Delete:**
 ```bash
-curl -s -X DELETE "http://ragamuffin:8000/v1/facts?key=db/url"
+curl -s -X DELETE "http://ragamuffin:8000/v1/facts?key=***"
 ```
 
 **Pagination:**
@@ -195,6 +210,9 @@ curl -s -X DELETE "http://ragamuffin:8000/v1/facts?key=db/url"
 curl -s "http://ragamuffin:8000/v1/facts?limit=20"
 curl -s "http://ragamuffin:8000/v1/facts?limit=20&before=<next_token>"
 ```
+
+Facts are versioned. A `version` integer field auto-increments on update.
+Set the `version` field explicitly to enable optimistic concurrency control.
 
 ### Structured Logging — `/v1/logs`
 
@@ -213,12 +231,83 @@ curl -s -X POST http://ragamuffin:8000/v1/logs \
 curl -s "http://ragamuffin:8000/v1/logs?agent=scout&type=scan&tag=security&limit=10"
 ```
 
+### Sessions — `/v1/sessions`
+
+Create and manage conversation sessions for agent memory.
+
+**Create a session:**
+```bash
+curl -s -X POST http://ragamuffin:8000/v1/sessions \
+  -H "Content-Type: application/json" \
+  -d '{"agent": "dev", "label": "Big Sprint planning"}'
+```
+
+**Get session by ID:**
+```bash
+curl -s "http://ragamuffin:8000/v1/sessions/<session_id>"
+```
+
 ### Snapshot — `/v1/snapshot`
 
 Download the entire vault as a gzipped tarball:
 ```bash
 curl -s -O http://ragamuffin:8000/v1/snapshot
 ```
+
+### Ingest — `/v1/ingest`
+
+Ingest content into a vault programmatically:
+
+```bash
+curl -s -X POST http://ragamuffin:8000/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"vault": "agent::dev", "content": "Important decision: ...", "metadata": {"type": "decision"}}'
+```
+
+Max body size: 10 MB.
+
+### Review Queue — `/v1/review`
+
+Review flagged facts (from pruner scans or manual flagging).
+
+**View flagged facts:**
+```bash
+# All flagged facts
+curl -s "http://ragamuffin:8000/v1/review"
+
+# Filter by reason
+curl -s "http://ragamuffin:8000/v1/review?reason=stale"
+
+# Filter by source key
+curl -s "http://ragamuffin:8000/v1/review?key=db/url"
+
+# Paginate
+curl -s "http://ragamuffin:8000/v1/review?limit=20&before=<next_token>"
+```
+
+**Review stats:**
+```bash
+curl -s "http://ragamuffin:8000/v1/review/stats"
+```
+
+**Resolve a flagged fact:**
+```bash
+# Confirm — mark as active, reset confidence
+curl -s -X POST "http://ragamuffin:8000/v1/review?key=***&action=confirm"
+
+# Supersede — old fact gets status=superseded, create new one
+curl -s -X POST "http://ragamuffin:8000/v1/review?key=***&action=supersede" \
+  -d '{"new_key": "config/new-key", "new_value": "new-value"}'
+
+# Reject — mark as rejected (kept for audit trail)
+curl -s -X POST "http://ragamuffin:8000/v1/review?key=***&action=reject"
+
+# Reclassify — change reason tag
+curl -s -X POST "http://ragamuffin:8000/v1/review?key=***&action=reclassify"
+```
+
+The pruner **never deletes** facts. It only changes their status. The review
+queue is where you (or an agent) decide what to do with flagged facts.
 
 ### Audit — `/audit`
 
@@ -230,6 +319,24 @@ curl -s http://ragamuffin:8000/audit \
 ```
 
 Returns stale files, semantic conflicts (requires LLM), gaps, and duplicates.
+
+### Auth Check — `/v1/auth/check`
+
+Check authentication status:
+```bash
+curl -s http://ragamuffin:8000/v1/auth/check
+```
+
+Returns current auth mode, enforcement status, and token validation info.
+
+### SSE Events — `/events`
+
+Real-time event stream for fact lifecycle and broker notifications:
+```bash
+curl -s -N http://ragamuffin:8000/events
+```
+
+Events follow Server-Sent Events protocol. Auto-reconnect compatible.
 
 ## Agent Workflow Patterns
 
@@ -244,12 +351,25 @@ Returns stale files, semantic conflicts (requires LLM), gaps, and duplicates.
 1. For prose (markdown docs) → use `/draft` with `mode: "direct"`
 2. For structured data (configs, URLs) → use POST `/v1/facts`
 3. For a record of what you did → use POST `/v1/logs`
+4. For session context → use POST `/v1/sessions`
 
 ### Periodic maintenance
 
 1. Call `/audit` to check for stale files
-2. Call `/v1/snapshot` to back up the vault
-3. For git-backed vaults, use `/draft` with `mode: "pr"` for human review
+2. Call `/v1/review/stats` to check fact health
+3. Call `/v1/snapshot` to back up the vault
+4. For git-backed vaults, use `/draft` with `mode: "pr"` for human review
+
+### Fact quality management
+
+When the pruner flags facts, check the review queue:
+
+```bash
+curl -s http://ragamuffin:8000/v1/review/stats | jq .
+# Check how many facts need attention
+```
+
+Then resolve flagged facts via `POST /v1/review`.
 
 ## v0.4 Endpoints
 
@@ -308,17 +428,90 @@ curl -s -X POST http://ragamuffin:8000/vault/docs/reindex
 ### Authentication
 
 Set `RAGAMUFFIN_AUTH_MODE` to one of:
+
 - `none` — no auth (default)
 - `api_key` — static keys via `RAGAMUFFIN_AUTH_READ_KEY` / `RAGAMUFFIN_AUTH_WRITE_KEY`
-- `jwt` — JWT with JWKS verification
+- `jwt` — JWT with JWKS verification (configurable issuer, audience)
+- `oidc` — OIDC discovery-based auth (auto-discovers JWKS from issuer metadata)
 
-When auth is enabled, agents must include an `Authorization: Bearer <key>` header.
+When auth is enabled, agents must include an `Authorization: Bearer <key>` header:
+
+```bash
+# With API key
+curl -H "Authorization: Bearer sk-read-abc123" http://ragamuffin:8000/recall -d '{"query":"..."}'
+
+# With JWT
+curl -H "Authorization: Bearer eyJhbGciOiJSUzI1NiIs..." http://ragamuffin:8000/recall -d '{"query":"..."}'
+```
+
+The `/events` and `/mcp` endpoints are always public for protocol compatibility.
+All other endpoints enforce auth when `AUTH_MODE` is not `none`.
+
+Read-key agents: search, browse, audit access.
+Write-key agents: full access including facts, logs, draft, review.
 
 ### Web UI
 
 A web dashboard is served at the root path:
 - `GET /` — SPA dashboard with Search, Browse, Audit, Graph pages
 - Search, Browse, Audit, and Graph pages all functional via REST API calls
+
+## Events & Webhooks
+
+Ragamuffin emits fact lifecycle events through two channels:
+
+### Webhook (HTTP POST)
+
+When `RAGAMUFFIN_EVENT_WEBHOOK_URL` is configured, events are pushed as
+CloudEvents v1.0 structured JSON via HTTP POST:
+
+| Event Type | When | Payload |
+|---|---|---|
+| `fact.created` | New fact upserted | `{"fact_key":"...", "status":"active"}` |
+| `fact.updated` | Existing fact modified | `{"fact_key":"...", "new_status":"superseded"}` |
+| `fact.superseded` | Fact superseded | `{"fact_key":"...", "superseded_by":"..."}` |
+| `fact.rejected` | Review action: reject | `{"fact_key":"...", "reason":"outdated"}` |
+| `fact.confirmed` | Review action: confirm | `{"fact_key":"...", "confidence":0.95}` |
+| `fact.needs_review` | Pruner flags fact | `{"fact_key":"...", "reasons":["stale"]}` |
+
+Delivery is fire-and-forget with `Content-Type: application/cloudevents+json`.
+Consumers are responsible for durability.
+
+### SSE Stream
+
+Connect to `/events` for real-time streaming:
+
+```bash
+curl -s -N http://ragamuffin:8000/events
+```
+
+Same events as webhook, delivered via Server-Sent Events. Compatible with
+browser `EventSource` API and any SSE client.
+
+### Legacy Vault Events
+
+In addition to fact lifecycle events, legacy vault events are also emitted:
+
+| Event | Payload | When |
+|---|---|---|
+| `vault.file.changed` | `{"path":"...", "action":"created|modified"}` | After successful file index |
+| `vault.file.deleted` | `{"path":"..."}` | After file removed from index |
+| `ragamuffin.started` | `{"version":"...", "commit":"...", "host":"...", "port":"..."}` | Server boot, before listen |
+
+## Fact-to-Chunk Bridge
+
+Facts can reference source chunks via the `source_file` payload field.
+When a source chunk is deleted or modified, the pruner's source stale scan
+flags the fact for review. This keeps your knowledge graph consistent:
+
+```
+fact "db/config" → source_file="ops/setup.md" → chunk in vault
+```
+
+When `ops/setup.md` is deleted:
+1. Pruner source stale scan detects the orphaned reference
+2. Fact `db/config` gets flagged as `needs_review`
+3. You (or an agent) resolve via review queue
 
 ## Configuration for Agents
 
@@ -345,12 +538,14 @@ RAGAMUFFIN_EVENT_WEBHOOK_URL=http://listener:8080/events
 
 # v0.4 Multi-tenancy & Auth
 RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code   # Multi-tenant vaults
-RAGAMUFFIN_AUTH_MODE=none                                   # none | api_key | jwt
+RAGAMUFFIN_AUTH_MODE=none                                   # none | api_key | jwt | oidc
 RAGAMUFFIN_AUTH_READ_KEY=sk-...                             # Global read key
 RAGAMUFFIN_AUTH_WRITE_KEY=sk-...                            # Global write key
 RAGAMUFFIN_AUTH_JWT_ISSUER=https://auth.example.com         # JWT issuer
 RAGAMUFFIN_AUTH_JWT_AUDIENCE=ragamuffin                     # Expected audience
 RAGAMUFFIN_AUTH_JWT_JWKS_URL=https://auth.example.com/.well-known/jwks.json  # JWKS endpoint
+RAGAMUFFIN_AUTH_OIDC_ISSUER=https://accounts.example.com    # OIDC issuer (auto-discovers JWKS)
+RAGAMUFFIN_AUTH_OIDC_CLIENT_ID=ragamuffin                   # OIDC client ID
 ```
 
 ## Error Handling
@@ -366,9 +561,9 @@ Common codes: `INVALID_INPUT`, `RATE_LIMITED` (with `Retry-After` header),
 
 ## Rate Limit Guidance
 
-If your agent gets a `429` response, check the `Retry-After` header and
-wait before retrying. Adjust rate limit env vars per-endpoint if needed
-(see README.md for defaults and env vars).
+If your agent gets a `429` response, check the `Retry-After` header (integer
+seconds) and wait before retrying. Adjust rate limit env vars per-endpoint if
+needed (see SPEC.md for defaults and env vars).
 
 ## Discovery
 
@@ -386,7 +581,8 @@ curl -s http://ragamuffin:8000/stats
 # What endpoints are available?
 # Ragamuffin doesn't have a discovery endpoint — this document IS the discovery.
 # The full API surface is: /recall /ask /draft /audit /v1/facts /v1/logs
-# /v1/snapshot /health /stats /version /metrics /mcp
+# /v1/snapshot /health /stats /version /metrics /mcp /events
+# /v1/review /v1/review/stats /v1/ingest /v1/sessions /v1/auth/check
 # /vaults /graph /reindex /vault/{name}/... (v0.4)
 ```
 

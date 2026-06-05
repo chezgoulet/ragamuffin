@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.6.0 (2026-06-05)
+
+### Features
+- **OIDC-native authentication with discovery flow**: Full OIDC integration with automatic provider discovery.
+  Supports `none`, `api_key`, `jwt`, and `oidc` auth modes. JWT verification via JWKS endpoint.
+  New endpoints: `/v1/auth/check` for token validation. (#333)
+- **Per-vault fact isolation with dedicated collections**: Facts stored in physically separate Qdrant
+  collections (`ragamuffin_facts` by default, `ragamuffin_{vault}_facts` per vault). Prevents
+  metadata-filter data leakage across agents. `FactsCollectionFor()` helper. (#331)
+- **Configurable embedding dimensions with auto-detect probe**: Embeddings auto-detect their dimension
+  from the configured model response. Configurable via `RAGAMUFFIN_EMBEDDING_DIMS`. Separate
+  `RAGAMUFFIN_CHUNK_VECTOR_SIZE` for doc chunks vs facts. (#330)
+- **Versioned supersede with integer version field**: Facts now carry a `version` integer field.
+  Supersede action increments version. `parseVersionFromKey()` for version-aware fact key parsing. (#332)
+- **Restore-from-snapshot detection**: On startup, compares current index against the last restored
+  snapshot. Detects drift and reports via `/audit`. Configurable via `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD`. (#338)
+- **Graceful Qdrant lifecycle with reconnection loop**: Automatic Qdrant reconnection on connection
+  loss. Exponential backoff with jitter. Connection health exposed via `/health` and `/metrics`. (#337)
+- **Webhook event emitters for fact lifecycle and pruner**: New `EventBroker` dispatches fact lifecycle
+  events (created, updated, superseded, rejected, confirmed) to configured webhook URL and SSE stream.
+  Fact status changes emit CloudEvents. (#334)
+- **Fact-to-chunk bridge with source stale scan**: Facts can reference source chunks via `source_file`
+  payload field. Pruner scans for facts whose source chunk has been deleted or modified. (#335)
+- **Review queue with per-fact supersede**: `POST /v1/review?key=<fact_key>&action=supersede` with
+  `new_key`/`new_value` support. Non-destructive — old fact stays as `superseded` for audit trail.
+  Also supports `confirm`, `reject`, `reclassify` actions. (#332)
+- **SSE event stream**: `/events` endpoint provides real-time Server-Sent Events for fact lifecycle
+  and broker notifications. Auto-reconnect compatible. (#334)
+- **Sessions API**: `POST /v1/sessions` to create conversation sessions, `GET /v1/sessions/{id}` for
+  retrieval. Session-based ingest routing for agent memory. (#327)
+
+### Configuration
+- **30+ new environment variables** across auth, pruner, rate limiting, facts, chunking, and events.
+  See updated SPEC.md for the full reference table. (#330-#338)
+
+### Documentation
+- **SPEC.md**: Rewrote Config Reference section with complete env var table including all new v0.5/v0.6
+  variables. Updated Non-Goals for v0.6. (#343)
+- **DEPLOY.md**: Added auth setup guide, pruner configuration, multi-tenant vault setup,
+  snapshot restore procedure, and webhook event configuration. (#343)
+- **AGENTS_SKILL.md**: Added review queue, SSE events, OIDC auth, webhook emitters, fact-to-chunk
+  bridge, and updated endpoint cheat sheet. (#343)
+- **README.md**: Updated Two Patterns diagram for v0.6 features. Added auth headers to curl examples.
+  Bumped version references to 0.6. (#343)
+
+### Bug Fixes
+- **TestReviewPost_Supersede**: Added missing `version` and `superseded_by` fields to test helper
+  point to prevent `migrateFacts()` from triggering an extra Upsert during `New()`. (#343)
+
 ## v0.5.0 (2026-05-22)
 
 ### Features

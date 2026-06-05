@@ -477,70 +477,175 @@ All configuration is via environment variables. No config file, no YAML, no CLI 
 
 ```bash
 # ── Required ───────────────────────────────────────────────────────────────────
-RAGAMUFFIN_VAULT_PATH=/opt/vault
-RAGAMUFFIN_QDRANT_URL=http://localhost:6333
+RAGAMUFFIN_QDRANT_URL=http://localhost:6334
 RAGAMUFFIN_EMBEDDING_API_KEY=sk-...
+# Single-tenant vault path (mutually exclusive with VAULTS)
+RAGAMUFFIN_VAULT_PATH=/opt/vault
+# Multi-tenant vaults (mutually exclusive with VAULT_PATH)
+# RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code
 
-# ── Optional ───────────────────────────────────────────────────────────────────
-RAGAMUFFIN_WATCH_INTERVAL=60s
-RAGAMUFFIN_QDRANT_COLLECTION=ragamuffin
+# ── Optional — Embedding ──────────────────────────────────────────────────────
 RAGAMUFFIN_EMBEDDING_PROVIDER=openai
 RAGAMUFFIN_EMBEDDING_MODEL=text-embedding-3-small
 RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1
+RAGAMUFFIN_EMBEDDING_DIMS=1536
+RAGAMUFFIN_CHUNK_VECTOR_SIZE=0           # 0 = inherit from EMBEDDING_DIMS
 
-# Uncomment to enable LLM features (/ask, semantic conflict audit)
+# ── Optional — Qdrant ─────────────────────────────────────────────────────────
+RAGAMUFFIN_QDRANT_COLLECTION=ragamuffin
+RAGAMUFFIN_FACTS_COLLECTION=ragamuffin_facts
+RAGAMUFFIN_FACTS_VECTOR_SIZE=4
+
+# ── Optional — Watcher ────────────────────────────────────────────────────────
+RAGAMUFFIN_WATCH_INTERVAL=60s
+RAGAMUFFIN_WATCHER_MODE=poll
+
+# ── Optional — Chunking ───────────────────────────────────────────────────────
+# RAGAMUFFIN_CHUNK_STRATEGY=auto               # auto | fixed | paragraph
+# RAGAMUFFIN_CHUNK_MAX_TOKENS=2000
+# RAGAMUFFIN_CHUNK_FIXED_SIZE=0
+# RAGAMUFFIN_CHUNK_FIXED_OVERLAP=0
+
+# ── Optional — LLM (enables /ask, semantic conflict audit) ────────────────────
 # RAGAMUFFIN_LLM_PROVIDER=openai_compatible
 # RAGAMUFFIN_LLM_BASE_URL=https://api.deepseek.com
 # RAGAMUFFIN_LLM_MODEL=deepseek/deepseek-chat
 # RAGAMUFFIN_LLM_API_KEY=sk-...
+# RAGAMUFFIN_LLM_TIMEOUT=120s
 
-# Uncomment to enable PR mode (/draft with mode=pr)
+# ── Optional — Git Provider (enables /draft PR mode) ──────────────────────────
 # RAGAMUFFIN_GIT_PROVIDER_ENABLED=true
 # RAGAMUFFIN_GIT_PROVIDER=github
 # RAGAMUFFIN_GIT_TOKEN=ghp_...
 # RAGAMUFFIN_GIT_BASE_BRANCH=main
-# RAGAMUFFIN_GIT_REPOS=org/vault
+# RAGAMUFFIN_GIT_BASE_URL=              # Required for Gitea only
+# RAGAMUFFIN_GIT_REPOS=owner/repo
 
+# ── Optional — Auth ───────────────────────────────────────────────────────────
+RAGAMUFFIN_AUTH_MODE=none                     # none | api_key | jwt | oidc
+# RAGAMUFFIN_AUTH_READ_KEY=sk-...              # Read-only key (api_key mode)
+# RAGAMUFFIN_AUTH_WRITE_KEY=sk-...             # Read+Write key (api_key mode)
+# RAGAMUFFIN_AUTH_JWT_ISSUER=https://auth.example.com
+# RAGAMUFFIN_AUTH_JWT_AUDIENCE=ragamuffin
+# RAGAMUFFIN_AUTH_JWT_JWKS_URL=https://auth.example.com/.well-known/jwks.json
+# RAGAMUFFIN_AUTH_OIDC_ISSUER=https://accounts.example.com
+# RAGAMUFFIN_AUTH_OIDC_CLIENT_ID=ragamuffin
+
+# ── Optional — Rate Limiting ───────────────────────────────────────────────────
+# RAGAMUFFIN_RATE_LIMIT_ENABLED=true
+RAGAMUFFIN_RATE_LIMIT_RECALL=60
+RAGAMUFFIN_RATE_LIMIT_ASK=10
+RAGAMUFFIN_RATE_LIMIT_DRAFT=30
+RAGAMUFFIN_RATE_LIMIT_AUDIT=5
+RAGAMUFFIN_RATE_LIMIT_FACTS=30
+RAGAMUFFIN_RATE_LIMIT_LOGS=60
+RAGAMUFFIN_RATE_LIMIT_SNAPSHOT=5
+RAGAMUFFIN_RATE_LIMIT_REINDEX=30
+RAGAMUFFIN_RATE_LIMIT_INGEST=30
+RAGAMUFFIN_RATE_LIMIT_REVIEW=30
+
+# ── Optional — Pruner (background fact health) ────────────────────────────────
+# RAGAMUFFIN_PRUNER_ENABLED=true
+RAGAMUFFIN_PRUNER_STALE_INTERVAL=24h
+RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL=72h
+RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL=24h
+RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL=24h
+RAGAMUFFIN_PRUNER_STALE_DAYS=90
+RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE=50
+RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD=0.5
+
+# ── Optional — Misc ───────────────────────────────────────────────────────────
 RAGAMUFFIN_PORT=8000
 RAGAMUFFIN_HOST=0.0.0.0
-RAGAMUFFIN_AUDIT_SAMPLE_SIZE=50
 RAGAMUFFIN_LOG_LEVEL=info
+# RAGAMUFFIN_EVENT_WEBHOOK_URL=https://hooks.example.com/ragamuffin
+# RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD=0.1
+# RAGAMUFFIN_AUDIT_SAMPLE_SIZE=50
+# RAGAMUFFIN_AUTO_THRESHOLD=0.75
+# RAGAMUFFIN_AUDIT_ENTITY_EXTRACTION=false
 ```
 
 ### Full Variable Reference
 
 | Variable | Required | Default | Notes |
 |----------|----------|---------|-------|
-| `RAGAMUFFIN_VAULT_PATH` | **yes** | — | Absolute path to the vault directory |
-| `RAGAMUFFIN_QDRANT_URL` | **yes** | — | Qdrant server URL |
+| `RAGAMUFFIN_QDRANT_URL` | **yes** | — | Qdrant gRPC server URL |
 | `RAGAMUFFIN_EMBEDDING_API_KEY` | **yes** | — | API key. Empty string if endpoint is keyless. |
+| `RAGAMUFFIN_VAULT_PATH` | conditional | — | **Single-tenant:** absolute path to vault dir. Mutually exclusive with `VAULTS`. |
+| `RAGAMUFFIN_VAULTS` | conditional | — | **Multi-tenant:** `name:path,name:path,...`. Mutually exclusive with `VAULT_PATH`. |
 | `RAGAMUFFIN_WATCH_INTERVAL` | no | `60s` | Poll interval for file changes |
-| `RAGAMUFFIN_QDRANT_COLLECTION` | no | `ragamuffin` | Qdrant collection name |
+| `RAGAMUFFIN_WATCHER_MODE` | no | `poll` | `poll` or `inotify` |
+| `RAGAMUFFIN_QDRANT_COLLECTION` | no | `ragamuffin` | Chunk/document Qdrant collection name |
+| `RAGAMUFFIN_FACTS_COLLECTION` | no | `ragamuffin_facts` | Structured facts Qdrant collection name |
+| `RAGAMUFFIN_FACTS_VECTOR_SIZE` | no | `4` | Fact point vector dimension (must be > 0) |
 | `RAGAMUFFIN_EMBEDDING_PROVIDER` | no | `openai` | Provider identifier |
 | `RAGAMUFFIN_EMBEDDING_MODEL` | no | `text-embedding-3-small` | Model name |
-| `RAGAMUFFIN_EMBEDDING_BASE_URL` | no | `https://api.openai.com/v1` | Base URL |
+| `RAGAMUFFIN_EMBEDDING_BASE_URL` | no | `https://api.openai.com/v1` | Base URL (include `/v1`) |
+| `RAGAMUFFIN_EMBEDDING_DIMS` | no | `1536` | Embedding dimension (auto-detected, override to pin) |
+| `RAGAMUFFIN_CHUNK_VECTOR_SIZE` | no | `0` | Vector dimension for chunk/doc cols. `0` = inherit from `EMBEDDING_DIMS`. |
+| `RAGAMUFFIN_CHUNK_STRATEGY` | no | `auto` | `auto` (content-aware), `fixed` (token window), `paragraph` |
+| `RAGAMUFFIN_CHUNK_MAX_TOKENS` | no | `2000` | Max tokens per chunk |
+| `RAGAMUFFIN_CHUNK_FIXED_SIZE` | no | `0` | Token window for `fixed` strategy |
+| `RAGAMUFFIN_CHUNK_FIXED_OVERLAP` | no | `0` | Overlap tokens for `fixed` strategy |
 | `RAGAMUFFIN_LLM_PROVIDER` | no | — | `openai_compatible` or `anthropic`. Unset = LLM disabled. |
-| `RAGAMUFFIN_LLM_BASE_URL` | conditional | — | Required if LLM provider is `openai_compatible` |
+| `RAGAMUFFIN_LLM_BASE_URL` | conditional | `https://api.deepseek.com` | Omit `/v1` (appended internally). |
 | `RAGAMUFFIN_LLM_MODEL` | conditional | — | Required if LLM provider is set |
 | `RAGAMUFFIN_LLM_API_KEY` | conditional | — | Required if LLM provider is set |
-| `RAGAMUFFIN_PORT` | no | `8000` | HTTP listen port |
-| `RAGAMUFFIN_HOST` | no | `0.0.0.0` | HTTP listen address |
+| `RAGAMUFFIN_LLM_TIMEOUT` | no | `120s` | LLM request timeout |
 | `RAGAMUFFIN_GIT_PROVIDER_ENABLED` | no | `false` | Enable `/draft` PR mode |
 | `RAGAMUFFIN_GIT_PROVIDER` | no | `github` | `github`, `gitlab`, or `gitea` |
-| `RAGAMUFFIN_GIT_TOKEN` | conditional | — | Required if enabled |
+| `RAGAMUFFIN_GIT_TOKEN` | conditional | — | Required if git provider enabled |
 | `RAGAMUFFIN_GIT_BASE_BRANCH` | no | `main` | Target branch for PRs |
+| `RAGAMUFFIN_GIT_BASE_URL` | no | — | Git provider base URL (required for Gitea) |
 | `RAGAMUFFIN_GIT_REPOS` | conditional | — | Comma-separated: `owner/repo` |
+| `RAGAMUFFIN_AUTH_MODE` | no | `none` | `none`, `api_key`, `jwt`, or `oidc` |
+| `RAGAMUFFIN_AUTH_READ_KEY` | no | — | Read-only API key (`api_key` mode) |
+| `RAGAMUFFIN_AUTH_WRITE_KEY` | no | — | Read+write API key (`api_key` mode) |
+| `RAGAMUFFIN_AUTH_JWT_ISSUER` | no | — | JWT issuer URL (`jwt` mode) |
+| `RAGAMUFFIN_AUTH_JWT_AUDIENCE` | no | — | Expected JWT audience (`jwt` mode) |
+| `RAGAMUFFIN_AUTH_JWT_JWKS_URL` | no | — | JWKS endpoint URL (`jwt` mode) |
+| `RAGAMUFFIN_AUTH_OIDC_ISSUER` | no | — | OIDC issuer URL (`oidc` mode — auto-discovers JWKS) |
+| `RAGAMUFFIN_AUTH_OIDC_CLIENT_ID` | no | — | OIDC client ID (`oidc` mode) |
+| `RAGAMUFFIN_RATE_LIMIT_ENABLED` | no | `false` | Enable per-endpoint rate limiting |
+| `RAGAMUFFIN_RATE_LIMIT_RECALL` | no | `60` | Requests per minute for `/recall` |
+| `RAGAMUFFIN_RATE_LIMIT_ASK` | no | `10` | Requests per minute for `/ask` |
+| `RAGAMUFFIN_RATE_LIMIT_DRAFT` | no | `30` | Requests per minute for `/draft` |
+| `RAGAMUFFIN_RATE_LIMIT_AUDIT` | no | `5` | Requests per minute for `/audit` |
+| `RAGAMUFFIN_RATE_LIMIT_FACTS` | no | `30` | Requests per minute for `/v1/facts` |
+| `RAGAMUFFIN_RATE_LIMIT_LOGS` | no | `60` | Requests per minute for `/v1/logs` |
+| `RAGAMUFFIN_RATE_LIMIT_SNAPSHOT` | no | `5` | Requests per minute for `/v1/snapshot` |
+| `RAGAMUFFIN_RATE_LIMIT_REINDEX` | no | `30` | Requests per minute for `/reindex` |
+| `RAGAMUFFIN_RATE_LIMIT_INGEST` | no | `30` | Requests per minute for `/v1/ingest` |
+| `RAGAMUFFIN_RATE_LIMIT_REVIEW` | no | `30` | Requests per minute for `/v1/review` |
+| `RAGAMUFFIN_PRUNER_ENABLED` | no | `false` | Enable background pruner for fact health |
+| `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | no | `24h` | How often to scan for stale facts |
+| `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | no | `72h` | How often to scan for semantic conflicts |
+| `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | no | `24h` | How often to scan for supersession chains |
+| `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL` | no | `24h` | How often to check fact source staleness |
+| `RAGAMUFFIN_PRUNER_STALE_DAYS` | no | `90` | Days without update before marked stale |
+| `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | no | `50` | Fact pairs to compare per conflict scan |
+| `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | no | `0.5` | Below this → flag `needs_review` |
+| `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | no | `0.1` | Snapshot restore drift tolerance (0.0–1.0) |
+| `RAGAMUFFIN_EVENT_WEBHOOK_URL` | no | — | CloudEvents v1.0 webhook for fact lifecycle |
 | `RAGAMUFFIN_AUDIT_SAMPLE_SIZE` | no | `50` | Chunk pairs to LLM-compare in semantic conflict audit |
+| `RAGAMUFFIN_AUDIT_ENTITY_EXTRACTION` | no | `false` | Enable LLM entity extraction in audit |
+| `RAGAMUFFIN_AUTO_THRESHOLD` | no | `0.75` | Threshold for auto-decisions |
+| `RAGAMUFFIN_PORT` | no | `8000` | HTTP listen port |
+| `RAGAMUFFIN_HOST` | no | `0.0.0.0` | HTTP listen address |
 | `RAGAMUFFIN_LOG_LEVEL` | no | `info` | `debug`, `info`, `warn`, `error` |
 
-## Non-Goals (v0.1)
+## Non-Goals
 
-- **Multi-tenancy.** One vault per instance. Run multiple containers for multiple vaults.
-- **User authentication.** Trust the reverse proxy. API keys may be added later.
-- **Chat history.** Each query is stateless. Agents maintain their own context.
 - **OpenAI-compatible `/v1/chat` endpoint.** Ragamuffin serves knowledge, not models.
-- **System-awareness reconciliation.** Phase 2. Querying live infrastructure against a
+- **System-awareness reconciliation.** Querying live infrastructure against a
   documented system map is powerful but out of scope.
+- **Graph database.** The knowledge graph is derived from embeddings + chunk links, not a
+  dedicated graph store.
+- **Full-text search.** Ragamuffin is semantic-first.
+  No inverted index, no TF-IDF.
+- **Data at rest encryption.** Relies on filesystem and Qdrant encryption. Ragamuffin
+  handles auth at the API layer only.
+- **Streaming responses.** `/ask` returns complete answers. Streaming may be added later.
 - **Native file watcher.** Polling is simpler and more reliable across Docker mounts.
 - **Local embedding inference.** No mature pure-Go library exists. API-based is the
   pragmatic default. This is the first Phase 2 priority.
