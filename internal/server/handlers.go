@@ -43,15 +43,33 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		_, _, _, indexing, progressPct, totalFiles = idx.Stats()
 	}
 
+	embeddingStatus := "unconfigured"
+	if s.embedder != nil {
+		embeddingStatus = "down"
+		if err := s.embedder.Health(ctx); err == nil {
+			embeddingStatus = "ok"
+		}
+	}
+
+	llmStatus := "unconfigured"
+	if s.llm != nil {
+		llmStatus = "down"
+		if err := s.llm.Health(ctx); err == nil {
+			llmStatus = "ok"
+		}
+	}
+
 	status := "ok"
-	if qdrantStatus != "ok" {
+	if qdrantStatus != "ok" || embeddingStatus == "down" || llmStatus == "down" {
 		status = "degraded"
 	}
 
 	resp := map[string]any{
-		"status":  status,
-		"qdrant":  qdrantStatus,
-		"indexing": indexing,
+		"status":    status,
+		"qdrant":    qdrantStatus,
+		"embedding": embeddingStatus,
+		"llm":       llmStatus,
+		"indexing":  indexing,
 	}
 	if indexing {
 		resp["status"] = "indexing"

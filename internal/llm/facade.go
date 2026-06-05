@@ -14,6 +14,9 @@ type Synthesizer interface {
 	// Compare evaluates two text chunks from their sources and returns
 	// a qualitative assessment of similarity or difference.
 	Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB string) (string, error)
+
+	// Health checks connectivity by making a minimal API call.
+	Health(ctx context.Context) error
 }
 
 // Compile-time check: *Client satisfies Synthesizer.

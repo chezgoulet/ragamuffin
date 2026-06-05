@@ -29,3 +29,7 @@ func (m *MockLLM) Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB 
 	}
 	return "", nil
 }
+
+func (m *MockLLM) Health(_ context.Context) error {
+	return nil
+}

@@ -72,6 +72,26 @@ func (c *Client) Synthesize(ctx context.Context, query, context string) (string,
 
 // Compare asks the LLM whether two chunks contradict each other.
 // Returns a summary if there's a conflict, empty string if none.
+// Health checks connectivity to the LLM provider by making a GET to the base URL.
+func (c *Client) Health(ctx context.Context) error {
+	if c == nil {
+		return fmt.Errorf("LLM not configured")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/models", nil)
+	if err != nil {
+		return fmt.Errorf("build request: %w", err)
+	}
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 func (c *Client) Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB string) (string, error) {
 	if c == nil {
 		return "", fmt.Errorf("LLM not configured")
