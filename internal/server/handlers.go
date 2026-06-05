@@ -57,6 +57,26 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+// ── /v1/auth/check ────────────────────────────────────────────────────────────
+
+func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+		return
+	}
+
+	claims := auth.ClaimsFromContext(r.Context())
+	result := map[string]any{
+		"authenticated": claims != nil,
+	}
+	if claims != nil {
+		result["access"] = claims.Access
+		result["vaults"] = claims.Vaults
+	}
+
+	writeJSON(w, 200, result)
+}
+
 // ── /stats ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {

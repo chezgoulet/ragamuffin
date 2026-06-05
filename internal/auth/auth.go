@@ -13,11 +13,12 @@ const (
 	ModeNone   Mode = "none"
 	ModeAPIKey Mode = "api_key"
 	ModeJWT    Mode = "jwt"
+	ModeOIDC   Mode = "oidc"
 )
 
 // ValidModes returns the set of valid auth modes.
 func ValidModes() []Mode {
-	return []Mode{ModeNone, ModeAPIKey, ModeJWT}
+	return []Mode{ModeNone, ModeAPIKey, ModeJWT, ModeOIDC}
 }
 
 // ParseMode parses a string into a Mode, returning an error if invalid.
@@ -29,6 +30,8 @@ func ParseMode(s string) (Mode, error) {
 		return ModeAPIKey, nil
 	case ModeJWT:
 		return ModeJWT, nil
+	case ModeOIDC:
+		return ModeOIDC, nil
 	default:
 		return "", fmt.Errorf("invalid auth mode %q: must be one of %v", s, ValidModes())
 	}

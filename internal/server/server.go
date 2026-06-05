@@ -162,6 +162,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Review queue (stats MUST be registered before the prefix match)
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
@@ -210,6 +211,13 @@ func (s *Server) BuildAuth() auth.Authenticator {
 			s.cfg.AuthJWTIssuer,
 			s.cfg.AuthJWTAudience,
 			s.cfg.AuthJWKSURL,
+			s.logger,
+		)
+	case auth.ModeOIDC:
+		s.logger.Info("oidc auth enabled", "issuer", s.cfg.AuthOIDCIssuer)
+		return auth.NewOIDCAuthenticator(
+			s.cfg.AuthOIDCIssuer,
+			s.cfg.AuthOIDCClientID,
 			s.logger,
 		)
 	default:
