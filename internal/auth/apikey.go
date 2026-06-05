@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"crypto/subtle"
 	"fmt"
 	"net/http"
 	"os"
@@ -68,11 +69,11 @@ func (a *APIKeyAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 		return nil, ErrUnauthenticated
 	}
 
-	// Check global keys first
-	if token == a.writeKey {
+	// Check global keys first — constant-time comparison to prevent timing attacks
+	if constantTimeEqual(token, a.writeKey) {
 		return &Claims{Access: []string{"read", "write"}}, nil
 	}
-	if token == a.readKey {
+	if constantTimeEqual(token, a.readKey) {
 		return &Claims{Access: []string{"read"}}, nil
 	}
 
@@ -80,10 +81,10 @@ func (a *APIKeyAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	vault := vaultNameFromPath(r.URL.Path)
 	if vault != "" {
 		if keys, ok := a.vaultKeys[vault]; ok {
-			if token == keys.writeKey {
+			if constantTimeEqual(token, keys.writeKey) {
 				return &Claims{Access: []string{"read", "write"}, Vaults: []string{vault}}, nil
 			}
-			if token == keys.readKey {
+			if constantTimeEqual(token, keys.readKey) {
 				return &Claims{Access: []string{"read"}, Vaults: []string{vault}}, nil
 			}
 		}
@@ -91,6 +92,12 @@ func (a *APIKeyAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 
 	// No matching key found
 	return nil, ErrUnauthenticated
+}
+
+// constantTimeEqual compares two strings in constant time to prevent timing attacks.
+// Returns false when lengths differ (short-circuit is safe — lengths are public).
+func constantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 
 // vaultNameFromPath extracts vault name from a /vault/{name}/... path.
