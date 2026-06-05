@@ -3,7 +3,9 @@ package qdrant
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
+	"time"
 
 	pb "github.com/qdrant/go-client/qdrant"
 	"google.golang.org/grpc"
@@ -53,6 +55,32 @@ func New(ctx context.Context, url, collection string, vectorSize uint64) (*Clien
 	}
 
 	return c, nil
+}
+
+// NewReconnecting wraps New but enters a reconnection loop on failure.
+// It retries with exponential backoff (1s, 5s, 30s, 60s then gives up) and
+// never calls os.Exit — the caller handles degraded mode instead.
+func NewReconnecting(ctx context.Context, url, collection string, vectorSize uint64, logger *slog.Logger) (*Client, error) {
+	backoff := []time.Duration{1 * time.Second, 5 * time.Second, 15 * time.Second, 30 * time.Second}
+	var lastErr error
+	for i := 0; ; i++ {
+		c, err := New(ctx, url, collection, vectorSize)
+		if err == nil {
+			return c, nil
+		}
+		lastErr = err
+		if i >= len(backoff)-1 {
+			break
+		}
+		logger.Warn("qdrant reconnecting",
+			"attempt", i+1, "backoff", backoff[i], "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff[i]):
+		}
+	}
+	return nil, fmt.Errorf("qdrant connection failed after all retries: %w", lastErr)
 }
 
 // CreatePayloadIndex creates a payload field index on the specified collection.
