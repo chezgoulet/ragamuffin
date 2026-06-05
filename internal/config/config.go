@@ -69,6 +69,7 @@ type Config struct {
 	EmbeddingModel    string
 	EmbeddingBaseURL  string
 	EmbeddingDims     int
+	EmbeddingTimeout  time.Duration
 	ChunkVectorSize   uint64 // vector dimension for chunk/doc collections (defaults to EmbeddingDims)
 
 	// Optional — Chunking
@@ -338,6 +339,7 @@ func Load() (*Config, error) {
 		EmbeddingModel:    envOrDefault("RAGAMUFFIN_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBaseURL:  envOrDefault("RAGAMUFFIN_EMBEDDING_BASE_URL", "https://api.openai.com/v1"),
 		EmbeddingDims:     envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536),
+		EmbeddingTimeout:  envDuration("RAGAMUFFIN_EMBEDDING_TIMEOUT", 30*time.Second),
 		ChunkVectorSize:   uint64(envInt("RAGAMUFFIN_CHUNK_VECTOR_SIZE", 0)),
 
 		ChunkMaxTokens: envInt("RAGAMUFFIN_CHUNK_MAX_TOKENS", 2000),

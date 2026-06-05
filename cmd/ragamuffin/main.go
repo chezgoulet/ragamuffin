@@ -175,7 +175,7 @@ func main() {
 	// ── Initialize embedding client (shared, optional) ──────────────────────
 	var ec embedding.Embedder
 	if cfg.EmbeddingAPIKey != "" {
-		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel)
+		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingTimeout)
 		logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
 	} else {
 		logger.Warn("EMBEDDING_API_KEY not set — indexing and /recall disabled")
@@ -270,7 +270,7 @@ func main() {
 
 			// Per-vault embedding client (optional override)
 			if vc.HasEmbedding() {
-				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel)
+				vec := embedding.New(vc.EmbeddingEndpoint, vc.EmbeddingApiKey, vc.EmbeddingModel, cfg.EmbeddingTimeout)
 				idxManager.SetEmbedder(name, vec)
 				logger.Info("per-vault embedding client configured", "vault", name, "model", vc.EmbeddingModel)
 			}

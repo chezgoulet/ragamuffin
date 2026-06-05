@@ -476,7 +476,7 @@ func TestLlmFor_VaultContext_BothNil(t *testing.T) {
 func TestEmbeddingFor_NoContext_FallsToServerDefault(t *testing.T) {
 	srv := &Server{
 		cfg:       &config.Config{},
-		embedder:  embedding.New("http://embed", "sk-1", "model"),
+		embedder:  embedding.New("http://embed", "sk-1", "model", 30*time.Second),
 		indexers:  indexer.NewManager(),
 	}
 
@@ -503,10 +503,10 @@ func TestEmbeddingFor_NoContext_NilEmbedder(t *testing.T) {
 }
 
 func TestEmbeddingFor_VaultContext_UsesPerVault(t *testing.T) {
-	perVaultEc := embedding.New("http://vault-embed", "sk-2", "vault-model")
+	perVaultEc := embedding.New("http://vault-embed", "sk-2", "vault-model", 30*time.Second)
 	srv := &Server{
 		cfg:      &config.Config{},
-		embedder: embedding.New("http://server-embed", "sk-1", "server-model"),
+		embedder: embedding.New("http://server-embed", "sk-1", "server-model", 30*time.Second),
 		indexers: indexer.NewManager(),
 	}
 	srv.indexers.SetEmbedder("docs", perVaultEc)
@@ -522,7 +522,7 @@ func TestEmbeddingFor_VaultContext_UsesPerVault(t *testing.T) {
 }
 
 func TestEmbeddingFor_VaultContext_FallsToServerWhenNoPerVault(t *testing.T) {
-	serverEc := embedding.New("http://server-embed", "sk-1", "server-model")
+	serverEc := embedding.New("http://server-embed", "sk-1", "server-model", 30*time.Second)
 	srv := &Server{
 		cfg:      &config.Config{},
 		embedder: serverEc,

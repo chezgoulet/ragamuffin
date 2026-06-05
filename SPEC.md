@@ -489,6 +489,7 @@ RAGAMUFFIN_EMBEDDING_PROVIDER=openai
 RAGAMUFFIN_EMBEDDING_MODEL=text-embedding-3-small
 RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1
 RAGAMUFFIN_EMBEDDING_DIMS=1536
+RAGAMUFFIN_EMBEDDING_TIMEOUT=30s
 RAGAMUFFIN_CHUNK_VECTOR_SIZE=0           # 0 = inherit from EMBEDDING_DIMS
 
 # ── Optional — Qdrant ─────────────────────────────────────────────────────────
@@ -588,6 +589,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_EMBEDDING_MODEL` | no | `text-embedding-3-small` | Model name |
 | `RAGAMUFFIN_EMBEDDING_BASE_URL` | no | `https://api.openai.com/v1` | Base URL (include `/v1`) |
 | `RAGAMUFFIN_EMBEDDING_DIMS` | no | `1536` | Embedding dimension (auto-detected, override to pin) |
+| `RAGAMUFFIN_EMBEDDING_TIMEOUT` | no | `30s` | Embedding client HTTP timeout |
 | `RAGAMUFFIN_CHUNK_VECTOR_SIZE` | no | `0` | Vector dimension for chunk/doc cols. `0` = inherit from `EMBEDDING_DIMS`. |
 | `RAGAMUFFIN_CHUNK_STRATEGY` | no | `auto` | `auto` (content-aware), `fixed` (token window), `paragraph` |
 | `RAGAMUFFIN_CHUNK_MAX_TOKENS` | no | `2000` | Max tokens per chunk |
