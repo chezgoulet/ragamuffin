@@ -26,9 +26,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 
-	if err := s.qdrant.Health(ctx); err != nil {
-		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("Qdrant unavailable: %s", err))
-		return
+	qdrantStatus := "ok"
+	err := s.qdrant.Health(ctx)
+	if err != nil {
+		if s.QdrantReconnecting() {
+			qdrantStatus = "reconnecting"
+		} else {
+			qdrantStatus = "down"
+		}
 	}
 
 	idx := s.indexerFor(r.Context())
@@ -38,9 +43,14 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		_, _, _, indexing, progressPct, totalFiles = idx.Stats()
 	}
 
+	status := "ok"
+	if qdrantStatus != "ok" {
+		status = "degraded"
+	}
+
 	resp := map[string]any{
-		"status":  "ok",
-		"qdrant":  "reachable",
+		"status":  status,
+		"qdrant":  qdrantStatus,
 		"indexing": indexing,
 	}
 	if indexing {

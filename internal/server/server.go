@@ -62,6 +62,9 @@ type Server struct {
 	started     time.Time
 	mu          sync.Mutex
 	requestCounts map[string]map[string]int64 // endpoint -> status -> count
+
+	qdrantReconnecting bool
+	qdrantMu          sync.RWMutex
 }
 
 // New creates a new Server.
@@ -142,26 +145,26 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	if s.cfg.IsMultiTenant() {
 		// Vault-prefixed routes (multi-tenant mode)
-		mux.HandleFunc("/vault/{name}/recall", s.withRequestID(s.withVaultRateLimit("/recall", s.handleVaultRecall)))
-		mux.HandleFunc("/vault/{name}/ask", s.withRequestID(s.withVaultRateLimit("/ask", s.handleVaultAsk)))
-		mux.HandleFunc("/vault/{name}/draft", s.withRequestID(s.withVaultRateLimit("/draft", s.handleVaultDraft)))
-		mux.HandleFunc("/vault/{name}/audit", s.withRequestID(s.withVaultRateLimit("/audit", s.handleVaultAudit)))
-		mux.HandleFunc("/vault/{name}/v1/facts", s.withRequestID(s.withVaultRateLimit("/v1/facts", s.handleVaultFacts)))
+		mux.HandleFunc("/vault/{name}/recall", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/recall", s.handleVaultRecall))))
+		mux.HandleFunc("/vault/{name}/ask", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/ask", s.handleVaultAsk))))
+		mux.HandleFunc("/vault/{name}/draft", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/draft", s.handleVaultDraft))))
+		mux.HandleFunc("/vault/{name}/audit", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/audit", s.handleVaultAudit))))
+		mux.HandleFunc("/vault/{name}/v1/facts", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleVaultFacts))))
 		mux.HandleFunc("/vault/{name}/v1/logs", s.withRequestID(s.withVaultRateLimit("/v1/logs", s.handleVaultLogs)))
-		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot)))
-		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withVaultRateLimit("/reindex", s.handleReindex)))
+		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot))))
+		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/reindex", s.handleReindex))))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
 	} else {
 		// Single-tenant routes (v0.1–v0.3 behavior)
-		mux.HandleFunc("/recall", s.withRequestID(s.withRateLimit("/recall", s.handleRecall)))
-		mux.HandleFunc("/ask", s.withRequestID(s.withRateLimit("/ask", s.handleAsk)))
-		mux.HandleFunc("/draft", s.withRequestID(s.withRateLimit("/draft", s.handleDraft)))
-		mux.HandleFunc("/audit", s.withRequestID(s.withRateLimit("/audit", s.handleAudit)))
-		mux.HandleFunc("/reindex", s.withRequestID(s.withRateLimit("/reindex", s.handleReindex)))
+		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
+		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
+		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
+		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
+		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
 	}
 
 	// Facts
-	mux.HandleFunc("/v1/facts", s.withRequestID(s.withRateLimit("/v1/facts", s.handleFacts)))
+	mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Review queue (stats MUST be registered before the prefix match)
@@ -179,7 +182,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
 
 	// Snapshot
-	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.withRateLimit("/v1/snapshot", s.handleSnapshot)))
+	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/snapshot", s.handleSnapshot))))
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
@@ -251,6 +254,21 @@ func (r *statusRecorder) Flush() {
 // Accepts X-Request-ID from the client, or generates a new UUID.
 // Stores the ID in the request context, echoes it in the response, and
 // tracks request counts for /metrics.
+// withQdrant returns 503 if Qdrant is reconnecting, otherwise passes through.
+// Endpoints that depend on Qdrant should be wrapped with this middleware.
+func (s *Server) withQdrant(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.QdrantReconnecting() {
+			writeJSON(w, 503, map[string]any{
+				"status": "degraded",
+				"detail": "qdrant reconnecting",
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (s *Server) withRequestID(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		reqID := r.Header.Get("X-Request-ID")
@@ -775,6 +793,20 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Write([]byte(b.String()))
+}
+
+// SetQdrantReconnecting marks whether Qdrant is in reconnection mode.
+func (s *Server) SetQdrantReconnecting(v bool) {
+	s.qdrantMu.Lock()
+	defer s.qdrantMu.Unlock()
+	s.qdrantReconnecting = v
+}
+
+// QdrantReconnecting returns whether Qdrant is currently reconnecting.
+func (s *Server) QdrantReconnecting() bool {
+	s.qdrantMu.RLock()
+	defer s.qdrantMu.RUnlock()
+	return s.qdrantReconnecting
 }
 
 func (s *Server) qdrantHealth() int {

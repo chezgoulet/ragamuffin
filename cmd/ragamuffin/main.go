@@ -51,14 +51,12 @@ func buildVault(
 	watcherDoneChs *[]chan struct{},
 	prunerEventChs *[]chan watcher.Event,
 ) (*vaultSetup, error) {
-	// ── Connect to Qdrant ──────────────────────────────────────────────
-	ctxQ, cancelQ := context.WithTimeout(ctx, 10*time.Second)
+	// ── Connect to Qdrant (with reconnection loop) ──────────────────────
 	chunkVectorSize := uint64(cfg.EmbeddingDims)
 	if cfg.ChunkVectorSize > 0 {
 		chunkVectorSize = cfg.ChunkVectorSize
 	}
-	qc, err := qdrant.New(ctxQ, cfg.QdrantURL, collectionName, chunkVectorSize)
-	cancelQ()
+	qc, err := qdrant.NewReconnecting(ctx, cfg.QdrantURL, collectionName, chunkVectorSize, logger)
 	if err != nil {
 		return nil, fmt.Errorf("qdrant connect for vault %q: %w", name, err)
 	}
@@ -165,12 +163,10 @@ func main() {
 
 	logger.Info("starting ragamuffin", "qdrant", cfg.QdrantURL)
 
-	// ── Connect to Qdrant facts collection ───────────────────────────────────
-	ctxFacts, cancelFacts := context.WithTimeout(context.Background(), 10*time.Second)
-	factsQc, err := qdrant.New(ctxFacts, cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize)
-	cancelFacts()
+	// ── Connect to Qdrant facts collection (with reconnection loop) ──────────
+	factsQc, err := qdrant.NewReconnecting(context.Background(), cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize, logger)
 	if err != nil {
-		logger.Error("failed to connect to facts Qdrant", "error", err)
+		logger.Error("failed to connect to facts Qdrant after retries", "error", err)
 		os.Exit(1)
 	}
 	defer factsQc.Close()
