@@ -422,9 +422,16 @@ func TestStaleScan_MarksStaleFacts(t *testing.T) {
 				return nil, nil // end of pagination
 			}
 
-			// Verify filter shape
-			if filter == nil || len(filter.Must) != 3 {
-				t.Fatalf("expected 3 must conditions, got %d conditions", len(filter.Must))
+			// Before #380 (fact graph) merges, staleScan calls scrollFilteredFacts
+			// once with the full stale filter. After #380, collectReferencedKeys
+			// adds an initial scroll with a 1-condition (status=active) filter.
+			// Verify shape only when it's the 3-condition stale filter.
+			if filter != nil && len(filter.Must) == 3 {
+				if filter.Must[0].GetField().GetKey() != "status" ||
+					filter.Must[1].GetField().GetKey() != "ttl_days" ||
+					filter.Must[2].GetField().GetKey() != "expires_at_unix" {
+					t.Fatalf("unexpected filter structure")
+				}
 			}
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
