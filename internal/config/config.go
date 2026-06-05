@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -296,14 +297,21 @@ func (c *Config) Validate() []string {
 }
 
 func parseURL(raw string) (interface{}, error) {
-	// gRPC addresses are bare host:port — skip URL validation
-	if strings.Contains(raw, ":") && !strings.Contains(raw, "://") {
+	// Bare host:port or host — valid gRPC address, skip URL validation
+	if !strings.Contains(raw, "://") && strings.Contains(raw, ":") {
 		return nil, nil
 	}
-	if !strings.Contains(raw, "://") {
-		return nil, fmt.Errorf("missing scheme")
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("malformed URL: %w", err)
 	}
-	return nil, nil
+	if u.Scheme == "" {
+		return nil, fmt.Errorf("missing scheme: %q", raw)
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("missing host: %q", raw)
+	}
+	return u, nil
 }
 
 // Load reads configuration from environment variables with defaults.
