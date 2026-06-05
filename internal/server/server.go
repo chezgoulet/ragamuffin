@@ -152,6 +152,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/draft", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/draft", s.handleVaultDraft))))
 		mux.HandleFunc("/vault/{name}/audit", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/audit", s.handleVaultAudit))))
 		mux.HandleFunc("/vault/{name}/v1/facts", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleVaultFacts))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactGraph))))
 		mux.HandleFunc("/vault/{name}/v1/logs", s.withRequestID(s.withVaultRateLimit("/v1/logs", s.handleVaultLogs)))
 		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot))))
 		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/reindex", s.handleReindex))))
@@ -169,6 +170,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Facts
 	mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+	mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Review queue (stats MUST be registered before the prefix match)

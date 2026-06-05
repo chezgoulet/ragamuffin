@@ -57,6 +57,8 @@ type factResponse struct {
 	Supersedes       string   `json:"supersedes"`
 	SupersededBy     int      `json:"superseded_by,omitempty"`
 	Contradicts      []string `json:"contradicts,omitempty"`
+	Refines          string   `json:"refines"`
+	Supports         []string `json:"supports,omitempty"`
 	ConflictResolved bool     `json:"conflict_resolved"`
 	ConfirmationCount int     `json:"confirmation_count"`
 	LastConfirmedAt  string   `json:"last_confirmed_at,omitempty"`
@@ -75,6 +77,8 @@ type factUpdateRequest struct {
 	SourceType       *string   `json:"source_type,omitempty"`
 	Status           *string   `json:"status,omitempty"`
 	Supersedes       *string   `json:"supersedes,omitempty"`
+	Refines          *string   `json:"refines,omitempty"`
+	Supports         *[]string `json:"supports,omitempty"`
 	Confidence       *float64  `json:"confidence,omitempty"`
 	ConflictResolved *bool     `json:"conflict_resolved,omitempty"`
 	ConfirmationCount *int     `json:"confirmation_count,omitempty"`
@@ -242,6 +246,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"status":            "active",
 		"supersedes":        "",
 		"superseded_by":     0,
+		"refines":           "",
 		"conflict_resolved": true,
 		"confirmation_count": 1,
 		"last_confirmed_at": now,
@@ -253,6 +258,12 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	})
 	// Contradicts: empty list (server-managed)
 	payload["contradicts"] = &qdrant.Value{
+		Kind: &qdrant.Value_ListValue{
+			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+		},
+	}
+	// Supports: empty list (server-managed)
+	payload["supports"] = &qdrant.Value{
 		Kind: &qdrant.Value_ListValue{
 			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
 		},
@@ -502,6 +513,18 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 	applyFieldUpdate(payload, "source_type", req.SourceType)
 	applyFieldUpdate(payload, "status", req.Status)
 	applyFieldUpdate(payload, "supersedes", req.Supersedes)
+	applyFieldUpdate(payload, "refines", req.Refines)
+	if req.Supports != nil {
+		sv := make([]*qdrant.Value, len(*req.Supports))
+		for i, s := range *req.Supports {
+			sv[i] = qutil.Nv(s)
+		}
+		payload["supports"] = &qdrant.Value{
+			Kind: &qdrant.Value_ListValue{
+				ListValue: &qdrant.ListValue{Values: sv},
+			},
+		}
+	}
 
 	if req.Confidence != nil {
 		payload["confidence"] = qutil.Nv(*req.Confidence)
@@ -615,6 +638,18 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 		applyFieldUpdate(payload, "source_type", req.Updates.SourceType)
 		applyFieldUpdate(payload, "status", req.Updates.Status)
 		applyFieldUpdate(payload, "supersedes", req.Updates.Supersedes)
+		applyFieldUpdate(payload, "refines", req.Updates.Refines)
+		if req.Updates.Supports != nil {
+			sv := make([]*qdrant.Value, len(*req.Updates.Supports))
+			for i, s := range *req.Updates.Supports {
+				sv[i] = qutil.Nv(s)
+			}
+			payload["supports"] = &qdrant.Value{
+				Kind: &qdrant.Value_ListValue{
+					ListValue: &qdrant.ListValue{Values: sv},
+				},
+			}
+		}
 
 		if req.Updates.Confidence != nil {
 			payload["confidence"] = qutil.Nv(*req.Updates.Confidence)
@@ -953,6 +988,20 @@ func (s *Server) migrateFacts() {
 				payload["superseded_by"] = qutil.Nv(float64(0))
 				needsUpdate = true
 			}
+			// refines: default ""
+			if _, ok := payload["refines"]; !ok {
+				payload["refines"] = qutil.Nv("")
+				needsUpdate = true
+			}
+			// supports: default empty list
+			if _, ok := payload["supports"]; !ok {
+				payload["supports"] = &qdrant.Value{
+					Kind: &qdrant.Value_ListValue{
+						ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+					},
+				}
+				needsUpdate = true
+			}
 
 			if !needsUpdate {
 				continue
@@ -1044,6 +1093,8 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.Supersedes, _ = getPayloadString(payload, "supersedes")
 	fr.SupersededBy, _ = getPayloadInt(payload, "superseded_by")
 	fr.Contradicts = getPayloadStringList(payload, "contradicts")
+	fr.Refines, _ = getPayloadString(payload, "refines")
+	fr.Supports = getPayloadStringList(payload, "supports")
 	fr.ConflictResolved, _ = getPayloadBool(payload, "conflict_resolved")
 	fr.ConfirmationCount, _ = getPayloadInt(payload, "confirmation_count")
 	fr.LastConfirmedAt, _ = getPayloadString(payload, "last_confirmed_at")
