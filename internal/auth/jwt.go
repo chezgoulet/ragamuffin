@@ -82,7 +82,7 @@ func (j *JWTAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	}
 
 	// Fetch and cache JWKS
-	keys, err := j.getJWKS()
+	keys, err := j.GetJWKS()
 	if err != nil {
 		return nil, fmt.Errorf("jwks: %w", err)
 	}
@@ -119,8 +119,9 @@ func (j *JWTAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	}, nil
 }
 
-// getJWKS fetches and caches JWKS keys.
-func (j *JWTAuthenticator) getJWKS() (map[string]cachedKey, error) {
+// GetJWKS fetches and caches JWKS keys. Exported for re-use by the
+// OIDC authenticator which shares the same JWKS infrastructure.
+func (j *JWTAuthenticator) GetJWKS() (map[string]cachedKey, error) {
 	j.mu.RLock()
 	if j.jwks != nil && time.Since(j.fetchedAt) < j.cacheTTL {
 		defer j.mu.RUnlock()

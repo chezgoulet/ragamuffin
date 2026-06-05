@@ -126,6 +126,8 @@ type Config struct {
 	AuthJWTIssuer   string
 	AuthJWTAudience string
 	AuthJWKSURL     string
+	AuthOIDCIssuer   string
+	AuthOIDCClientID string
 
 	// Optional — Logging
 	LogLevel string
@@ -264,10 +266,15 @@ func (c *Config) Validate() []string {
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
-	case "none", "api_key", "jwt":
+	case "none", "api_key", "jwt", "oidc":
 		// valid
 	default:
-		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_AUTH_MODE must be 'none', 'api_key', or 'jwt', got %q", c.AuthMode))
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_AUTH_MODE must be 'none', 'api_key', 'jwt', or 'oidc', got %q", c.AuthMode))
+	}
+
+	// OIDC mode requires issuer and client ID
+	if strings.ToLower(c.AuthMode) == "oidc" && c.AuthOIDCIssuer == "" {
+		errs = append(errs, "RAGAMUFFIN_AUTH_OIDC_ISSUER is required for OIDC mode")
 	}
 
 	return errs
@@ -347,12 +354,14 @@ func Load() (*Config, error) {
 		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
-		AuthMode:        envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
-		AuthReadKey:     os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
-		AuthWriteKey:    os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
-		AuthJWTIssuer:   os.Getenv("RAGAMUFFIN_AUTH_JWT_ISSUER"),
-		AuthJWTAudience: os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
-		AuthJWKSURL:     os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
+		AuthMode:         envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
+		AuthReadKey:      os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
+		AuthWriteKey:     os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
+		AuthJWTIssuer:    os.Getenv("RAGAMUFFIN_AUTH_JWT_ISSUER"),
+		AuthJWTAudience:  os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
+		AuthJWKSURL:      os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
+		AuthOIDCIssuer:   os.Getenv("RAGAMUFFIN_AUTH_OIDC_ISSUER"),
+		AuthOIDCClientID: os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
