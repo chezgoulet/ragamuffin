@@ -119,10 +119,8 @@ func testFactPayload(key, value, status string) map[string]*pb.Value {
 }
 
 func newFactGraphServer(store *factGraphTestStore) *Server {
-	cfg := config.DefaultConfig()
-	cfg.FactsCollection = "test_facts"
 	return &Server{
-		cfg:   &cfg,
+		cfg:   &config.Config{FactsCollection: "test_facts"},
 		facts: store,
 	}
 }
