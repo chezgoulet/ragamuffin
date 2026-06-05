@@ -250,6 +250,8 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"conflict_resolved": true,
 		"confirmation_count": 1,
 		"last_confirmed_at": now,
+		"access_count":      0,
+		"last_accessed_at":  "",
 		"created_at":        createdAt,
 		"updated_at":        now,
 		"ttl_days":          intValue(fp.TTLDays),
@@ -354,6 +356,8 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 500, "INVALID_DATA", "corrupt fact data")
 			return
 		}
+		// Track access for importance scoring
+		go s.incrementFactAccess(context.Background(), key)
 		writeJSON(w, 200, resp)
 		return
 	}
@@ -1257,4 +1261,29 @@ func getPayloadBoolValue(payload map[string]*qdrant.Value, key string) bool {
 
 func getPayloadIntValue(payload map[string]*qdrant.Value, key string) int {
 	return qutil.GetPayloadIntValue(payload, key)
+}
+
+func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(factKey), 1, "")
+	if err != nil || len(points) == 0 {
+		s.log(ctx).Debug("incrementFactAccess: fact not found", "key", factKey, "error", err)
+		return
+	}
+	pt := points[0]
+	pointID := pt.GetId()
+	if pointID == nil || pointID.GetUuid() == "" {
+		return
+	}
+
+	// Read current access_count or default 0
+	currentCount := getPayloadIntValue(pt.GetPayload(), "access_count")
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	setPayload := map[string]*qdrant.Value{
+		"access_count":     qutil.Nv(float64(currentCount + 1)),
+		"last_accessed_at": qutil.Nv(now),
+	}
+	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
+		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
+	}
 }

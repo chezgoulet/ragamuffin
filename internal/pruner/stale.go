@@ -80,6 +80,8 @@ func (p *Pruner) staleScan(ctx context.Context) {
 		referencedKeys = nil
 	}
 
+	threshold := p.cfg.ImportanceThreshold
+	skipped := 0
 	marked := 0
 	skippedEdges := 0
 	for _, pt := range points {
@@ -88,10 +90,22 @@ func (p *Pruner) staleScan(ctx context.Context) {
 			continue
 		}
 
+		// Skip facts referenced by active graph edges first
 		key, _ := getPayloadString(pt.GetPayload(), "fact_key")
 		if key != "" && referencedKeys[key] {
 			skippedEdges++
 			continue
+		}
+
+		// If importance threshold is set, skip facts above the threshold
+		if threshold > 0 {
+			importance := computeImportance(pt.GetPayload())
+			if importance >= threshold {
+				skipped++
+				p.logger.Debug("staleScan: skipping high-importance fact",
+					"point_id", pointID, "importance", importance, "threshold", threshold)
+				continue
+			}
 		}
 
 		if err := p.updateFactStatus(ctx, pointID, "needs_review"); err != nil {
@@ -99,6 +113,10 @@ func (p *Pruner) staleScan(ctx context.Context) {
 			continue
 		}
 		marked++
+	}
+
+	if skipped > 0 {
+		p.logger.Info("staleScan importance filter", "skipped", skipped, "threshold", threshold)
 	}
 
 	p.logger.Info("staleScan complete", "found", len(points), "skipped_due_to_edges", skippedEdges, "marked", marked)

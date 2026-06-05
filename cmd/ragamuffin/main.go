@@ -327,6 +327,7 @@ func main() {
 	prunerCfg.StaleDays = cfg.PrunerStaleDays
 	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
 	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
+	prunerCfg.ImportanceThreshold = cfg.PrunerImportanceThreshold
 	prunerCfg.LogScanFn = func(scanName string, dur time.Duration, flagged int, errStr string) {
 		body := fmt.Sprintf("scan=%s duration=%s facts_flagged=%d", scanName, dur, flagged)
 		if errStr != "" {
