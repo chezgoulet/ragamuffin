@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 )
 
@@ -100,6 +101,12 @@ func countFilesInVault(vaultPath string) (int, error) {
 func (s *Server) handleSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET")
+		return
+	}
+
+	// Snapshot streams the entire vault — requires write-level access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required for snapshot")
 		return
 	}
 
