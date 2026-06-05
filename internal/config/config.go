@@ -103,6 +103,7 @@ type Config struct {
 	PrunerStaleDays              int
 	PrunerConflictSampleSize     int
 	PrunerLowConfidenceThreshold float64
+	PrunerImportanceThreshold   float64
 
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath        string          // explicit path for log.db; empty = heuristic
@@ -367,6 +368,7 @@ func Load() (*Config, error) {
 		PrunerStaleDays:              envInt("RAGAMUFFIN_PRUNER_STALE_DAYS", 90),
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
+		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),

@@ -45,6 +45,11 @@ type PrunerConfig struct {
 	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
 	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
 
+	// ImportanceThreshold (0.0-1.0) — facts with importance scores above this
+	// threshold are skipped during stale scanning even if they exceed age/staleness.
+	// Default 0.0 = disabled (all stale facts are flagged regardless).
+	ImportanceThreshold float64
+
 	// LogScanFn is called after each scan completes. Optional; used by the server
 	// to log scan summaries to /v1/logs.
 	LogScanFn func(scanName string, duration time.Duration, factsFlagged int, errStr string)
