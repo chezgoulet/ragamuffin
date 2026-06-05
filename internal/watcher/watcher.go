@@ -2,11 +2,11 @@
 package watcher
 
 import (
-	"path/filepath"
-	"strings"
 	"time"
 
 	"log/slog"
+
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 )
 
 // Event represents a file change.
@@ -68,17 +68,5 @@ func New(vaultPath string, interval time.Duration, logger *slog.Logger, mode str
 
 // isIndexable returns true if the file extension is supported.
 func isIndexable(path string) bool {
-	// Skip dot-directories (.git, .github) — never useful retrieval targets
-	if strings.Contains(path, "/.") || strings.HasPrefix(path, ".") {
-		return false
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".md", ".txt", ".org", ".rst":
-		return true
-	case "":
-		return true // no extension = treat as text
-	default:
-		return false
-	}
+	return indexutil.IsIndexable(path)
 }
