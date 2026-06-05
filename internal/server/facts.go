@@ -169,7 +169,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, 256*1024) // 256 KB for facts
+	r.Body = http.MaxBytesReader(w, r.Body, 1024*1024) // 1 MB for facts
 	var fp factPayload
 	if err := json.NewDecoder(r.Body).Decode(&fp); err != nil {
 		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid request body: %v", err))
