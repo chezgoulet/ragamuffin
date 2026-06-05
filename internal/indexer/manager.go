@@ -10,12 +10,13 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
 
-// Manager holds per-vault indexers, Qdrant clients, LLM clients, and
+// Manager holds per-vault indexers, Qdrant clients (chunk + fact), LLM clients, and
 // embedding clients. Single-tenant mode uses name "default".
 type Manager struct {
 	mu           sync.RWMutex
 	indexers     map[string]*Indexer
-	clients      map[string]qdrant.FactStore
+	clients      map[string]qdrant.FactStore  // chunk/doc Qdrant clients
+	factClients  map[string]qdrant.FactStore  // per-vault fact Qdrant clients
 	llmClients   map[string]llm.Synthesizer
 	embedClients map[string]embedding.Embedder
 }
@@ -25,6 +26,7 @@ func NewManager() *Manager {
 	return &Manager{
 		indexers:     make(map[string]*Indexer),
 		clients:      make(map[string]qdrant.FactStore),
+		factClients:  make(map[string]qdrant.FactStore),
 		llmClients:   make(map[string]llm.Synthesizer),
 		embedClients: make(map[string]embedding.Embedder),
 	}
@@ -54,6 +56,20 @@ func (m *Manager) GetClient(name string) qdrant.FactStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.clients[name]
+}
+
+// AddFactClient registers a per-vault facts Qdrant client.
+func (m *Manager) AddFactClient(name string, fc qdrant.FactStore) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.factClients[name] = fc
+}
+
+// GetFactClient returns the per-vault facts Qdrant client, or nil.
+func (m *Manager) GetFactClient(name string) qdrant.FactStore {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.factClients[name]
 }
 
 // SetLLM stores a per-vault LLM client. Pass nil to clear.

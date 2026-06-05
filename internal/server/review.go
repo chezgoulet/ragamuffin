@@ -135,7 +135,7 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 
 	filter := &qdrant.Filter{Must: conditions}
 
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, uint32(limit+1), offset)
+	points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, uint32(limit+1), offset)
 	if err != nil {
 		s.log(r.Context()).Error("review query failed", "error", err)
 		writeError(w, 500, "QUERY_FAILED", "failed to query review queue")
@@ -289,7 +289,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read existing fact
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+	points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key), 1, "")
 	if err != nil {
 		s.log(r.Context()).Error("review read failed", "error", err)
 		writeError(w, 500, "READ_FAILED", "failed to read fact")
@@ -538,7 +538,7 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 	var pointCount int
 
 	for {
-		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, pageSize, scrollOffset)
+		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, pageSize, scrollOffset)
 		if err != nil {
 			s.log(r.Context()).Error("review stats query failed", "error", err)
 			writeError(w, 500, "QUERY_FAILED", "failed to query review stats")
