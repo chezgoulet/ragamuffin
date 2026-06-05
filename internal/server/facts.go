@@ -1084,7 +1084,7 @@ func (s *Server) linkFactToChunks(key, value, vaultName string) {
 	}
 
 	// Search chunk collection with score threshold
-	results, err := qc.Search(ctx, vector, 10, 0.7, "")
+	results, err := qc.Search(ctx, vector, 10, 0.7, "", nil)
 	if err != nil {
 		s.logger.Warn("fact bridge: search failed", "key", key, "error", err)
 		return

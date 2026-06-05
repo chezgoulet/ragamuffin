@@ -10,6 +10,9 @@ import (
 	"strings"
 	"time"
 
+	pb "github.com/qdrant/go-client/qdrant"
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
@@ -158,11 +161,19 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 
 // ── /recall ────────────────────────────────────────────────────────────────────
 
+type recallFilters struct {
+	PathPrefix string   `json:"path_prefix"`
+	Tags       []string `json:"tags"`
+	DateFrom   string   `json:"date_from"`
+	DateTo     string   `json:"date_to"`
+}
+
 type recallRequest struct {
-	Query          string  `json:"query"`
-	TopK           int     `json:"top_k"`
-	ScoreThreshold float64 `json:"score_threshold"`
-	SourceFilter   string  `json:"source_filter"`
+	Query          string        `json:"query"`
+	TopK           int           `json:"top_k"`
+	ScoreThreshold float64       `json:"score_threshold"`
+	SourceFilter   string        `json:"source_filter"`
+	Filters        *recallFilters `json:"filters,omitempty"`
 }
 
 type recallResult struct {
@@ -172,6 +183,84 @@ type recallResult struct {
 	ChunkIndex      int     `json:"chunk_index"`
 	Score           float32 `json:"score"`
 	FileLastUpdated string  `json:"file_last_updated"`
+}
+
+// recallFilter builds a Qdrant filter from the optional filters object.
+// Returns nil if no new-style filters are set (falls through to legacy sourceFilter).
+func recallFilter(req recallRequest) *pb.Filter {
+	if req.Filters == nil {
+		return nil
+	}
+	if req.Filters.PathPrefix == "" && len(req.Filters.Tags) == 0 && req.Filters.DateFrom == "" && req.Filters.DateTo == "" {
+		return nil
+	}
+
+	var must []*pb.Condition
+
+	// Path prefix → MatchText (Qdrant full-text prefix match)
+	if req.Filters.PathPrefix != "" {
+		must = append(must, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
+					Key: "source_file",
+					Match: &pb.Match{
+						MatchValue: &pb.Match_Text{
+							Text: req.Filters.PathPrefix,
+						},
+					},
+				},
+			},
+		})
+	}
+
+	// Tags → MatchKeyword for each tag (Must = AND)
+	for _, tag := range req.Filters.Tags {
+		if tag == "" {
+			continue
+		}
+		must = append(must, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
+					Key: "tags",
+					Match: &pb.Match{
+						MatchValue: &pb.Match_Keyword{
+							Keyword: tag,
+						},
+					},
+				},
+			},
+		})
+	}
+
+	// Date range → DatetimeRange on file_last_updated
+	if req.Filters.DateFrom != "" || req.Filters.DateTo != "" {
+		dtr := &pb.DatetimeRange{}
+		if req.Filters.DateFrom != "" {
+			t, err := time.Parse(time.RFC3339, req.Filters.DateFrom)
+			if err == nil {
+				dtr.Gte = timestamppb.New(t)
+			}
+		}
+		if req.Filters.DateTo != "" {
+			t, err := time.Parse(time.RFC3339, req.Filters.DateTo)
+			if err == nil {
+				dtr.Lte = timestamppb.New(t)
+			}
+		}
+		must = append(must, &pb.Condition{
+			ConditionOneOf: &pb.Condition_Field{
+				Field: &pb.FieldCondition{
+					Key:          "file_last_updated",
+					DatetimeRange: dtr,
+				},
+			},
+		})
+	}
+
+	if len(must) == 0 {
+		return nil
+	}
+	return &pb.Filter{Must: must}
 }
 
 func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +301,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Search Qdrant
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter)
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, recallFilter(req))
 	if err != nil {
 		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
 		return
@@ -270,7 +359,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
-		results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "")
+		results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
@@ -309,7 +398,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
 		}
-		results, err := s.qdrantFor(ctx).Search(ctx, vector, 50, 0.0, "")
+		results, err := s.qdrantFor(ctx).Search(ctx, vector, 50, 0.0, "", nil)
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
@@ -334,7 +423,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			if tokenutil.EstTokens(b.String()) > 8000 { // conservative context limit
 				break
 			}
-			fileResults, err := s.qdrantFor(ctx).Search(ctx, vector, 100, 0.0, file)
+			fileResults, err := s.qdrantFor(ctx).Search(ctx, vector, 100, 0.0, file, nil)
 			if err != nil {
 				continue
 			}

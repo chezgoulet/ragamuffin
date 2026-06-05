@@ -28,7 +28,7 @@ type FactStore interface {
 
 	// Search performs vector similarity search with an optional source filter.
 	// scoreThreshold filters results below the given similarity score.
-	Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string) ([]*pb.ScoredPoint, error)
+	Search(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *pb.Filter) ([]*pb.ScoredPoint, error)
 
 	// DeleteBySource removes all points whose source_file matches.
 	DeleteBySource(ctx context.Context, sourceFile string) error
