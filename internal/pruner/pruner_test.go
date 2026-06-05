@@ -112,6 +112,9 @@ func (m *mockSynthesizer) Synthesize(_ context.Context, _, _ string) (string, er
 func (m *mockSynthesizer) Compare(_ context.Context, _, _, _, _ string) (string, error) {
 	return "similar", nil
 }
+func (m *mockSynthesizer) Health(_ context.Context) error {
+	return nil
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 

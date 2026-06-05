@@ -19,13 +19,13 @@ type Client struct {
 }
 
 // New creates an embedding client.
-func New(baseURL, apiKey, model string) *Client {
+func New(baseURL, apiKey, model string, timeout time.Duration) *Client {
 	return &Client{
 		baseURL: baseURL,
 		apiKey:  apiKey,
 		model:   model,
 		client: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 		},
 	}
 }
