@@ -171,6 +171,15 @@ func ValidVaultName(name string) bool {
 	return true
 }
 
+// FactsCollectionFor returns the vault-specific facts collection name.
+// Falls back to c.FactsCollection when vault name is empty.
+func (c *Config) FactsCollectionFor(vaultName string) string {
+	if vaultName != "" {
+		return fmt.Sprintf("ragamuffin_%s_facts", vaultName)
+	}
+	return c.FactsCollection
+}
+
 // Validate checks configuration and returns a list of fatal errors.
 // Returns nil if the configuration is valid.
 func (c *Config) Validate() []string {

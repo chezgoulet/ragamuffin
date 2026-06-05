@@ -375,6 +375,26 @@ func (s *Server) qdrantFor(ctx context.Context) qdrant.FactStore {
 	return s.qdrant
 }
 
+// factsCollectionFor returns the facts collection name for the vault in context.
+// Falls back to the global FactsCollection config value (single-tenant compat).
+func (s *Server) factsCollectionFor(ctx context.Context) string {
+	if name := vaultFromContext(ctx); name != "" {
+		return s.cfg.FactsCollectionFor(name)
+	}
+	return s.cfg.FactsCollection
+}
+
+// factsQdrantFor returns the per-vault facts Qdrant client from context,
+// falling back to the server-wide facts client.
+func (s *Server) factsQdrantFor(ctx context.Context) qdrant.FactStore {
+	if name := vaultFromContext(ctx); name != "" {
+		if fc := s.indexers.GetFactClient(name); fc != nil {
+			return fc
+		}
+	}
+	return s.facts
+}
+
 // llmFor returns the per-vault LLM client from context,
 // falling back to the server-wide LLM client for backward compatibility.
 // Returns nil if neither is configured.

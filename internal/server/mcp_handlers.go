@@ -493,7 +493,7 @@ func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) 
 
 	// Exact key lookup
 	if key != "" {
-		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
 		if err != nil {
 			return nil, fmt.Errorf("facts query failed: %w", err)
 		}
@@ -556,7 +556,7 @@ func (s *Server) mcpFactsList(ctx context.Context, args map[string]interface{}) 
 		limit = uint32(v)
 	}
 
-	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, filter, limit, "")
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), filter, limit, "")
 	if err != nil {
 		return nil, fmt.Errorf("facts query failed: %w", err)
 	}
@@ -623,7 +623,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 
 	if exists {
 		// Preserve created_at; read confirmation count
-		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
 		if err == nil && len(points) > 0 {
 			createdAt, _ = getPayloadString(points[0].GetPayload(), "created_at")
 			if cc, ok := points[0].GetPayload()["confirmation_count"]; ok {

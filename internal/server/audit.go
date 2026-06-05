@@ -264,7 +264,7 @@ func (s *Server) checkFactConflicts(ctx context.Context) []map[string]any {
 		},
 	}
 
-	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, filter, 0, "")
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), filter, 0, "")
 	if err != nil {
 		s.log(ctx).Error("fact conflict check: query failed", "error", err)
 		return nil
@@ -312,7 +312,7 @@ func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([
 			},
 		},
 	}
-	factPoints, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factFilter, uint32(sampleSize), "")
+	factPoints, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factFilter, uint32(sampleSize), "")
 	if err != nil || len(factPoints) == 0 {
 		s.log(ctx).Warn("fact_vault_conflict: no active facts found", "error", err)
 		return nil, 0

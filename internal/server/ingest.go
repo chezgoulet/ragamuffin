@@ -130,17 +130,33 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		return nil
 	}
 
-	// Connect to Qdrant with vault-specific collection
+	// Connect to Qdrant with vault-specific chunk collection
 	collectionName := fmt.Sprintf("ragamuffin_%s", name)
 	qdrantCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	qc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, uint64(s.cfg.EmbeddingDims))
+	chunkVectorSize := uint64(s.cfg.EmbeddingDims)
+	if s.cfg.ChunkVectorSize > 0 {
+		chunkVectorSize = s.cfg.ChunkVectorSize
+	}
+	qc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, chunkVectorSize)
 	if err != nil {
 		s.log(ctx).Error("failed to connect to Qdrant for provisioned vault",
 			"vault", name, "collection", collectionName, "error", err)
 		os.RemoveAll(vaultPath)
 		return nil
 	}
+
+	// Create vault-specific facts collection
+	factsCollectionName := fmt.Sprintf("ragamuffin_%s_facts", name)
+	factsQc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, factsCollectionName, s.cfg.FactsVectorSize)
+	if err != nil {
+		s.log(ctx).Error("failed to create facts collection for provisioned vault",
+			"vault", name, "collection", factsCollectionName, "error", err)
+		qc.Close()
+		os.RemoveAll(vaultPath)
+		return nil
+	}
+	s.indexers.AddFactClient(name, factsQc)
 
 	// Create indexer (share server-wide embedder, or the per-vault one if configured)
 	ec := s.embeddingFor(ctx)
@@ -151,6 +167,7 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 	if err := s.indexers.Add(name, idx, qc); err != nil {
 		s.log(ctx).Error("failed to register provisioned vault indexer", "vault", name, "error", err)
 		qc.Close()
+		factsQc.Close()
 		os.RemoveAll(vaultPath)
 		return nil
 	}

@@ -124,7 +124,7 @@ func factKeyFilter(key string) *qdrant.Filter {
 
 // factExists checks whether a fact with the given key exists.
 func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
-	points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
 	if err != nil {
 		return false, err
 	}
@@ -199,7 +199,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	}
 	if exists {
 		// Read existing point to preserve created_at
-		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(fp.Key), 1, "")
+		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(fp.Key), 1, "")
 		if err != nil {
 			s.log(r.Context()).Error("fact read for created_at failed", "error", err)
 		} else if len(points) > 0 {
@@ -316,7 +316,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 
 	// Exact key lookup
 	if key != "" {
-		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key), 1, "")
 		if err != nil {
 			s.log(r.Context()).Error("facts scroll failed", "error", err)
 			writeError(w, 500, "SCROLL_FAILED", "failed to query facts")
@@ -406,7 +406,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	offset := r.URL.Query().Get("before")
 
 	// Fetch limit+1 to detect if there's a next page
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, filter, uint32(limit+1), offset)
+	points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, uint32(limit+1), offset)
 	if err != nil {
 		s.log(r.Context()).Error("facts scroll failed", "error", err)
 		writeError(w, 500, "SCROLL_FAILED", "failed to query facts")
@@ -467,7 +467,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Read existing point
-	points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+	points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key), 1, "")
 	if err != nil {
 		s.log(r.Context()).Error("facts scroll for update failed", "error", err)
 		writeError(w, 500, "SCROLL_FAILED", "failed to read fact")
@@ -579,7 +579,7 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 
 	for _, key := range req.Keys {
 		// Perform a single-key update via read-modify-write
-		points, err := s.facts.ScrollFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key), 1, "")
+		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key), 1, "")
 		if err != nil {
 			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
 			failed++
@@ -685,7 +685,7 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.facts.DeleteFiltered(r.Context(), s.cfg.FactsCollection, factKeyFilter(key)); err != nil {
+	if err := s.facts.DeleteFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key)); err != nil {
 		s.log(r.Context()).Error("facts delete failed", "error", err)
 		writeError(w, 500, "DELETE_FAILED", "failed to delete fact")
 		return
