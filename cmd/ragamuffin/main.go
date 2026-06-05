@@ -209,7 +209,13 @@ func main() {
 		logger.Error("failed to open log store", "error", err)
 		os.Exit(1)
 	}
+	logStore.SetLogger(logger.With("component", "logstore"))
 	defer logStore.Close()
+
+	if err := logStore.IntegrityCheck(); err != nil {
+		logger.Warn("logstore integrity check failed", "error", err)
+	}
+
 	logger.Info("log store ready", "path", logPath)
 
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
@@ -344,6 +350,38 @@ func main() {
 	}
 	logger.Info("pruner event processors started", "count", len(prunerEventChs))
 
+	// ── Logstore periodic pruning ────────────────────────────────────────────
+	if cfg.LogstoreMaxRows > 0 {
+		// Run prune immediately, then every hour
+		go func() {
+			ctxPrune, cancelPrune := context.WithCancel(context.Background())
+			defer cancelPrune()
+
+			// Initial prune at startup
+			if deleted, err := logStore.Prune(ctxPrune, cfg.LogstoreMaxRows); err != nil {
+				logger.Warn("logstore initial prune failed", "error", err)
+			} else if deleted > 0 {
+				logger.Info("logstore initial prune complete", "deleted", deleted)
+			}
+
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					deleted, err := logStore.Prune(ctxPrune, cfg.LogstoreMaxRows)
+					if err != nil {
+						logger.Warn("logstore prune failed", "error", err)
+					} else if deleted > 0 {
+						logger.Info("logstore prune complete", "deleted", deleted)
+					}
+				case <-ctxPrune.Done():
+					return
+				}
+			}
+		}()
+	}
+
 	// ── Start HTTP server ────────────────────────────────────────────────────
 	// Use first vault's Qdrant client for shared Qdrant health check
 	var qc qdrant.FactStore
@@ -394,6 +432,14 @@ func main() {
 	go func() {
 		<-sigCh
 		logger.Info("shutting down...")
+
+		// 0. Flush SQLite pending writes
+		if logStore != nil {
+			if err := logStore.Flush(); err != nil {
+				logger.Warn("logstore flush failed", "error", err)
+			}
+			logStore.Close()
+		}
 
 		// 1. Cancel all indexers (stopping in-flight indexing)
 		for _, cancel := range idxCancelFuncs {
