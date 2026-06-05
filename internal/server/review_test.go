@@ -132,6 +132,8 @@ func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdra
 		"expires_at_unix":   nv(float64(0)),
 		"confirmation_count": nv(float64(0)),
 		"last_confirmed_at": nv(""),
+		"version":           nv(float64(0)),
+		"superseded_by":     nv(float64(0)),
 	}
 	for k, v := range overrides {
 		switch val := v.(type) {
