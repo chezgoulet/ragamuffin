@@ -36,9 +36,10 @@ type factPayload struct {
 	Source     string   `json:"source,omitempty"`
 	SourceType string   `json:"source_type,omitempty"`
 
-	Confidence *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
-	TTLDays    *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
-	Version    *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
+	Confidence    *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
+	TTLDays       *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
+	Version       *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
+	RelatedChunks []string `json:"related_chunks,omitempty"` // server-populated; ignored on upsert
 }
 
 // factResponse is the JSON response for a single fact (v0.5 lifecycle).
@@ -60,6 +61,7 @@ type factResponse struct {
 	CreatedAt        string   `json:"created_at,omitempty"`
 	UpdatedAt        string   `json:"updated_at"`
 	ExpiresAt        string   `json:"expires_at,omitempty"`
+	RelatedChunks    []string `json:"related_chunks,omitempty"`
 }
 
 // factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
@@ -290,6 +292,13 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	// that share the same key prefix and mark them as superseded.
 	if version > 0 {
 		go s.supersedeOlderVersions(context.Background(), fp.Key, version)
+	}
+
+	// Background fact-to-chunk bridge: link this fact to related chunks
+	vaultName := vaultFromContext(r.Context())
+	if s.embedder != nil && fp.Value != "" {
+		go s.linkFactToChunks(fp.Key, fp.Value, vaultName)
+	}
 	}
 
 	resp := pointToFactResponse(point.Payload, fp.Key)
@@ -1029,6 +1038,7 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.CreatedAt, _ = getPayloadString(payload, "created_at")
 	fr.UpdatedAt, _ = getPayloadString(payload, "updated_at")
 	fr.ExpiresAt, _ = getPayloadString(payload, "expires_at")
+	fr.RelatedChunks = getPayloadStringList(payload, "related_chunks")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1038,6 +1048,80 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 }
 
 // applyFieldUpdate sets payload[key] = qutil.Nv(*val) when val is non-nil.
+// linkFactToChunks embeds the fact value, searches the vault's chunk collection
+// for semantically similar chunks (score > 0.7), and stores the top chunk IDs
+// in the fact's related_chunks payload field. Runs as a background goroutine.
+func (s *Server) linkFactToChunks(key, value, vaultName string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Embed the fact value
+	vector, err := s.embedder.EmbedSingle(ctx, value)
+	if err != nil {
+		s.logger.Warn("fact bridge: embed failed", "key", key, "error", err)
+		return
+	}
+
+	// Resolve vault-scoped chunk client
+	var qc qdrant.FactStore
+	if vaultName != "" {
+		qc = s.indexers.GetClient(vaultName)
+	}
+	if qc == nil {
+		qc = s.qdrant
+	}
+
+	// Search chunk collection with score threshold
+	results, err := qc.Search(ctx, vector, 10, 0.7, "")
+	if err != nil {
+		s.logger.Warn("fact bridge: search failed", "key", key, "error", err)
+		return
+	}
+
+	// Collect chunk IDs (max 20)
+	chunkIDs := make([]string, 0, len(results))
+	for _, r := range results {
+		if len(chunkIDs) >= 20 {
+			break
+		}
+		if r.GetId() != nil {
+			chunkIDs = append(chunkIDs, r.GetId().GetUuid())
+		}
+	}
+	if len(chunkIDs) == 0 {
+		return
+	}
+
+	// Set related_chunks on the fact point via SetPayload
+	collection := s.cfg.FactsCollection
+	if vaultName != "" {
+		collection = s.cfg.FactsCollectionFor(vaultName)
+	}
+
+	// Build list value from chunk IDs
+	chunkValues := make([]*qdrant.Value, len(chunkIDs))
+	for i, id := range chunkIDs {
+		chunkValues[i] = qutil.Nv(id)
+	}
+
+	pointID := factKeyHash(key)
+	err = s.facts.SetPayload(ctx, collection, []*qdrant.PointId{{
+		PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+	}}, map[string]*qdrant.Value{
+		"related_chunks": {
+			Kind: &qdrant.Value_ListValue{
+				ListValue: &qdrant.ListValue{Values: chunkValues},
+			},
+		},
+	})
+	if err != nil {
+		s.logger.Warn("fact bridge: set payload failed", "key", key, "error", err)
+		return
+	}
+
+	s.logger.Debug("fact bridge: linked chunks", "key", key, "chunks", len(chunkIDs))
+}
+
 func applyFieldUpdate(payload map[string]*qdrant.Value, key string, val *string) {
 	if val != nil {
 		payload[key] = qutil.Nv(*val)
