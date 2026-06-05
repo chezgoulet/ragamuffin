@@ -1165,65 +1165,27 @@ func intValue(p *int) int {
 
 // getPayloadString extracts a string value from a Qdrant payload map.
 func getPayloadString(payload map[string]*qdrant.Value, key string) (string, bool) {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return "", false
-	}
-	return v.GetStringValue(), true
+	return qutil.GetPayloadString(payload, key)
 }
 
 // getPayloadStringList extracts a list of strings from a Qdrant payload.
 func getPayloadStringList(payload map[string]*qdrant.Value, key string) []string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return nil
-	}
-
-	// Single string
-	if s := v.GetStringValue(); s != "" {
-		return []string{s}
-	}
-
-	// List of values
-	values := v.GetListValue()
-	if values == nil {
-		return nil
-	}
-	items := values.GetValues()
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if s := item.GetStringValue(); s != "" {
-			result = append(result, s)
-		}
-	}
-	return result
+	return qutil.GetPayloadStringList(payload, key)
 }
 
 // getPayloadFloat extracts a float64 from a Qdrant payload.
 func getPayloadFloat(payload map[string]*qdrant.Value, key string) (float64, bool) {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return 0, false
-	}
-	return v.GetDoubleValue(), true
+	return qutil.GetPayloadFloat(payload, key)
 }
 
 // getPayloadBool extracts a bool from a Qdrant payload.
 func getPayloadBool(payload map[string]*qdrant.Value, key string) (bool, bool) {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return false, false
-	}
-	return v.GetBoolValue(), true
+	return qutil.GetPayloadBool(payload, key)
 }
 
 // getPayloadInt extracts an integer from a Qdrant payload (stored as double).
 func getPayloadInt(payload map[string]*qdrant.Value, key string) (int, bool) {
-	f, ok := getPayloadFloat(payload, key)
-	if !ok {
-		return 0, false
-	}
-	return int(f), true
+	return qutil.GetPayloadInt(payload, key)
 }
 
 // ── Single-value convenience helpers ────────────────────────────────────────
@@ -1231,29 +1193,17 @@ func getPayloadInt(payload map[string]*qdrant.Value, key string) (int, bool) {
 // need the value with zero-as-default semantics.
 
 func getPayloadStringValue(payload map[string]*qdrant.Value, key string) string {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return ""
-	}
-	return v.GetStringValue()
+	return qutil.GetPayloadStringValue(payload, key)
 }
 
 func getPayloadFloatValue(payload map[string]*qdrant.Value, key string) float64 {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return 0
-	}
-	return v.GetDoubleValue()
+	return qutil.GetPayloadFloatValue(payload, key)
 }
 
 func getPayloadBoolValue(payload map[string]*qdrant.Value, key string) bool {
-	v, ok := payload[key]
-	if !ok || v == nil {
-		return false
-	}
-	return v.GetBoolValue()
+	return qutil.GetPayloadBoolValue(payload, key)
 }
 
 func getPayloadIntValue(payload map[string]*qdrant.Value, key string) int {
-	return int(getPayloadFloatValue(payload, key))
+	return qutil.GetPayloadIntValue(payload, key)
 }
