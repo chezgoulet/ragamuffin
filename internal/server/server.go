@@ -172,6 +172,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
+	mux.HandleFunc("/v1/sessions/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessionByID)))
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))

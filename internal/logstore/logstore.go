@@ -71,6 +71,26 @@ func Open(path string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+// Session represents a conversation session.
+type Session struct {
+	ID         string `json:"id"`
+	Vault      string `json:"vault"`
+	AgentID    string `json:"agent_id"`
+	Source     string `json:"source,omitempty"`
+	TurnCount  int    `json:"turn_count"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
+}
+
+// Turn represents a single message in a session.
+type Turn struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	Content   string `json:"content"`
+	Role      string `json:"role"`
+	CreatedAt string `json:"created_at"`
+}
+
 // migrate creates the schema if it doesn't exist.
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
@@ -85,6 +105,28 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_log_agent   ON log_entries(agent);
 		CREATE INDEX IF NOT EXISTS idx_log_type    ON log_entries(type);
 		CREATE INDEX IF NOT EXISTS idx_log_created ON log_entries(created_at);
+
+		CREATE TABLE IF NOT EXISTS sessions (
+			id         TEXT PRIMARY KEY,
+			vault      TEXT NOT NULL,
+			agent_id   TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT '',
+			turn_count INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			archived   INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE TABLE IF NOT EXISTS session_turns (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_id TEXT NOT NULL REFERENCES sessions(id),
+			content    TEXT NOT NULL,
+			role       TEXT NOT NULL DEFAULT 'user',
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_sessions_vault   ON sessions(vault);
+		CREATE INDEX IF NOT EXISTS idx_sessions_agent   ON sessions(agent_id);
+		CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
+		CREATE INDEX IF NOT EXISTS idx_turns_session    ON session_turns(session_id);
 	`)
 	return err
 }
@@ -208,6 +250,187 @@ func (s *Store) List(ctx context.Context, f Filter) (entries []LogEntry, nextTok
 	}
 
 	return entries, nextToken, nil
+}
+
+// CreateSession creates a new session with the given ID and returns it.
+func (s *Store) CreateSession(ctx context.Context, id, vault, agentID, source string) (*Session, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO sessions (id, vault, agent_id, source, turn_count, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, 0, ?, ?)`,
+		id, vault, agentID, source, now, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: create session: %w", err)
+	}
+
+	return &Session{
+		ID:        id,
+		Vault:     vault,
+		AgentID:   agentID,
+		Source:    source,
+		TurnCount: 0,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+// AppendTurn appends a turn to a session and updates counters.
+func (s *Store) AppendTurn(ctx context.Context, sessionID, content, role string) (*Turn, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx,
+		`INSERT INTO session_turns (session_id, content, role, created_at) VALUES (?, ?, ?, ?)`,
+		sessionID, content, role, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: insert turn: %w", err)
+	}
+
+	turnID, err := result.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("logstore: turn last insert id: %w", err)
+	}
+
+	// Update session counters
+	_, err = tx.ExecContext(ctx,
+		`UPDATE sessions SET turn_count = turn_count + 1, updated_at = ? WHERE id = ?`,
+		now, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: update session: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("logstore: commit: %w", err)
+	}
+
+	return &Turn{
+		ID:        turnID,
+		SessionID: sessionID,
+		Content:   content,
+		Role:      role,
+		CreatedAt: now,
+	}, nil
+}
+
+// GetSession returns session metadata and the last N turns.
+// turnLimit sets max turns returned (0 = all).
+func (s *Store) GetSession(ctx context.Context, id string, turnLimit int) (*Session, []Turn, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id, vault, agent_id, source, turn_count, created_at, updated_at
+		 FROM sessions WHERE id = ? AND archived = 0`, id,
+	)
+
+	var sess Session
+	if err := row.Scan(&sess.ID, &sess.Vault, &sess.AgentID, &sess.Source, &sess.TurnCount, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil, fmt.Errorf("logstore: session %q not found", id)
+		}
+		return nil, nil, fmt.Errorf("logstore: scan session: %w", err)
+	}
+
+	// Fetch turns
+	query := `SELECT id, session_id, content, role, created_at FROM session_turns WHERE session_id = ? ORDER BY id ASC`
+	var args []any
+	args = append(args, id)
+
+	if turnLimit > 0 {
+		query = `SELECT id, session_id, content, role, created_at FROM session_turns WHERE session_id = ? ORDER BY id DESC LIMIT ?`
+		args = append(args, turnLimit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, nil, fmt.Errorf("logstore: query turns: %w", err)
+	}
+	defer rows.Close()
+
+	turns := make([]Turn, 0)
+	for rows.Next() {
+		var t Turn
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Content, &t.Role, &t.CreatedAt); err != nil {
+			return nil, nil, fmt.Errorf("logstore: scan turn: %w", err)
+		}
+		turns = append(turns, t)
+	}
+
+	// If we queried DESC with a limit, reverse to ASC order
+	if turnLimit > 0 {
+		for i, j := 0, len(turns)-1; i < j; i, j = i+1, j-1 {
+			turns[i], turns[j] = turns[j], turns[i]
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("logstore: turns rows err: %w", err)
+	}
+
+	return &sess, turns, nil
+}
+
+// ListSessions lists sessions filtered by vault, ordered by updated_at DESC.
+// Pass limit=0 for default (100), max 1000.
+func (s *Store) ListSessions(ctx context.Context, vault string, limit, offset int) ([]Session, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+
+	var query string
+	var args []any
+
+	if vault != "" {
+		query = `SELECT id, vault, agent_id, source, turn_count, created_at, updated_at
+			 FROM sessions WHERE vault = ? AND archived = 0 ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+		args = append(args, vault, limit, offset)
+	} else {
+		query = `SELECT id, vault, agent_id, source, turn_count, created_at, updated_at
+			 FROM sessions WHERE archived = 0 ORDER BY updated_at DESC LIMIT ? OFFSET ?`
+		args = append(args, limit, offset)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := make([]Session, 0)
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.ID, &sess.Vault, &sess.AgentID, &sess.Source, &sess.TurnCount, &sess.CreatedAt, &sess.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("logstore: scan session: %w", err)
+		}
+		sessions = append(sessions, sess)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("logstore: sessions rows err: %w", err)
+	}
+
+	return sessions, nil
+}
+
+// DeleteSession soft-deletes a session by setting archived = 1.
+func (s *Store) DeleteSession(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET archived = 1 WHERE id = ?`, id,
+	)
+	if err != nil {
+		return fmt.Errorf("logstore: delete session: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("logstore: session %q not found", id)
+	}
+	return nil
 }
 
 // Close closes the database connection.
