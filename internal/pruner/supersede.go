@@ -13,9 +13,10 @@ import (
 //    superseded key still has a `status = "active"` fact. If so, mark the
 //    superseded fact as `superseded`.
 //
-// 2. Version-based supersession: Look for active facts with an integer
-//    `version` field > 0. For each group sharing the same key prefix,
-//    mark any fact with a lower version as superseded by the highest.
+// 2. Key-pattern supersession: Look for facts whose keys share a prefix and
+//    contain version-like segments (e.g., org/v2/decision vs org/v1/decision).
+//    If a higher-versioned active fact exists alongside a lower-versioned one,
+//    mark the lower one as superseded.
 //
 // The Pruner only writes `status`, `superseded_by`, and `updated_at` fields.
 func (p *Pruner) supersedeScan(ctx context.Context) {
@@ -25,7 +26,7 @@ func (p *Pruner) supersedeScan(ctx context.Context) {
 	}
 
 	p.supersedeCrossReference(ctx)
-	p.supersedeByVersion(ctx)
+	p.supersedeKeyPattern(ctx)
 }
 
 // supersedeCrossReference checks that facts with supersedes set point to
@@ -115,11 +116,13 @@ func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 	}
 }
 
-// supersedeByVersion finds active facts with a `version` integer field > 0,
-// groups them by key prefix (everything before the version segment), and
-// marks all lower-versioned facts as superseded by the highest version in
-// each group.
-func (p *Pruner) supersedeByVersion(ctx context.Context) {
+// supersedeKeyPattern looks for facts with version-like key patterns and
+// marks lower versions as superseded if a higher version exists.
+//
+// Detects patterns like: org/v2/decision vs org/v1/decision,
+// project/feature/v3 vs project/feature/v2, etc.
+func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
+	// Fetch all active facts
 	activeFilter := &pb.Filter{
 		Must: []*pb.Condition{
 			{
@@ -139,16 +142,17 @@ func (p *Pruner) supersedeByVersion(ctx context.Context) {
 
 	points, err := p.scrollFilteredFacts(ctx, activeFilter, 0)
 	if err != nil {
-		p.logger.Error("supersedeByVersion: query failed", "error", err)
+		p.logger.Error("supersedeKeyPattern: query failed", "error", err)
 		return
 	}
 
-	// Group by prefix, using the integer `version` field from payload
+	// Group by common prefix (up to the version segment)
 	type versionedFact struct {
 		pointID string
 		version int
 		key     string
 	}
+
 	groups := make(map[string][]versionedFact)
 
 	for _, pt := range points {
@@ -158,23 +162,16 @@ func (p *Pruner) supersedeByVersion(ctx context.Context) {
 			continue
 		}
 
-		// Use the integer `version` payload field directly (no regex/key parsing)
-		version, _ := getPayloadInt(payload, "version")
-		if version <= 0 {
-			continue
+		// Look for /vN/ or /vN pattern at any path depth
+		// e.g., "org/v2/decision" → prefix "org/", version 2
+		prefix, version := parseVersionedKey(key)
+		if version >= 1 {
+			groups[prefix] = append(groups[prefix], versionedFact{
+				pointID: pt.GetId().GetUuid(),
+				version: version,
+				key:     key,
+			})
 		}
-
-		// Derive prefix from key (everything before /vN/)
-		prefix := versionKeyPrefix(key)
-		if prefix == "" {
-			continue
-		}
-
-		groups[prefix] = append(groups[prefix], versionedFact{
-			pointID: pt.GetId().GetUuid(),
-			version: version,
-			key:     key,
-		})
 	}
 
 	if len(groups) == 0 {
@@ -198,8 +195,8 @@ func (p *Pruner) supersedeByVersion(ctx context.Context) {
 		// Mark all lower versions as superseded
 		for _, f := range g {
 			if f.version < maxVersion {
-				if err := p.updateFactStatusWithVersion(ctx, f.pointID, "superseded", maxVersion); err != nil {
-					p.logger.Error("supersedeByVersion: failed to mark",
+				if err := p.updateFactStatus(ctx, f.pointID, "superseded"); err != nil {
+					p.logger.Error("supersedeKeyPattern: failed to mark",
 						"key", f.key, "error", err)
 					continue
 				}
@@ -209,14 +206,18 @@ func (p *Pruner) supersedeByVersion(ctx context.Context) {
 	}
 
 	if marked > 0 {
-		p.logger.Info("supersedeByVersion complete", "marked_as_superseded", marked)
+		p.logger.Info("supersedeKeyPattern complete", "marked_as_superseded", marked)
 		p.RecordFlagged(marked)
 	}
 }
 
-// versionKeyPrefix extracts the key prefix (everything before /vN/).
-// Returns empty string if no version segment is found.
-func versionKeyPrefix(key string) string {
+// parseVersionedKey detects version segments in a fact key and returns
+// the prefix (everything before the version segment) and version number.
+// Returns version 0 if no version pattern is found.
+//
+// Recognized patterns: /vN/, /vN (at end), vN/ at start
+// where N is a positive integer.
+func parseVersionedKey(key string) (prefix string, version int) {
 	parts := strings.Split(key, "/")
 	for i, part := range parts {
 		if len(part) > 1 && part[0] == 'v' {
@@ -229,12 +230,12 @@ func versionKeyPrefix(key string) string {
 				v = v*10 + int(c-'0')
 			}
 			if v >= 1 {
-				parts = parts[:i]
-				return strings.Join(parts, "/")
+				// Reconstruct prefix from parts before the version segment
+				parts = parts[:i] // drop version and everything after
+				prefix = strings.Join(parts, "/")
+				return prefix, v
 			}
 		}
 	}
-	return ""
+	return "", 0
 }
-
-
