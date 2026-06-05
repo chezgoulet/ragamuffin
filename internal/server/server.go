@@ -393,6 +393,8 @@ func (s *Server) ensureFactIndexes() {
 		"fact_tags":         "keyword",
 		"ttl_days":          "float",
 		"supersedes":        "keyword",
+		"version":           "float",
+		"superseded_by":     "float",
 	}
 
 	for field, fieldType := range indexes {

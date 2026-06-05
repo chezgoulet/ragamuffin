@@ -355,6 +355,19 @@ func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status st
 	})
 }
 
+// updateFactStatusWithVersion extends updateFactStatus by also setting
+// superseded_by to indicate which version superseded this fact.
+func (p *Pruner) updateFactStatusWithVersion(ctx context.Context, pointID string, status string, supersededBy int) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	return p.facts.SetPayload(ctx, p.facts.Collection(), []*pb.PointId{{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
+	}}, map[string]*pb.Value{
+		"status":        qutil.Nv(status),
+		"superseded_by": qutil.Nv(float64(supersededBy)),
+		"updated_at":    qutil.Nv(now),
+	})
+}
+
 // updateFactPayload applies a map of payload updates to a fact point using
 // Qdrant's SetPayload API, which performs field-level merges server-side.
 // This prevents data loss from partial Upsert that wipes unset fields.

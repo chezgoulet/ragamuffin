@@ -28,7 +28,7 @@ import (
 //   - confirmation_count, last_confirmed_at, created_at, expires_at — server-managed
 
 // factPayload is the JSON body for upsert (POST /v1/facts).
-// Pointers distinguish zero-value from omitted for confidence/ttl_days.
+// Pointers distinguish zero-value from omitted for confidence/ttl_days/version.
 type factPayload struct {
 	Key        string   `json:"key"`
 	Value      string   `json:"value"`
@@ -38,6 +38,7 @@ type factPayload struct {
 
 	Confidence *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
 	TTLDays    *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
+	Version    *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
 }
 
 // factResponse is the JSON response for a single fact (v0.5 lifecycle).
@@ -49,7 +50,9 @@ type factResponse struct {
 	SourceType       string   `json:"source_type,omitempty"`
 	Confidence       *float64 `json:"confidence,omitempty"`
 	Status           string   `json:"status"`
+	Version          int      `json:"version,omitempty"`
 	Supersedes       string   `json:"supersedes"`
+	SupersededBy     int      `json:"superseded_by,omitempty"`
 	Contradicts      []string `json:"contradicts,omitempty"`
 	ConflictResolved bool     `json:"conflict_resolved"`
 	ConfirmationCount int     `json:"confirmation_count"`
@@ -215,14 +218,26 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		expiresAtUnix = float64(time.Now().UTC().AddDate(0, 0, ttl).Unix())
 	}
 
+	// Determine version: explicit or parse from key pattern
+	version := 0
+	if fp.Version != nil {
+		version = *fp.Version
+	}
+	if version <= 0 {
+		// Try to infer version from key pattern like /vN/
+		version = parseVersionFromKey(fp.Key)
+	}
+
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":          fp.Key,
 		"fact_value":        fp.Value,
 		"source":            fp.Source,
 		"source_type":       fp.SourceType,
 		"confidence":        confidence,
+		"version":           version,
 		"status":            "active",
 		"supersedes":        "",
+		"superseded_by":     0,
 		"conflict_resolved": true,
 		"confirmation_count": 1,
 		"last_confirmed_at": now,
@@ -269,6 +284,12 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		s.log(r.Context()).Error("facts upsert failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to store fact")
 		return
+	}
+
+	// Auto-supersede: if version > 0, find any active facts with lower versions
+	// that share the same key prefix and mark them as superseded.
+	if version > 0 {
+		go s.supersedeOlderVersions(context.Background(), fp.Key, version)
 	}
 
 	resp := pointToFactResponse(point.Payload, fp.Key)
@@ -667,6 +688,128 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── Version-based supersedure ─────────────────────────────────────────────
+
+// parseVersionFromKey detects a version segment in a fact key and returns
+// the integer version value. Returns 0 if no version pattern is found.
+// Recognized patterns: /vN/, /vN at end, vN/ at start.
+func parseVersionFromKey(key string) int {
+	parts := strings.Split(key, "/")
+	for _, part := range parts {
+		if len(part) > 1 && part[0] == 'v' {
+			var v int
+			for _, c := range part[1:] {
+				if c < '0' || c > '9' {
+					v = 0
+					break
+				}
+				v = v*10 + int(c-'0')
+			}
+			if v >= 1 {
+				return v
+			}
+		}
+	}
+	return 0
+}
+
+// versionKeyPrefix returns the key prefix (everything before the version
+// segment). Returns empty string if no version pattern is found.
+func versionKeyPrefix(key string) string {
+	parts := strings.Split(key, "/")
+	for i, part := range parts {
+		if len(part) > 1 && part[0] == 'v' {
+			var v int
+			for _, c := range part[1:] {
+				if c < '0' || c > '9' {
+					v = 0
+					break
+				}
+				v = v*10 + int(c-'0')
+			}
+			if v >= 1 {
+				parts = parts[:i] // drop version and everything after
+				return strings.Join(parts, "/")
+			}
+		}
+	}
+	return ""
+}
+
+// supersedeOlderVersions queries the facts collection for active facts with
+// the same prefix and a lower version, marking them as superseded.
+// Runs asynchronously; errors are logged only.
+func (s *Server) supersedeOlderVersions(ctx context.Context, key string, currentVersion int) {
+	prefix := versionKeyPrefix(key)
+	if prefix == "" {
+		return
+	}
+
+	// Fetch all active facts — we post-filter by version in Go since Qdrant
+	// integer range filters require the *Range protobuf type where Lt is
+	// an optional double, and direct integer equality via Match_Integer only
+	// supports exact match (not lt/gt).
+	activeFilter := &qdrant.Filter{
+		Must: []*qdrant.Condition{
+			{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "status",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: "active",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), activeFilter, 0, "")
+	if err != nil {
+		s.logger.Warn("supersedeOlderVersions: query failed", "error", err)
+		return
+	}
+
+	marked := 0
+	for _, pt := range points {
+		payload := pt.GetPayload()
+		factKey, _ := getPayloadString(payload, "fact_key")
+		if factKey == key {
+			continue // skip self
+		}
+
+		// Check prefix match
+		candidatePrefix := versionKeyPrefix(factKey)
+		if candidatePrefix == "" || candidatePrefix != prefix {
+			continue
+		}
+
+		// Mark as superseded
+		pointID := pt.GetId().GetUuid()
+		if pointID == "" {
+			continue
+		}
+
+		if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{{
+			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+		}}, qdrant.NewValueMap(map[string]any{
+			"status":        "superseded",
+			"superseded_by": currentVersion,
+			"updated_at":    time.Now().UTC().Format(time.RFC3339),
+		})); err != nil {
+			s.logger.Warn("supersedeOlderVersions: failed to mark", "key", factKey, "error", err)
+			continue
+		}
+		marked++
+	}
+
+	if marked > 0 {
+		s.logger.Info("auto-superseded older versions", "prefix", prefix, "current_version", currentVersion, "marked", marked)
+	}
+}
+
 // migrateFacts reads all existing facts and fills in default values for
 // v0.5 lifecycle fields that didn't exist before. This is a one-time
 // migration run at server startup. Errors are logged but non-fatal.
@@ -777,6 +920,18 @@ func (s *Server) migrateFacts() {
 				payload["expires_at_unix"] = qutil.Nv(float64(0))
 				needsUpdate = true
 			}
+			// version: populate from key pattern or default 0
+			if _, ok := payload["version"]; !ok {
+				factKey, _ := getPayloadString(payload, "fact_key")
+				v := parseVersionFromKey(factKey)
+				payload["version"] = qutil.Nv(float64(v))
+				needsUpdate = true
+			}
+			// superseded_by: default 0
+			if _, ok := payload["superseded_by"]; !ok {
+				payload["superseded_by"] = qutil.Nv(float64(0))
+				needsUpdate = true
+			}
 
 			if !needsUpdate {
 				continue
@@ -864,7 +1019,9 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 		fr.Confidence = &c
 	}
 	fr.Status, _ = getPayloadString(payload, "status")
+	fr.Version, _ = getPayloadInt(payload, "version")
 	fr.Supersedes, _ = getPayloadString(payload, "supersedes")
+	fr.SupersededBy, _ = getPayloadInt(payload, "superseded_by")
 	fr.Contradicts = getPayloadStringList(payload, "contradicts")
 	fr.ConflictResolved, _ = getPayloadBool(payload, "conflict_resolved")
 	fr.ConfirmationCount, _ = getPayloadInt(payload, "confirmation_count")
