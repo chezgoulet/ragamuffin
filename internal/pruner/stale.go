@@ -71,17 +71,35 @@ func (p *Pruner) staleScan(ctx context.Context) {
 		return
 	}
 
+	threshold := p.cfg.ImportanceThreshold
+	skipped := 0
 	marked := 0
 	for _, pt := range points {
 		pointID := pt.GetId().GetUuid()
 		if pointID == "" {
 			continue
 		}
+
+		// If importance threshold is set, skip facts above the threshold
+		if threshold > 0 {
+			importance := computeImportance(pt.GetPayload())
+			if importance >= threshold {
+				skipped++
+				p.logger.Debug("staleScan: skipping high-importance fact",
+					"point_id", pointID, "importance", importance, "threshold", threshold)
+				continue
+			}
+		}
+
 		if err := p.updateFactStatus(ctx, pointID, "needs_review"); err != nil {
 			p.logger.Error("staleScan: failed to mark fact", "point_id", pointID, "error", err)
 			continue
 		}
 		marked++
+	}
+
+	if skipped > 0 {
+		p.logger.Info("staleScan importance filter", "skipped", skipped, "threshold", threshold)
 	}
 
 	p.logger.Info("staleScan complete", "found", len(points), "marked", marked)
