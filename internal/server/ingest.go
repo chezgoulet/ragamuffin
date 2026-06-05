@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
@@ -69,7 +70,15 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	// Get or provision the indexer
 	idx := s.indexers.Get(vaultName)
 	if idx == nil {
-		// Auto-provision if not found
+		if !s.cfg.AutoProvisionVaults {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and auto-provisioning is disabled", vaultName))
+			return
+		}
+		// Auto-provision requires write access
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+			writeError(w, 403, "FORBIDDEN", "write access required to provision vaults")
+			return
+		}
 		idx = s.provisionVault(r.Context(), vaultName)
 		if idx == nil {
 			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and could not be provisioned", vaultName))
