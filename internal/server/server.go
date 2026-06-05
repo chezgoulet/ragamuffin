@@ -156,6 +156,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot))))
 		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/reindex", s.handleReindex))))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
+		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
+		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
 		// Single-tenant routes (v0.1–v0.3 behavior)
 		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
@@ -179,6 +181,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
 	mux.HandleFunc("/v1/sessions/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessionByID)))
+
+	// Inbox — low-friction intake for agent observations (#313)
+	mux.HandleFunc("/inbox", s.withRequestID(s.withRateLimit("/inbox", s.handleInbox)))
+	mux.HandleFunc("/inbox/{id}", s.withRequestID(s.withRateLimit("/inbox", s.handleInbox)))
 
 	// Logs
 	mux.HandleFunc("/v1/logs", s.withRequestID(s.withRateLimit("/v1/logs", s.handleLogs)))
