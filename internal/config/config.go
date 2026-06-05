@@ -96,6 +96,7 @@ type Config struct {
 	PrunerStaleInterval          time.Duration
 	PrunerConflictInterval       time.Duration
 	PrunerSupersedeInterval      time.Duration
+	PrunerSourceStaleInterval    time.Duration
 	PrunerStaleDays              int
 	PrunerConflictSampleSize     int
 	PrunerLowConfidenceThreshold float64

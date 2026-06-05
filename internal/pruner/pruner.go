@@ -39,6 +39,7 @@ type PrunerConfig struct {
 	StaleScanInterval      time.Duration // default 24h
 	ConflictScanInterval   time.Duration // default 72h
 	SupersedeScanInterval  time.Duration // default 24h
+	SourceStaleScanInterval time.Duration // default 0 (disabled)
 	StaleDays              int           // default 90 — facts past this TTL expiry are flagged
 	ConflictSampleSize     int           // default 50 — pairs per scan cycle
 	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
@@ -52,14 +53,15 @@ type PrunerConfig struct {
 // DefaultConfig returns a PrunerConfig with sensible defaults.
 func DefaultConfig() PrunerConfig {
 	return PrunerConfig{
-		Enabled:                false,
-		StaleScanInterval:      24 * time.Hour,
-		ConflictScanInterval:   72 * time.Hour,
+		Enabled:                 false,
+		StaleScanInterval:       24 * time.Hour,
+		ConflictScanInterval:    72 * time.Hour,
 		SupersedeScanInterval:  24 * time.Hour,
-		StaleDays:              90,
-		ConflictSampleSize:     50,
-		LowConfidenceThreshold: 0.5,
-		ConfidenceBoost:        0.1,
+		SourceStaleScanInterval: 0,
+		StaleDays:               90,
+		ConflictSampleSize:      50,
+		LowConfidenceThreshold:  0.5,
+		ConfidenceBoost:         0.1,
 	}
 }
 
@@ -215,7 +217,8 @@ func (p *Pruner) Run(ctx context.Context) {
 	p.logger.Info("pruner starting",
 		"stale_interval", p.cfg.StaleScanInterval,
 		"conflict_interval", p.cfg.ConflictScanInterval,
-		"supersede_interval", p.cfg.SupersedeScanInterval)
+		"supersede_interval", p.cfg.SupersedeScanInterval,
+		"source_stale_interval", p.cfg.SourceStaleScanInterval)
 
 	// Start each scan in its own goroutine
 	if p.cfg.StaleScanInterval > 0 {
@@ -226,6 +229,9 @@ func (p *Pruner) Run(ctx context.Context) {
 	}
 	if p.cfg.SupersedeScanInterval > 0 {
 		go p.runScan(ctx, "SupersedeScan", p.cfg.SupersedeScanInterval, p.supersedeScan)
+	}
+	if p.cfg.SourceStaleScanInterval > 0 {
+		go p.runScan(ctx, "SourceStaleScan", p.cfg.SourceStaleScanInterval, p.sourceStaleScan)
 	}
 
 	// Also run a one-time low-confidence scan
