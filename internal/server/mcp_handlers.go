@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
@@ -138,6 +140,57 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				},
 			},
 		},
+		{
+			Name:        "ragamuffin_session_create",
+			Description: "Create a conversation session. Returns the session ID for subsequent turn appends.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_id": map[string]interface{}{"type": "string", "description": "Agent identity for the session"},
+					"content":  map[string]interface{}{"type": "string", "description": "Optional initial message content"},
+					"vault":    map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"agent_id"},
+			},
+		},
+		{
+			Name:        "ragamuffin_session_get",
+			Description: "Get session metadata and conversation turns.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"session_id": map[string]interface{}{"type": "string", "description": "Session UUID"},
+					"turns":      map[string]interface{}{"type": "integer", "description": "Max turns to return (0 for all, default 50)"},
+				},
+				"required": []string{"session_id"},
+			},
+		},
+		{
+			Name:        "ragamuffin_session_list",
+			Description: "List active sessions, optionally filtered by agent_id or vault.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_id": map[string]interface{}{"type": "string", "description": "Filter by agent identity"},
+					"vault":    map[string]interface{}{"type": "string", "description": "Filter by vault name"},
+					"limit":    map[string]interface{}{"type": "integer", "description": "Max results (default 100)"},
+					"offset":   map[string]interface{}{"type": "integer", "description": "Result offset (default 0)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_turn_append",
+			Description: "Append a turn to an existing session.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"session_id": map[string]interface{}{"type": "string", "description": "Session UUID"},
+					"content":    map[string]interface{}{"type": "string", "description": "Message content"},
+					"role":       map[string]interface{}{"type": "string", "description": "user, assistant, or system (default: user)"},
+				},
+				"required": []string{"session_id", "content"},
+			},
+		},
 	}
 }
 
@@ -171,6 +224,14 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpGraph(ctx, args)
 	case "ragamuffin_stats":
 		return s.mcpStats(ctx, args)
+	case "ragamuffin_session_create":
+		return s.mcpSessionCreate(ctx, args)
+	case "ragamuffin_session_get":
+		return s.mcpSessionGet(ctx, args)
+	case "ragamuffin_session_list":
+		return s.mcpSessionList(ctx, args)
+	case "ragamuffin_turn_append":
+		return s.mcpTurnAppend(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
 	}
@@ -980,4 +1041,151 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 	}
 
 	return resp, nil
+}
+
+// ── MCP Session Tools ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpSessionCreate(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	agentID, _ := args["agent_id"].(string)
+	if agentID == "" {
+		return nil, fmt.Errorf("agent_id is required")
+	}
+
+	content, _ := args["content"].(string)
+	vault, _ := args["vault"].(string)
+
+	if s.logStore == nil {
+		return nil, fmt.Errorf("session store not available")
+	}
+
+	resolvedVault := vault
+	if resolvedVault == "" {
+		resolvedVault = fmt.Sprintf("agent::%s", agentID)
+	}
+
+	sessionID := uuid.New().String()
+	sess, err := s.logStore.CreateSession(ctx, sessionID, resolvedVault, agentID, "mcp")
+	if err != nil {
+		return nil, fmt.Errorf("create session: %w", err)
+	}
+
+	if content != "" {
+		if _, err := s.logStore.AppendTurn(ctx, sessionID, content, "user"); err != nil {
+			return nil, fmt.Errorf("create session with initial turn: %w", err)
+		}
+		sess.TurnCount = 1
+	}
+
+	return map[string]interface{}{
+		"session_id": sess.ID,
+		"vault":      sess.Vault,
+		"agent_id":   sess.AgentID,
+		"turn_count": sess.TurnCount,
+		"created_at": sess.CreatedAt,
+	}, nil
+}
+
+func (s *Server) mcpSessionGet(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+
+	turns := 50
+	if v, ok := args["turns"].(float64); ok && v >= 0 {
+		turns = int(v)
+	}
+
+	if s.logStore == nil {
+		return nil, fmt.Errorf("session store not available")
+	}
+
+	sess, turnsList, err := s.logStore.GetSession(ctx, sessionID, turns)
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+
+	turnData := make([]map[string]interface{}, len(turnsList))
+	for i, t := range turnsList {
+		turnData[i] = map[string]interface{}{
+			"id":         t.ID,
+			"content":    t.Content,
+			"role":       t.Role,
+			"created_at": t.CreatedAt,
+		}
+	}
+
+	return map[string]interface{}{
+		"session_id": sess.ID,
+		"vault":      sess.Vault,
+		"agent_id":   sess.AgentID,
+		"turn_count": sess.TurnCount,
+		"created_at": sess.CreatedAt,
+		"updated_at": sess.UpdatedAt,
+		"turns":      turnData,
+	}, nil
+}
+
+func (s *Server) mcpSessionList(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	agentID, _ := args["agent_id"].(string)
+	vault, _ := args["vault"].(string)
+
+	limit := 100
+	if v, ok := args["limit"].(float64); ok && v > 0 {
+		limit = int(v)
+	}
+	offset := 0
+	if v, ok := args["offset"].(float64); ok && v >= 0 {
+		offset = int(v)
+	}
+
+	// If agent_id specified but not vault, resolve vault
+	if agentID != "" && vault == "" {
+		vault = fmt.Sprintf("agent::%s", agentID)
+	}
+
+	if s.logStore == nil {
+		return nil, fmt.Errorf("session store not available")
+	}
+
+	sessions, err := s.logStore.ListSessions(ctx, vault, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+
+	return map[string]interface{}{
+		"sessions": sessions,
+		"count":    len(sessions),
+	}, nil
+}
+
+func (s *Server) mcpTurnAppend(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	sessionID, _ := args["session_id"].(string)
+	if sessionID == "" {
+		return nil, fmt.Errorf("session_id is required")
+	}
+	content, _ := args["content"].(string)
+	if content == "" {
+		return nil, fmt.Errorf("content is required")
+	}
+	role, _ := args["role"].(string)
+	if role == "" {
+		role = "user"
+	}
+
+	if s.logStore == nil {
+		return nil, fmt.Errorf("session store not available")
+	}
+
+	turn, err := s.logStore.AppendTurn(ctx, sessionID, content, role)
+	if err != nil {
+		return nil, fmt.Errorf("append turn: %w", err)
+	}
+
+	return map[string]interface{}{
+		"turn_id":    turn.ID,
+		"session_id": turn.SessionID,
+		"role":       turn.Role,
+		"created_at": turn.CreatedAt,
+	}, nil
 }
