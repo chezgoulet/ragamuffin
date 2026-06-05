@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -1074,7 +1075,7 @@ func (s *Server) linkFactToChunks(key, value, vaultName string) {
 	}
 
 	// Resolve vault-scoped chunk client
-	var qc qdrant.FactStore
+	var qc store.FactStore
 	if vaultName != "" {
 		qc = s.indexers.GetClient(vaultName)
 	}

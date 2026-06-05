@@ -86,7 +86,7 @@ func TestHandleIngest_SingleTenantDefaultsToDefault(t *testing.T) {
 	}
 	rl := ratelimit.New(false)
 	idxManager := indexer.NewManager()
-	srv := New(cfg, nil, nil, nil, nil, idxManager, nil, rl, nil, nil, nil, nil, slog.Default())
+	srv := New(cfg, nil, nil, nil, nil, idxManager, nil, rl, nil, nil, nil, nil, nil, slog.Default())
 
 	// No indexer for "default" → provisioning attempt, expect failure
 	body, _ := json.Marshal(ingestRequest{Content: "hello", Source: "test"})
@@ -104,7 +104,7 @@ func TestHandleIngest_ProvisionInvalidName(t *testing.T) {
 		Vaults: map[string]*config.VaultConfig{},
 	}
 	rl := ratelimit.New(false)
-	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, rl, nil, nil, nil, nil, slog.Default())
+	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, rl, nil, nil, nil, nil, nil, slog.Default())
 	body, _ := json.Marshal(ingestRequest{
 		Vault:   "INVALID_NAME!",
 		Content: "hello",
@@ -122,7 +122,7 @@ func TestHandleIngest_ProvisionInvalidName(t *testing.T) {
 // ── provisionVault ────────────────────────────────────────────────────────────
 
 func TestProvisionVault_InvalidName(t *testing.T) {
-	srv := New(&config.Config{}, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, slog.Default())
+	srv := New(&config.Config{}, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, nil, slog.Default())
 
 	idx := srv.provisionVault(context.Background(), "")
 	if idx != nil {
@@ -143,7 +143,7 @@ func TestProvisionVault_NoQdrant_ReturnsNil(t *testing.T) {
 		QdrantURL: "http://localhost:19999", // nothing listening — provisioning fails gracefully
 		VaultPath: "/tmp",
 	}
-	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, slog.Default())
+	srv := New(cfg, nil, nil, nil, nil, indexer.NewManager(), nil, ratelimit.New(false), nil, nil, nil, nil, nil, slog.Default())
 
 	idx := srv.provisionVault(context.Background(), "agent-dev")
 	if idx != nil {
