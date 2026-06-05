@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,8 @@ type Filter struct {
 
 // Store is an append-only SQLite-backed log store.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	logger *slog.Logger
 }
 
 // Open opens or creates the SQLite log database at the given path.
@@ -62,13 +64,17 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(`PRAGMA synchronous=NORMAL`); err != nil {
 		return nil, fmt.Errorf("logstore: set synchronous: %w", err)
 	}
+	if _, err := db.Exec(`PRAGMA auto_vacuum=INCREMENTAL`); err != nil {
+		return nil, fmt.Errorf("logstore: enable auto_vacuum: %w", err)
+	}
 
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("logstore: migrate: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db, logger: slog.Default()}
+	return s, nil
 }
 
 // Session represents a conversation session.
@@ -433,6 +439,69 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// ── Hygiene ─────────────────────────────────────────────────────────────────
+
+// IntegrityCheck runs PRAGMA integrity_check and returns the result.
+func (s *Store) IntegrityCheck() error {
+	var result string
+	if err := s.db.QueryRow(`PRAGMA integrity_check`).Scan(&result); err != nil {
+		return fmt.Errorf("integrity check query: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("integrity check: %s", result)
+	}
+	return nil
+}
+
+// Prune deletes old rows from log_entries when the table exceeds maxRows.
+// Returns total deleted rows across all pruned tables.
+func (s *Store) Prune(ctx context.Context, maxRows int) (int64, error) {
+	var totalDeleted int64
+
+	tables := []string{"log_entries"}
+	for _, table := range tables {
+		var count int64
+		err := s.db.QueryRowContext(ctx,
+			fmt.Sprintf(`SELECT COUNT(*) FROM %s`, table)).Scan(&count)
+		if err != nil {
+			return totalDeleted, fmt.Errorf("count %s: %w", table, err)
+		}
+		if count <= int64(maxRows) {
+			continue
+		}
+		toDelete := count - int64(maxRows)
+
+		// Bounded DELETE — always use LIMIT to avoid unbounded deletes
+		result, err := s.db.ExecContext(ctx,
+			fmt.Sprintf(`DELETE FROM %s WHERE id IN (
+				SELECT id FROM %s ORDER BY id ASC LIMIT ?
+			)`, table, table), toDelete)
+		if err != nil {
+			return totalDeleted, fmt.Errorf("prune %s: %w", table, err)
+		}
+		deleted, _ := result.RowsAffected()
+		totalDeleted += deleted
+
+		// Incremental vacuum after bulk delete to reclaim space
+		if deleted > 0 {
+			if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum(10)`); err != nil {
+				s.logger.Warn("logstore: incremental_vacuum failed", "error", err)
+			}
+		}
+	}
+	return totalDeleted, nil
+}
+
+// Flush forces a WAL checkpoint to flush pending writes to the main database.
+func (s *Store) Flush() error {
+	_, err := s.db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
+}
+
+// SetLogger sets the logger for the store.
+func (s *Store) SetLogger(l *slog.Logger) {
+	s.logger = l
+}
 // Close closes the database connection.
 func (s *Store) Close() error {
 	return s.db.Close()
@@ -453,5 +522,3 @@ func decodeID(s string) (int64, error) {
 	}
 	return int64(binary.BigEndian.Uint64(b)), nil
 }
-
-
