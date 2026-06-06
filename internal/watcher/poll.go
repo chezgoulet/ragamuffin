@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"log/slog"
+
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 )
 
 // pollWatcher polls the vault directory for file changes.
@@ -66,7 +68,7 @@ func (w *pollWatcher) scan(events chan<- Event, initial bool) {
 			return nil
 		}
 
-		if !isIndexable(relPath) {
+		if !indexutil.IsIndexable(relPath) {
 			return nil
 		}
 

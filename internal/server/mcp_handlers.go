@@ -625,7 +625,7 @@ func (s *Server) mcpFactsUpsert(ctx context.Context, args map[string]interface{}
 		// Preserve created_at; read confirmation count
 		points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
 		if err == nil && len(points) > 0 {
-			createdAt, _ = getPayloadString(points[0].GetPayload(), "created_at")
+			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
 			if cc, ok := points[0].GetPayload()["confirmation_count"]; ok {
 				confirmationCount = cc.GetIntegerValue() + 1
 			}

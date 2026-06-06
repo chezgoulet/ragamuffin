@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
 )
@@ -273,15 +274,15 @@ func (s *Server) checkFactConflicts(ctx context.Context) []map[string]any {
 	conflicts := make([]map[string]any, 0, len(points))
 	for _, pt := range points {
 		payload := pt.GetPayload()
-		key, _ := getPayloadString(payload, "fact_key")
-		value, _ := getPayloadString(payload, "fact_value")
-		contradicts := getPayloadStringList(payload, "contradicts")
+		key, _ := qutil.GetPayloadString(payload, "fact_key")
+		value, _ := qutil.GetPayloadString(payload, "fact_value")
+		contradicts := qutil.GetPayloadStringList(payload, "contradicts")
 
 		conflicts = append(conflicts, map[string]any{
 			"key":         key,
 			"value":       truncate(value, 200),
 			"contradicts": contradicts,
-			"status":      getPayloadStringValue(payload, "status"),
+			"status":      qutil.GetPayloadStringValue(payload, "status"),
 		})
 	}
 	return conflicts
@@ -342,14 +343,14 @@ func (s *Server) checkFactVaultConflicts(ctx context.Context, sampleSize int) ([
 		}
 
 		factPayload := fp.GetPayload()
-		factKey, _ := getPayloadString(factPayload, "fact_key")
-		factValue, _ := getPayloadString(factPayload, "fact_value")
+		factKey, _ := qutil.GetPayloadString(factPayload, "fact_key")
+		factValue, _ := qutil.GetPayloadString(factPayload, "fact_value")
 		if factKey == "" || factValue == "" {
 			continue
 		}
 
 		chunkPayload := chunkPoints[i].GetPayload()
-		chunkText, _ := getPayloadString(chunkPayload, "text")
+		chunkText, _ := qutil.GetPayloadString(chunkPayload, "text")
 		if chunkText == "" {
 			continue
 		}

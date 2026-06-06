@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 	"sync"
 	"time"
 
@@ -141,7 +143,7 @@ func (w *inotifyWatcher) processEvents(buf []byte, events chan<- Event) {
 				continue
 			}
 
-			if !isIndexable(name) {
+			if !indexutil.IsIndexable(name) {
 				continue
 			}
 
@@ -212,7 +214,7 @@ func (w *inotifyWatcher) fullScan(events chan<- Event, initial bool) {
 			return nil
 		}
 		relPath, _ := filepath.Rel(w.vaultPath, absPath)
-		if !isIndexable(relPath) {
+		if !indexutil.IsIndexable(relPath) {
 			return nil
 		}
 		currentFiles[relPath] = info.ModTime()

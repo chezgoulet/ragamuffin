@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -59,7 +60,7 @@ func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 	marked := 0
 	for _, pt := range points {
 		payload := pt.GetPayload()
-		targetKey, _ := getPayloadString(payload, "supersedes")
+		targetKey, _ := qutil.GetPayloadString(payload, "supersedes")
 		if targetKey == "" {
 			continue
 		}
@@ -92,7 +93,7 @@ func (p *Pruner) supersedeCrossReference(ctx context.Context) {
 
 		// Check if target is still active
 		targetPayload := targets[0].GetPayload()
-		targetStatus, _ := getPayloadString(targetPayload, "status")
+		targetStatus, _ := qutil.GetPayloadString(targetPayload, "status")
 		if targetStatus != "active" {
 			continue // already marked
 		}
@@ -157,7 +158,7 @@ func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
 
 	for _, pt := range points {
 		payload := pt.GetPayload()
-		key, _ := getPayloadString(payload, "fact_key")
+		key, _ := qutil.GetPayloadString(payload, "fact_key")
 		if key == "" {
 			continue
 		}

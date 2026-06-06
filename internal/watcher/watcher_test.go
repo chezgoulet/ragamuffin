@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 	"time"
 )
 
@@ -42,43 +44,43 @@ func TestEvent_Fields(t *testing.T) {
 // ── isIndexable ──────────────────────────────────────────────────────────────
 
 func TestIsIndexable_Markdown(t *testing.T) {
-	if !isIndexable("file.md") {
+	if !indexutil.IsIndexable("file.md") {
 		t.Error("expected .md to be indexable")
 	}
 }
 
 func TestIsIndexable_Txt(t *testing.T) {
-	if !isIndexable("file.txt") {
+	if !indexutil.IsIndexable("file.txt") {
 		t.Error("expected .txt to be indexable")
 	}
 }
 
 func TestIsIndexable_Org(t *testing.T) {
-	if !isIndexable("file.org") {
+	if !indexutil.IsIndexable("file.org") {
 		t.Error("expected .org to be indexable")
 	}
 }
 
 func TestIsIndexable_RST(t *testing.T) {
-	if !isIndexable("file.rst") {
+	if !indexutil.IsIndexable("file.rst") {
 		t.Error("expected .rst to be indexable")
 	}
 }
 
 func TestIsIndexable_NoExtension(t *testing.T) {
-	if !isIndexable("README") {
+	if !indexutil.IsIndexable("README") {
 		t.Error("expected file without extension to be indexable")
 	}
 }
 
 func TestIsIndexable_Image(t *testing.T) {
-	if isIndexable("image.png") {
+	if indexutil.IsIndexable("image.png") {
 		t.Error("expected .png to not be indexable")
 	}
 }
 
 func TestIsIndexable_PDF(t *testing.T) {
-	if isIndexable("doc.pdf") {
+	if indexutil.IsIndexable("doc.pdf") {
 		t.Error("expected .pdf to not be indexable")
 	}
 }
@@ -86,41 +88,41 @@ func TestIsIndexable_PDF(t *testing.T) {
 func TestIsIndexable_Code(t *testing.T) {
 	cases := []string{"main.go", "script.py", "style.css", "app.js", "index.html"}
 	for _, c := range cases {
-		if isIndexable(c) {
+		if indexutil.IsIndexable(c) {
 			t.Errorf("expected %q to not be indexable", c)
 		}
 	}
 }
 
 func TestIsIndexable_DotDir(t *testing.T) {
-	if isIndexable(".git/config") {
+	if indexutil.IsIndexable(".git/config") {
 		t.Error("expected .git/config to not be indexable")
 	}
 }
 
 func TestIsIndexable_DotDirInSubpath(t *testing.T) {
-	if isIndexable("repo/.github/workflows.yml") {
+	if indexutil.IsIndexable("repo/.github/workflows.yml") {
 		t.Error("expected subpath with .github to not be indexable")
 	}
 }
 
 func TestIsIndexable_Dotfile(t *testing.T) {
-	if isIndexable(".gitignore") {
+	if indexutil.IsIndexable(".gitignore") {
 		t.Error("expected .gitignore to not be indexable")
 	}
 }
 
 func TestIsIndexable_UppercaseExtension(t *testing.T) {
-	if !isIndexable("file.MD") {
+	if !indexutil.IsIndexable("file.MD") {
 		t.Error("expected .MD (uppercase) to be indexable")
 	}
-	if !isIndexable("file.TXT") {
+	if !indexutil.IsIndexable("file.TXT") {
 		t.Error("expected .TXT (uppercase) to be indexable")
 	}
 }
 
 func TestIsIndexable_ExtensionCaseMixed(t *testing.T) {
-	if !isIndexable("file.Md") {
+	if !indexutil.IsIndexable("file.Md") {
 		t.Error("expected .Md to be indexable")
 	}
 }

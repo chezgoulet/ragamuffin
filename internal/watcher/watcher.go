@@ -5,8 +5,6 @@ import (
 	"time"
 
 	"log/slog"
-
-	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 )
 
 // Event represents a file change.
@@ -66,7 +64,4 @@ func New(vaultPath string, interval time.Duration, logger *slog.Logger, mode str
 	}
 }
 
-// isIndexable returns true if the file extension is supported.
-func isIndexable(path string) bool {
-	return indexutil.IsIndexable(path)
-}
+
