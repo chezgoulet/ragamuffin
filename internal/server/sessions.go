@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -15,15 +16,17 @@ import (
 // ── Request/Response types ─────────────────────────────────────────────────────
 
 type createSessionRequest struct {
-	AgentID string `json:"agent_id"`
-	Content string `json:"content,omitempty"`
-	Source  string `json:"source,omitempty"`
-	Vault   string `json:"vault,omitempty"`
+	AgentID     string `json:"agent_id"`
+	Content     string `json:"content,omitempty"`
+	Source      string `json:"source,omitempty"`
+	Vault       string `json:"vault,omitempty"`
+	AutoExtract *bool  `json:"auto_extract,omitempty"`
 }
 
 type appendTurnRequest struct {
-	Content string `json:"content"`
-	Role    string `json:"role,omitempty"`
+	Content     string `json:"content"`
+	Role        string `json:"role,omitempty"`
+	AutoExtract *bool  `json:"auto_extract,omitempty"`
 }
 
 type sessionResponse struct {
@@ -129,8 +132,13 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Register auto_extract preference if set
+	if req.AutoExtract != nil && s.extractor != nil {
+		s.extractor.SetSessionAutoExtract(sessionID, *req.AutoExtract)
+	}
+
 	// Optionally append initial content as first turn
-	if req.Content != "" {
+	if req.Content != 
 		_, err := s.logStore.AppendTurn(r.Context(), sessionID, req.Content, "user")
 		if err != nil {
 			s.logger.Warn("session create: initial turn append failed", "error", err)
@@ -284,6 +292,17 @@ func (s *Server) handleTurnAppend(w http.ResponseWriter, r *http.Request, sessio
 		s.logger.Error("turn append failed", "error", err)
 		writeError(w, 500, "INTERNAL", "failed to append turn")
 		return
+	}
+
+	// Trigger automatic extraction if configured
+	extract := false
+	if req.AutoExtract != nil {
+		extract = *req.AutoExtract
+	} else if s.extractor != nil {
+		extract = s.extractor.SessionAutoExtract(sessionID)
+	}
+	if extract && s.extractor != nil && s.extractor.Enabled() {
+		go s.extractor.Extract(context.Background(), sessionID, req.Content, role)
 	}
 
 	writeJSON(w, 200, turnResp{

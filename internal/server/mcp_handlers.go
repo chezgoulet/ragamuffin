@@ -147,9 +147,10 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"agent_id": map[string]interface{}{"type": "string", "description": "Agent identity for the session"},
-					"content":  map[string]interface{}{"type": "string", "description": "Optional initial message content"},
-					"vault":    map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"agent_id":     map[string]interface{}{"type": "string", "description": "Agent identity for the session"},
+					"content":      map[string]interface{}{"type": "string", "description": "Optional initial message content"},
+					"vault":        map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Enable automatic fact extraction from turns"},
 				},
 				"required": []string{"agent_id"},
 			},
@@ -197,9 +198,10 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"session_id": map[string]interface{}{"type": "string", "description": "Session UUID"},
-					"content":    map[string]interface{}{"type": "string", "description": "Message content"},
-					"role":       map[string]interface{}{"type": "string", "description": "user, assistant, or system (default: user)"},
+					"session_id":   map[string]interface{}{"type": "string", "description": "Session UUID"},
+					"content":      map[string]interface{}{"type": "string", "description": "Message content"},
+					"role":         map[string]interface{}{"type": "string", "description": "user, assistant, or system (default: user)"},
+					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Extract facts from this turn (default: fallback to session setting)"},
 				},
 				"required": []string{"session_id", "content"},
 			},
@@ -1167,6 +1169,15 @@ func (s *Server) mcpSessionCreate(ctx context.Context, args map[string]interface
 		return nil, fmt.Errorf("create session: %w", err)
 	}
 
+	// Register auto_extract
+	autoExtract := false
+	if ae, ok := args["auto_extract"].(bool); ok && ae {
+		autoExtract = true
+		if s.extractor != nil {
+			s.extractor.SetSessionAutoExtract(sessionID, autoExtract)
+		}
+	}
+
 	if content != "" {
 		if _, err := s.logStore.AppendTurn(ctx, sessionID, content, "user"); err != nil {
 			return nil, fmt.Errorf("create session with initial turn: %w", err)
@@ -1175,11 +1186,12 @@ func (s *Server) mcpSessionCreate(ctx context.Context, args map[string]interface
 	}
 
 	return map[string]interface{}{
-		"session_id": sess.ID,
-		"vault":      sess.Vault,
-		"agent_id":   sess.AgentID,
-		"turn_count": sess.TurnCount,
-		"created_at": sess.CreatedAt,
+		"session_id":   sess.ID,
+		"vault":        sess.Vault,
+		"agent_id":     sess.AgentID,
+		"turn_count":   sess.TurnCount,
+		"created_at":   sess.CreatedAt,
+		"auto_extract": autoExtract,
 	}, nil
 }
 
@@ -1278,6 +1290,17 @@ func (s *Server) mcpTurnAppend(ctx context.Context, args map[string]interface{})
 	turn, err := s.logStore.AppendTurn(ctx, sessionID, content, role)
 	if err != nil {
 		return nil, fmt.Errorf("append turn: %w", err)
+	}
+
+	// Trigger extraction if auto_extract is set
+	extract := false
+	if ae, ok := args["auto_extract"].(bool); ok {
+		extract = ae
+	} else if s.extractor != nil {
+		extract = s.extractor.SessionAutoExtract(sessionID)
+	}
+	if extract && s.extractor != nil && s.extractor.Enabled() {
+		go s.extractor.Extract(context.Background(), sessionID, content, role)
 	}
 
 	return map[string]interface{}{
