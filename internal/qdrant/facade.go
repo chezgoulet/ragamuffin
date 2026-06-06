@@ -51,6 +51,9 @@ type FactStore interface {
 	// Close shuts down the underlying gRPC connection.
 	Close() error
 
+	// GetPoints returns points by their IDs from the given collection.
+	GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
+
 	// SetPayload sets specific payload keys on existing points without
 	// affecting other payload fields. Uses Qdrant's SetPayload gRPC API
 	// for field-level partial updates.

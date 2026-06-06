@@ -28,6 +28,7 @@ type mockFactStore struct {
 	mu              sync.Mutex
 	upserted        []*pb.PointStruct
 	scrollFilteredFn func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
+	getPointsFn     func(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
 }
 
 func (m *mockFactStore) Collection() string { return m.name }
@@ -45,6 +46,16 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 	m.mu.Unlock()
 	if fn != nil {
 		return fn(ctx, collection, filter, limit, offset)
+	}
+	return nil, nil
+}
+
+func (m *mockFactStore) GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+	m.mu.Lock()
+	fn := m.getPointsFn
+	m.mu.Unlock()
+	if fn != nil {
+		return fn(ctx, collection, ids)
 	}
 	return nil, nil
 }
@@ -555,16 +566,6 @@ func TestConflictScan_HighSimilarityFlags(t *testing.T) {
 				return nil, nil // end of pagination
 			}
 
-			// First call: sample active facts (no MustNot filter on conflict_resolved visible at test level)
-			// Second call (from markContradiction): scroll for the target fact_key
-			if len(filter.Must) == 1 && filter.Must[0].GetField().GetKey() == "fact_key" {
-				return []*pb.RetrievedPoint{
-					makePoint("p2", map[string]*pb.Value{
-						"fact_key":   nv("k2"),
-						"fact_value": nv("value2"),
-					}),
-				}, nil
-			}
 			return []*pb.RetrievedPoint{
 				makePoint("p1", map[string]*pb.Value{
 					"fact_key":   nv("k1"),
@@ -573,6 +574,14 @@ func TestConflictScan_HighSimilarityFlags(t *testing.T) {
 				makePoint("p2", map[string]*pb.Value{
 					"fact_key":   nv("k2"),
 					"fact_value": nv("same topic"),
+				}),
+			}, nil
+		},
+		getPointsFn: func(_ context.Context, _ string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+			return []*pb.RetrievedPoint{
+				makePoint("p2", map[string]*pb.Value{
+					"fact_key":   nv("k2"),
+					"fact_value": nv("value2"),
 				}),
 			}, nil
 		},
@@ -875,21 +884,15 @@ func TestSupersedeKeyPattern_SingleVersion(t *testing.T) {
 // ── markContradiction ────────────────────────────────────────────────────────
 
 func TestMarkContradiction(t *testing.T) {
-	callNum := new(atomic.Int32)
 	mock := &mockFactStore{
 		name: "test_facts",
-		scrollFilteredFn: func(_ context.Context, _ string, filter *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
-			n := callNum.Add(1)
-			// First call: look up targeted fact by key
-			if n == 1 {
-				return []*pb.RetrievedPoint{
-					makePoint("p1", map[string]*pb.Value{
-						"fact_key":   nv("target-fact"),
-						"fact_value": nv("value"),
-					}),
-				}, nil
-			}
-			return nil, nil
+		getPointsFn: func(_ context.Context, _ string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+			return []*pb.RetrievedPoint{
+				makePoint("p1", map[string]*pb.Value{
+					"fact_key":   nv("target-fact"),
+					"fact_value": nv("value"),
+				}),
+			}, nil
 		},
 	}
 
