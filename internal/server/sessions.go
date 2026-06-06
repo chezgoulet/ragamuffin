@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -138,7 +137,7 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Optionally append initial content as first turn
-	if req.Content != 
+	if req.Content != "" {
 		_, err := s.logStore.AppendTurn(r.Context(), sessionID, req.Content, "user")
 		if err != nil {
 			s.logger.Warn("session create: initial turn append failed", "error", err)
@@ -302,7 +301,7 @@ func (s *Server) handleTurnAppend(w http.ResponseWriter, r *http.Request, sessio
 		extract = s.extractor.SessionAutoExtract(sessionID)
 	}
 	if extract && s.extractor != nil && s.extractor.Enabled() {
-		go s.extractor.Extract(context.Background(), sessionID, req.Content, role)
+		go s.extractor.Extract(s.shutdownCtx, sessionID, req.Content, role)
 	}
 
 	writeJSON(w, 200, turnResp{

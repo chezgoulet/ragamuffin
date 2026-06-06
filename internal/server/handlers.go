@@ -894,11 +894,25 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 // ── Temporal recall helpers ────────────────────────────────────────────────
 
 // isTemporalRecall returns true if the time_filter value is active or active_at:*.
+// Validates the timestamp portion when active_at: is used.
 func isTemporalRecall(mode string) bool {
-	return mode == "active" || strings.HasPrefix(mode, "active_at:")
+	if mode == "active" {
+		return true
+	}
+	if strings.HasPrefix(mode, "active_at:") {
+		ts := strings.TrimPrefix(mode, "active_at:")
+		if _, err := time.Parse(time.RFC3339, ts); err == nil {
+			return true
+		}
+		if _, err := time.Parse("2006-01-02", ts); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // temporalRecallDate extracts the date from "active_at:2006-01-02" or returns empty.
+// Caller should verify isTemporalRecall first.
 func temporalRecallDate(mode string) string {
 	if strings.HasPrefix(mode, "active_at:") {
 		return strings.TrimPrefix(mode, "active_at:")

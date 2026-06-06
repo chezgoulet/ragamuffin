@@ -456,7 +456,12 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Apply temporal filter
-	if tf := timeFilter(timeFilterMode); tf != nil {
+	tf, err := timeFilter(timeFilterMode)
+	if err != nil {
+		writeError(w, 400, "INVALID_TIME_FILTER", err.Error())
+		return
+	}
+	if tf != nil {
 		conditions = append(conditions, tf)
 	}
 
@@ -1402,10 +1407,12 @@ func intValue(p *int) int {
 // Modes:
 //   - "active" or "": valid_from <= now < valid_until (or no bounds = always active)
 //   - "active_at:2006-01-02T15:04:05Z": effective at a specific point in time
-//   - "all": no filter (returns nil)
-func timeFilter(mode string) *qdrant.Condition {
+//   - "active_at:2006-01-02": also accepted, midnight UTC
+//   - "all": no filter (returns nil, nil)
+// Returns an error for malformed active_at values.
+func timeFilter(mode string) (*qdrant.Condition, error) {
 	if mode == "all" {
-		return nil
+		return nil, nil
 	}
 
 	now := time.Now().UTC()
@@ -1418,8 +1425,7 @@ func timeFilter(mode string) *qdrant.Condition {
 		} else if t, err := time.Parse("2006-01-02", ts); err == nil {
 			target = t
 		} else {
-			// Invalid timestamp — default to now
-			target = now
+			return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
 		}
 	}
 
@@ -1493,7 +1499,7 @@ func timeFilter(mode string) *qdrant.Condition {
 				},
 			},
 		},
-	}
+	}, nil
 }
 
 // float64Ptr returns a pointer to the given float64 value.

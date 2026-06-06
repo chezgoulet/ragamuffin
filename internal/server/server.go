@@ -205,8 +205,6 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/sessions/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessionByID)))
 
 	// Extraction pipeline (v0.8)
-	mux.HandleFunc("/v1/conversations", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleCreateConversation)))
-	mux.HandleFunc("/v1/conversations/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleConversationsByID)))
 	mux.HandleFunc("/v1/extraction/stats", s.withRequestID(s.withRateLimit("/v1/logs", s.handleExtractionStats)))
 
 	// Inbox — low-friction intake for agent observations (#313)

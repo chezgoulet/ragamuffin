@@ -275,9 +275,17 @@ Turn:
 func buildContextWindow(turns []TurnEntry, currentTurn string) string {
 	var b strings.Builder
 	for _, t := range turns {
+		// Skip system/persona turns entirely
+		if t.Role == "system" {
+			continue
+		}
+		// Skip short assistant acknowledgments (< 50 chars)
+		if t.Role == "assistant" && len(strings.TrimSpace(t.Content)) < 50 {
+			continue
+		}
 		label := "User"
-		if t.Role == "assistant" || t.Role == "system" {
-			label = strings.ToUpper(t.Role[:1]) + t.Role[1:]
+		if t.Role == "assistant" {
+			label = "Assistant"
 		}
 		b.WriteString(fmt.Sprintf("%s: %s\n", label, strings.TrimSpace(t.Content)))
 	}
@@ -356,8 +364,7 @@ func (e *Extractor) writeFact(ctx context.Context, f ExtractedFact, sessionID st
 	// Compute vector: embed the value for dedup and future search
 	vec, err := e.embedder.EmbedSingle(ctx, f.Value)
 	if err != nil {
-		// Fallback: zero vector
-		vec = make([]float32, 4)
+		return fmt.Errorf("embed fact value: %w", err)
 	}
 
 	point := &pb.PointStruct{
@@ -416,16 +423,11 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 		return false, "", fmt.Errorf("embed new value: %w", err)
 	}
 
-	// Compare against existing fact values
+	// Compare against existing fact vectors (stored in Qdrant points)
 	for _, pt := range points {
-		existingValue, _ := qutil.GetPayloadString(pt.GetPayload(), "fact_value")
-		if existingValue == "" {
-			continue
-		}
-
-		// Embed existing value for comparison
-		existingVec, err := e.embedder.EmbedSingle(ctx, existingValue)
-		if err != nil {
+		existingVec := getPointVector(pt)
+		if existingVec == nil {
+			// Skip points with missing vectors
 			continue
 		}
 
@@ -447,6 +449,23 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 }
 
 // cosineSimilarity computes the cosine of the angle between two vectors.
+// getPointVector extracts the stored vector from a Qdrant RetrievedPoint.
+// Returns nil if the point has no vector data.
+func getPointVector(pt *pb.RetrievedPoint) []float32 {
+	if pt == nil {
+		return nil
+	}
+	vectors := pt.GetVectors()
+	if vectors == nil {
+		return nil
+	}
+	v := vectors.GetVector()
+	if v == nil {
+		return nil
+	}
+	return v.GetData()
+}
+
 func cosineSimilarity(a, b []float32) float32 {
 	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
 		return 0
