@@ -354,8 +354,7 @@ func (p *Pruner) scrollAllFilteredFacts(ctx context.Context, filter *pb.Filter) 
 	return all, nil
 }
 
-// updateFactStatus sets the status on a fact point using Qdrant's SetPayload
-// API, which only touches the specified keys — no data loss from partial upsert.
+// updateFactStatus sets the status on a fact point.
 func (p *Pruner) updateFactStatus(ctx context.Context, pointID string, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	return p.facts.SetPayload(ctx, p.facts.Collection(), []*pb.PointId{{
