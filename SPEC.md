@@ -356,6 +356,129 @@ requires entity extraction and cross-file reconciliation — a Phase 2 feature.
 
 ---
 
+### `/v1/facts` — POST
+
+Upsert a structured fact. Facts are key-value pairs with lifecycle fields (confidence,
+source, TTL, status, supersession). If the key already exists, its value and metadata
+are updated — the `created_at` timestamp is preserved and `confirmation_count` is
+incremented.
+
+**Request:**
+```json
+{
+  "key": "org/prefer-rust-cli",
+  "value": "All new CLI tools should use Rust",
+  "source": "engineering-review-2026-05",
+  "source_type": "pr_discussion",
+  "tags": ["rust", "cli", "standards"],
+  "confidence": 0.85,
+  "ttl_days": 365
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `key` | string | yes | — | Fact key (e.g. `org/prefer-rust-cli`). Must be unique. |
+| `value` | string | yes | — | The fact value. |
+| `source` | string | no | — | Origin reference. |
+| `source_type` | string | no | — | One of: `manual`, `pr_discussion`, `agent_observation`, `file`, `conversation`, `code_review`, `automated`. |
+| `tags` | array[string] | no | [] | Tags for filtering. |
+| `confidence` | float | no | 1.0 | 0.0–1.0. |
+| `ttl_days` | integer | no | 0 | Days until auto-expiry. 0 = never. |
+
+**Response (new fact):**
+```json
+{
+  "key": "org/prefer-rust-cli",
+  "value": "All new CLI tools should use Rust",
+  "status": "active",
+  "created": true
+}
+```
+
+**Response (updated fact):**
+```json
+{
+  "key": "org/prefer-rust-cli",
+  "value": "All new CLI tools should use Rust",
+  "status": "active",
+  "created": false
+}
+```
+
+**Error (requires write auth):** Returns 401 if the caller lacks write access.
+
+---
+
+### `/v1/facts` — GET
+
+List facts with optional filters. Supports key prefix, tag, and status filters.
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| `key` | string | no | — | Exact key lookup. |
+| `prefix` | string | no | — | Key prefix filter. |
+| `tag` | string | no | — | Filter by tag value. |
+| `status` | string | no | — | One of: `active`, `needs_review`, `superseded`, `rejected`. |
+| `limit` | integer | no | 100 | Max results (1–1000). |
+
+**Response:**
+```json
+{
+  "facts": [
+    {
+      "key": "org/prefer-rust-cli",
+      "value": "All new CLI tools should use Rust",
+      "confidence": 0.85,
+      "status": "active",
+      "tags": ["rust", "cli", "standards"],
+      "created_at": "2026-05-09T10:21:13Z",
+      "updated_at": "2026-05-10T14:30:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### `/v1/facts/{key}/graph` — GET
+
+Fact-to-fact relationship graph. Given a fact key, returns a directed graph of
+connected facts via BFS traversal. Traverses forward relationships (`supersedes`,
+`refines`, `contradicts`, `supports`) and reverse edges (`superseded_by`,
+`refined_by`, `contradicted_by`, `supported_by`).
+
+**Path parameter:** `key` — Fact key to root the graph.
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| `depth` | integer | no | 1 | BFS depth (0–5). Depth 0 returns just the root node. |
+
+**Response:**
+```json
+{
+  "key": "db/host",
+  "nodes": [
+    {"key": "db/host", "value": "postgres.internal", "fact_type": "current"},
+    {"key": "db/host/v2", "value": "postgres-v2.internal", "fact_type": "supersedes"}
+  ],
+  "edges": [
+    {"source": "db/host", "target": "db/host/v2", "relationship": "supersedes"}
+  ]
+}
+```
+
+**Error (fact not found):** Returns `NOT_FOUND` if the root fact key doesn't exist.
+
+Routes: `GET /v1/facts/{key}/graph` (global) and `GET /vault/{name}/v1/facts/{key}/graph` (vault-scoped).
+
+---
+
 ## Architecture
 
 ```
