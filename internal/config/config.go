@@ -118,7 +118,8 @@ type Config struct {
 	LLMModel    string
 	LLMAPIKey   string
 	LLMTimeout      time.Duration
-	EventWebhookURL string
+	EventWebhookURL    string
+	EventWebhookEvents []string
 
 	// Optional — Git
 	GitProviderEnabled bool
@@ -381,8 +382,9 @@ func Load() (*Config, error) {
 		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
 		LLMModel:    os.Getenv("RAGAMUFFIN_LLM_MODEL"),
 		LLMAPIKey:   os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
-		LLMTimeout:      envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
-		EventWebhookURL: os.Getenv("RAGAMUFFIN_EVENT_WEBHOOK_URL"),
+		LLMTimeout:         envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
+		EventWebhookURL:    os.Getenv("RAGAMUFFIN_EVENT_WEBHOOK_URL"),
+		EventWebhookEvents: envCSV("RAGAMUFFIN_EVENT_WEBHOOK_EVENTS"),
 
 		GitProviderEnabled: envBool("RAGAMUFFIN_GIT_PROVIDER_ENABLED"),
 		GitProvider:        envOrDefault("RAGAMUFFIN_GIT_PROVIDER", "github"),
@@ -563,4 +565,20 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return i
+}
+
+func envCSV(key string) []string {
+	v := os.Getenv(key)
+	if v == "" {
+		return nil
+	}
+	parts := strings.Split(v, ",")
+	result := make([]string, 0, len(parts))
+	for _, p := range parts {
+		t := strings.TrimSpace(p)
+		if t != "" {
+			result = append(result, t)
+		}
+	}
+	return result
 }

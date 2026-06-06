@@ -258,7 +258,7 @@ func main() {
 
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
-	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker)
+	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker, cfg.EventWebhookEvents)
 	if cfg.EventWebhookURL != "" {
 		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
 	}
@@ -375,6 +375,12 @@ func main() {
 			ScanName: scanName,
 			Duration: dur.String(),
 			Flagged:  flagged,
+		})
+	}
+	prunerCfg.FlagCallback = func(factKey, reason string) {
+		emitter.Emit(events.TypeFactFlagged, events.FactFlaggedData{
+			Key:    factKey,
+			Reason: reason,
 		})
 	}
 	p := pruner.New(factsQc, nil, ec, lm, logger.With("component", "pruner"), prunerCfg)

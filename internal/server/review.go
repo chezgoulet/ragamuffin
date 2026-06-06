@@ -370,6 +370,10 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 					Action: "supersede",
 				})
 			}
+			// Record review resolution for threshold tuning
+			if s.logStore != nil {
+				_ = s.logStore.RecordResolution(r.Context(), key, "supersede", "manual", nil)
+			}
 			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
 			return
 		}
@@ -446,6 +450,11 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 			Key:    key,
 			Action: req.Action,
 		})
+	}
+
+	// Record review resolution for threshold tuning
+	if s.logStore != nil {
+		_ = s.logStore.RecordResolution(r.Context(), key, req.Action, "manual", nil)
 	}
 
 	resp := pointToFactResponse(payload, key)

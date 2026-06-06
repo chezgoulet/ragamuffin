@@ -53,6 +53,11 @@ type PrunerConfig struct {
 	// LogScanFn is called after each scan completes. Optional; used by the server
 	// to log scan summaries to /v1/logs.
 	LogScanFn func(scanName string, duration time.Duration, factsFlagged int, errStr string)
+
+	// FlagCallback is called each time a fact is flagged as needs_review.
+	// Optional; use for emitting lifecycle events or external notifications.
+	// Called with the fact key and the reason type (stale, low_confidence, conflict, source_deleted).
+	FlagCallback func(factKey string, reason string)
 }
 
 // DefaultConfig returns a PrunerConfig with sensible defaults.
@@ -155,6 +160,25 @@ func (p *Pruner) Health() HealthReport {
 	}
 
 	return hr
+}
+
+// Enabled returns whether the pruner is enabled.
+func (p *Pruner) Enabled() bool {
+	return p.cfg.Enabled
+}
+
+// Config returns a copy of the current pruner configuration.
+func (p *Pruner) Config() PrunerConfig {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cfg
+}
+
+// SetLowConfidenceThreshold updates the low-confidence threshold.
+func (p *Pruner) SetLowConfidenceThreshold(threshold float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg.LowConfidenceThreshold = threshold
 }
 
 // RecordFlagged increments the flagged counter. Called by scan implementations.

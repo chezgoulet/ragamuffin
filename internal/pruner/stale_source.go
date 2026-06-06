@@ -128,6 +128,9 @@ func (p *Pruner) sourceStaleScan(ctx context.Context) {
 					"point_id", ref.pointID, "key", ref.key, "error", err)
 				continue
 			}
+			if p.cfg.FlagCallback != nil && ref.key != "" {
+				p.cfg.FlagCallback(ref.key, "source_deleted")
+			}
 			flagged++
 		}
 		p.logger.Info("sourceStaleScan: flagged facts for deleted source",
