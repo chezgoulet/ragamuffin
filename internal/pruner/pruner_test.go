@@ -50,6 +50,10 @@ func (m *mockFactStore) ScrollFiltered(ctx context.Context, collection string, f
 	return nil, nil
 }
 
+func (m *mockFactStore) GetVectorSize(_ context.Context, _ string) (uint64, error) {
+	return 4, nil // default facts vector size
+}
+
 func (m *mockFactStore) GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
 	m.mu.Lock()
 	fn := m.getPointsFn
@@ -1047,6 +1051,9 @@ func TestParseVersionedKey(t *testing.T) {
 		{"org/v0/key", "", 0},        // v0 is not a version
 		{"org/decision", "", 0},
 		{"", "", 0},
+		{"vegetables/price", "", 0},  // starts with v but not a version segment
+		{"api/v2/models/v3/config", "api/v2/models", 3}, // last segment wins
+		{"v1/api/v2", "v1/api", 2},  // last segment wins (middle + tail)
 	}
 
 	for _, tt := range tests {

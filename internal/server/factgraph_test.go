@@ -16,6 +16,10 @@ type factGraphTestStore struct {
 	points map[string]*pb.RetrievedPoint // key → point
 }
 
+func (s *factGraphTestStore) GetVectorSize(_ context.Context, _ string) (uint64, error) {
+	return 4, nil
+}
+
 func (s *factGraphTestStore) GetPoints(_ context.Context, _ string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
 	var result []*pb.RetrievedPoint
 	for _, id := range ids {
