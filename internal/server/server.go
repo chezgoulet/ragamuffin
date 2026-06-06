@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -56,6 +57,7 @@ type Server struct {
 	watcher     watcher.Watcher
 	logStore    *logstore.Store
 	pruner      *pruner.Pruner
+	extractor   *extraction.Extractor
 	emitter     *events.Emitter // webhook + SSE event publisher
 	mcpHandler  *mcp.Handler
 	broker      *events.Broker  // SSE subscriber registry
@@ -72,7 +74,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger) *Server {
+func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger, ext *extraction.Extractor) *Server {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:           cfg,
@@ -86,6 +88,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		watcher:       w,
 		logStore:      logStore,
 		pruner:        pr,
+		extractor:      ext,
 		emitter:       emitter,
 		broker:        br,
 		logger:        logger,
@@ -200,6 +203,11 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
 	mux.HandleFunc("/v1/sessions/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessionByID)))
+
+	// Extraction pipeline (v0.8)
+	mux.HandleFunc("/v1/conversations", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleCreateConversation)))
+	mux.HandleFunc("/v1/conversations/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleConversationsByID)))
+	mux.HandleFunc("/v1/extraction/stats", s.withRequestID(s.withRateLimit("/v1/logs", s.handleExtractionStats)))
 
 	// Inbox — low-friction intake for agent observations (#313)
 	mux.HandleFunc("/inbox", s.withRequestID(s.withRateLimit("/inbox", s.handleInbox)))

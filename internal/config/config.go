@@ -110,6 +110,14 @@ type Config struct {
 	PrunerConflictThreshold     float64
 	PrunerImportanceThreshold   float64
 
+	// Automatic extraction from conversation turns
+	ExtractEnabled            bool
+	ExtractWindow             int
+	ExtractMaxConfidence      float64
+	ExtractDedupThreshold     float64
+	ExtractConcurrency        int
+	ExtractPerSessionCooldown int
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath        string          // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows     int             // 0 = unlimited
@@ -378,6 +386,12 @@ func Load() (*Config, error) {
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
+		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED", false),
+		ExtractWindow:             envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
+		ExtractMaxConfidence:      envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85),
+		ExtractDedupThreshold:     envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
+		ExtractConcurrency:        envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
+		ExtractPerSessionCooldown: envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),

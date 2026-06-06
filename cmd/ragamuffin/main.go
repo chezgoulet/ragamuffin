@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
+	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
@@ -441,7 +442,28 @@ func main() {
 		qc = idxManager.GetClient("default")
 	}
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger)
+	extractionCfg := extraction.DefaultConfig()
+	extractionCfg.Enabled = cfg.ExtractEnabled
+	extractionCfg.Window = cfg.ExtractWindow
+	extractionCfg.MaxConfidence = cfg.ExtractMaxConfidence
+	extractionCfg.DedupThreshold = cfg.ExtractDedupThreshold
+	extractionCfg.Concurrency = cfg.ExtractConcurrency
+	extractionCfg.PerSessionCooldown = cfg.ExtractPerSessionCooldown
+	ext := extraction.New(extractionCfg, lm, ec, factsQc, logger)
+	// Wire the recent-turns lookup so the extractor can build context windows
+	ext.RecentTurnsFn = func(ctx context.Context, sessionID string, n int) ([]extraction.TurnEntry, error) {
+		_, turns, err := logStore.GetSession(ctx, sessionID, n)
+		if err != nil {
+			return nil, err
+		}
+		entries := make([]extraction.TurnEntry, len(turns))
+		for i, t := range turns {
+			entries[i] = extraction.TurnEntry{Content: t.Content, Role: t.Role}
+		}
+		return entries, nil
+	}
+
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext)
 
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
