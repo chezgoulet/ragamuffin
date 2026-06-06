@@ -235,11 +235,16 @@ func (s *Server) BuildAuth() auth.Authenticator {
 		)
 	case auth.ModeOIDC:
 		s.logger.Info("oidc auth enabled", "issuer", s.cfg.AuthOIDCIssuer)
-		return auth.NewOIDCAuthenticator(
+		a := auth.NewOIDCAuthenticator(
 			s.cfg.AuthOIDCIssuer,
 			s.cfg.AuthOIDCClientID,
 			s.logger,
 		)
+		// Eager discovery: non-fatal, logs failure and retries lazily (#410)
+		discoveryCtx, discoveryCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer discoveryCancel()
+		a.StartDiscovery(discoveryCtx)
+		return a
 	default:
 		return &auth.NoneAuthenticator{}
 	}
@@ -658,6 +663,15 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 	if cleaned != req.Path {
 		writeError(w, 400, "INVALID_INPUT", "path must be clean (no extra slashes or dot components)")
 		return
+	}
+
+	// Validate path is within VaultsRoot (#413)
+	if s.cfg.VaultsRoot != "" {
+		root := filepath.Clean(s.cfg.VaultsRoot)
+		if !strings.HasPrefix(cleaned+"/", root+"/") {
+			writeError(w, 400, "INVALID_INPUT", "path must be within RAGAMUFFIN_VAULTS_ROOT")
+			return
+		}
 	}
 
 	// Check vault config access with lock — all existence checks inside one lock

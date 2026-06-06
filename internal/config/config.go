@@ -51,6 +51,9 @@ type Config struct {
 
 	// Multi-tenancy — mutually exclusive with VaultPath
 	Vaults map[string]*VaultConfig // vault name → config (v0.4+)
+	// VaultsRoot restricts runtime vault creation paths (handleCreateVault).
+	// Only used in multi-tenant mode (#413).
+	VaultsRoot string
 
 	// Required
 	QdrantURL       string
@@ -401,6 +404,9 @@ func Load() (*Config, error) {
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
 		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 	}
+
+	// Parse vaults root for multi-tenant path validation
+	cfg.VaultsRoot = os.Getenv("RAGAMUFFIN_VAULTS_ROOT")
 
 	// Parse multi-tenancy if RAGAMUFFIN_VAULTS is set
 	vaultsRaw := os.Getenv("RAGAMUFFIN_VAULTS")
