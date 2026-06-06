@@ -103,15 +103,29 @@ func buildVault(
 				if !ok {
 					return
 				}
+				// Fan-out with back-pressure: try-send, then spawn retry.
+				// Each retry goroutine lives at most 30s and prevents silent drops (#411).
 				select {
 				case idxEvents <- e:
 				default:
-					l.Error("indexer event channel full, dropping event", "path", e.Path, "action", e.Action)
+					go func(ev watcher.Event) {
+						select {
+						case idxEvents <- ev:
+						case <-time.After(30 * time.Second):
+							l.Warn("indexer event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
+						}
+					}(e)
 				}
 				select {
 				case prunevents <- e:
 				default:
-					l.Error("pruner event channel full, dropping event", "path", e.Path, "action", e.Action)
+					go func(ev watcher.Event) {
+						select {
+						case prunevents <- ev:
+						case <-time.After(30 * time.Second):
+							l.Warn("pruner event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
+						}
+					}(e)
 				}
 			case <-doneCh:
 				return
@@ -425,8 +439,8 @@ func main() {
 		Addr:              fmt.Sprintf("%s:%s", cfg.Host, cfg.Port),
 		Handler:           authMw(srv.Recovery(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       0, // 0 = no timeout — MaxBytesReader + per-handler context timeouts protect; 30s would kill slow /draft uploads
-		WriteTimeout:      0, // 0 = no timeout — needed for streaming /v1/snapshot
+		ReadTimeout:       30 * time.Second, // per-endpoint TimeoutHandler protects long uploads (#414)
+		WriteTimeout:      0,                 // 0 = no timeout — streaming /v1/snapshot and SSE need unbounded writes
 		IdleTimeout:       60 * time.Second,
 	}
 

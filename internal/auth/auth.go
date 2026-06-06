@@ -84,17 +84,24 @@ var ErrUnauthenticated = fmt.Errorf("unauthenticated")
 var PublicPaths = map[string]bool{
 	"/health":  true,
 	"/version": true,
-	"/events":  true, // SSE — clients connect before they have tokens
 }
 
 // Middleware wraps an HTTP handler with authentication.
 // Routes in PublicPaths bypass auth. All others require valid claims.
+// Supports `?token=...` query param as an alternative to Authorization header (#424).
 func Middleware(auth Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if PublicPaths[r.URL.Path] {
 				next.ServeHTTP(w, r)
 				return
+			}
+
+			// Support token in query param (e.g., SSE EventSource connections)
+			if r.Header.Get("Authorization") == "" {
+				if token := r.URL.Query().Get("token"); token != "" {
+					r.Header.Set("Authorization", "Bearer "+token)
+				}
 			}
 
 			claims, err := auth.Authenticate(r)
