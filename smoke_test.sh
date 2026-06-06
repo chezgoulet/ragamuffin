@@ -325,6 +325,35 @@ else
   red "pruner config" "HTTP error: $RC"
 fi
 
+# ── Temporal reasoning tests (v0.8) ──────────────────────────────────────────────
+
+yellow "Temporal: POST fact with valid_from/valid_until"
+RESP=$(curl -s -w "\\n%{http_code}" -X POST "$HOST/v1/facts" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"key":"test/temporal-fact","value":"temporal test","valid_until":"2099-12-31T23:59:59Z"}')
+assert_field "temporal fact POST" "key" "test/temporal-fact" "$RESP"
+TEMP_KEY_RESP="$RESP"
+
+yellow "Temporal: GET fact has valid_until"
+RESP=$(curl -s -w "\\n%{http_code}" "$HOST/v1/facts?key=test/temporal-fact" -H "Authorization: Bearer $TOKEN")
+assert_field "temporal GET fact valid_until" "valid_until" "2099-12-31T23:59:59Z" "$RESP"
+
+yellow "Temporal: GET fact has valid_from"
+RESP=$(curl -s -w "\\n%{http_code}" "$HOST/v1/facts?key=test/temporal-fact" -H "Authorization: Bearer $TOKEN")
+assert_field "temporal GET fact valid_from present" "valid_from" `` "$RESP"
+
+yellow "Temporal: recall with time_filter"
+RESP=$(curl -s -w "\\n%{http_code}" -X POST "$HOST/recall" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"query":"test","top_k":5,"time_filter":"all"}')
+assert_status "recall time_filter=all" 200 "$RESP"
+
+# Cleanup
+curl -s -X DELETE "$HOST/v1/facts?key=test/temporal-fact" \
+  -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

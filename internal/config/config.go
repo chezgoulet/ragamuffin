@@ -103,6 +103,7 @@ type Config struct {
 	PrunerConflictInterval       time.Duration
 	PrunerSupersedeInterval      time.Duration
 	PrunerSourceStaleInterval    time.Duration
+	PrunerExpiredInterval        time.Duration
 	PrunerStaleDays              int
 	PrunerConflictSampleSize     int
 	PrunerLowConfidenceThreshold float64
@@ -373,6 +374,7 @@ func Load() (*Config, error) {
 		PrunerStaleDays:              envInt("RAGAMUFFIN_PRUNER_STALE_DAYS", 90),
 		PrunerConflictThreshold:      envFloat("RAGAMUFFIN_PRUNER_CONFLICT_THRESHOLD", 0.85),
 		PrunerSourceStaleInterval:    envDuration("RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL", 0),
+		PrunerExpiredInterval:        envDuration("RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL", 24*time.Hour),
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),

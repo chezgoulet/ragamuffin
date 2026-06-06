@@ -83,13 +83,19 @@ Standard error codes:
 | HTTP | Code | Meaning |
 |------|------|---------|
 | 400 | `INVALID_REQUEST` | Missing or malformed parameters |
+| 401 | `UNAUTHORIZED` | Authentication required (no valid credentials) |
+| 403 | `FORBIDDEN` | Authenticated but insufficient access level |
+| 404 | `NOT_FOUND` | Requested resource does not exist |
+| 405 | `METHOD_NOT_ALLOWED` | Wrong HTTP method for the endpoint |
+| 500 | `INTERNAL` | Unexpected failure (check logs) |
 | 502 | `QDRANT_UNREACHABLE` | Vector store is down |
 | 502 | `EMBEDDING_API_ERROR` | Embedding service returned an error |
-| 503 | `LLM_NOT_CONFIGURED` | Endpoint requires an LLM but none is configured |
 | 502 | `LLM_API_ERROR` | LLM backend returned an error |
-| 503 | `GIT_NOT_CONFIGURED` | `/draft` PR mode requested but git provider is not configured |
 | 502 | `GIT_PROVIDER_ERROR` | Git provider API returned an error |
-| 500 | `INTERNAL` | Unexpected failure (check logs) |
+| 503 | `LLM_NOT_CONFIGURED` | Endpoint requires an LLM but none is configured |
+| 503 | `GIT_NOT_CONFIGURED` | `/draft` PR mode requested but git provider is not configured |
+| 503 | `PRUNER_DISABLED` | Pruner is not enabled |
+| 503 | `NO_LOGSTORE` | Logstore is not configured |
 
 ---
 
@@ -171,6 +177,7 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `score_threshold` | float | no | 0.0 | Minimum similarity score (0.0–1.0) |
 | `source_filter` | string | no | — | Restrict to files under this path prefix |
 | `detail` | string | no | `l2` | Response detail level: `l0` (no text/first_paragraph), `l1` (first_paragraph only), `l2` (full) |
+| `time_filter` | string | no | `active` | Temporal filter: `active` (current index state), `active_at:<RFC3339>`, or `all`. `active_at` limits to chunks indexed before a point in time. |
 
 **Response:**
 ```json
@@ -419,28 +426,126 @@ incremented.
 | `tags` | array[string] | no | [] | Tags for filtering. |
 | `confidence` | float | no | 1.0 | 0.0–1.0. |
 | `ttl_days` | integer | no | 0 | Days until auto-expiry. 0 = never. |
+| `valid_from` | string | no | `created_at` | RFC 3339 timestamp; when this fact becomes effective |
+| `valid_until` | string | no | — | RFC 3339 timestamp; when this fact expires (null = no expiry) |
 
-**Response (new fact):**
+**Response (200):**
 ```json
 {
   "key": "org/prefer-rust-cli",
   "value": "All new CLI tools should use Rust",
+  "tags": ["rust", "cli", "standards"],
+  "source": "engineering-review-2026-05",
+  "source_type": "pr_discussion",
+  "confidence": 0.85,
   "status": "active",
-  "created": true
+  "version": 0,
+  "supersedes": "",
+  "superseded_by": 0,
+  "contradicts": null,
+  "refines": "",
+  "supports": null,
+  "conflict_resolved": false,
+  "confirmation_count": 1,
+  "last_confirmed_at": "",
+  "created_at": "2026-05-09T10:21:13Z",
+  "updated_at": "2026-05-10T14:30:00Z",
+  "expires_at": "",
+  "valid_from": "2026-05-09T10:21:13Z",
+  "valid_until": "",
+  "related_chunks": null
 }
 ```
 
-**Response (updated fact):**
+The response includes the complete fact state with all lifecycle fields as stored.
+
+**Error (requires write auth):** Returns 403 `FORBIDDEN` if the caller lacks write access.
+
+---
+
+### `/v1/facts` — PUT
+
+Update/replace a fact identified by `key` query parameter. Accepts partial field updates via the request body. Fields set to null are cleared.
+
+**Query parameter:**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `key` | string | yes | Fact key to update |
+
+**Request:**
 ```json
 {
-  "key": "org/prefer-rust-cli",
-  "value": "All new CLI tools should use Rust",
+  "value": "Updated CLI policy",
   "status": "active",
-  "created": false
+  "confidence": 0.95,
+  "tags": ["rust", "cli"],
+  "source": "review-2026-06",
+  "ttl_days": 180,
+  "supersedes": "",
+  "refines": "",
+  "conflict_resolved": false
 }
 ```
 
-**Error (requires write auth):** Returns 401 if the caller lacks write access.
+All fields are optional. Response is the full `factResponse` shape.
+
+**Error (not found):** Returns `NOT_FOUND` if the fact key doesn't exist.
+
+---
+
+### `/v1/facts` — PATCH
+
+Bulk partial update across multiple facts. Each key in `keys` receives the same set of field updates.
+
+**Request:**
+```json
+{
+  "keys": ["org/prefer-rust-cli", "db/host"],
+  "updates": {
+    "status": "active",
+    "confidence": 0.95
+  }
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `keys` | []string | yes | Fact keys to update (max 1000) |
+| `updates` | object | yes | Same fields as PUT request |
+
+**Response:**
+```json
+{
+  "results": [
+    {"key": "org/prefer-rust-cli", "ok": true},
+    {"key": "db/host", "ok": true}
+  ],
+  "total": 2,
+  "succeeded": 2,
+  "failed": 0
+}
+```
+
+---
+
+### `/v1/facts` — DELETE
+
+Remove a fact by key.
+
+**Query parameter:**
+
+| Parameter | Type | Required | Notes |
+|-----------|------|----------|-------|
+| `key` | string | yes | Fact key to delete |
+
+**Response:**
+```json
+{
+  "deleted": true,
+  "key": "org/prefer-rust-cli"
+}
+```
 
 ---
 
@@ -456,20 +561,36 @@ List facts with optional filters. Supports key prefix, tag, and status filters.
 | `prefix` | string | no | — | Key prefix filter. |
 | `tag` | string | no | — | Filter by tag value. |
 | `status` | string | no | — | One of: `active`, `needs_review`, `superseded`, `rejected`. |
+| `time_filter` | string | no | `active` | Temporal filter: `active` (currently valid), `active_at:<RFC3339>`, or `all`. |
 | `limit` | integer | no | 100 | Max results (1–1000). |
 
 **Response:**
 ```json
 {
-  "facts": [
+  "entries": [
     {
       "key": "org/prefer-rust-cli",
       "value": "All new CLI tools should use Rust",
+      "tags": ["rust", "cli", "standards"],
+      "source": "engineering-review-2026-05",
+      "source_type": "pr_discussion",
       "confidence": 0.85,
       "status": "active",
-      "tags": ["rust", "cli", "standards"],
+      "version": 0,
+      "supersedes": "",
+      "superseded_by": 0,
+      "contradicts": null,
+      "refines": "",
+      "supports": null,
+      "conflict_resolved": false,
+      "confirmation_count": 1,
+      "last_confirmed_at": "",
       "created_at": "2026-05-09T10:21:13Z",
-      "updated_at": "2026-05-10T14:30:00Z"
+      "updated_at": "2026-05-10T14:30:00Z",
+      "expires_at": "",
+      "valid_from": "2026-05-09T10:21:13Z",
+      "valid_until": "",
+      "related_chunks": null
     }
   ],
   "count": 1
@@ -530,11 +651,22 @@ Operators can preview changes with `?dry_run=true` (default) or apply by passing
       "recommended": 0.90,
       "accept_rate": 0.67,
       "sample_size": 12,
-      "rationale": "67% of conflict flags were rejected; consider raising similarity threshold from 0.85 to 0.90"
+      "rationale": "67% of conflict flags were rejected; consider raising similarity threshold from 0.85 to 0.90",
+      "applied": false,
+      "note": "conflict threshold is embedded in scanner logic; adjust manually in config"
+    },
+    {
+      "reason_type": "low_confidence",
+      "current": 0.5,
+      "recommended": 0.45,
+      "accept_rate": 0.72,
+      "sample_size": 8,
+      "rationale": "72% of low confidence flags were confirmed; consider lowering threshold from 0.50 to 0.45",
+      "applied": true,
+      "note": ""
     }
   ],
-  "sample_count": 1,
-  "applied": false
+  "sample_count": 2
 }
 ```
 
@@ -559,6 +691,475 @@ Returns the current pruner configuration.
 ```
 
 Requires admin access.
+
+---
+
+### `/v1/review` — GET, POST
+
+Fact review queue. **GET** lists facts with `status = needs_review`. **POST** resolves a flagged fact.
+
+#### `GET /v1/review`
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| `reason` | string | no | — | Filter by review reason: `stale`, `contradiction`, `low_confidence`, `supersession` |
+| `tag` | string | no | — | Filter by tag |
+| `source_type` | string | no | — | Filter by source type |
+| `min_confidence` | float | no | — | Only facts with confidence below this value |
+| `limit` | int | no | 50 | Max results (1–100) |
+| `before` | string | no | — | Cursor pagination token |
+
+**Response:**
+```json
+{
+  "entries": [
+    {
+      "key": "org/prefer-rust-cli",
+      "value": "All new CLI tools should use Rust",
+      "tags": ["rust"],
+      "confidence": 0.4,
+      "status": "needs_review",
+      "review_reasons": [
+        {"type": "low_confidence", "detail": "confidence 0.40 is below threshold 0.50"}
+      ],
+      "last_confirmed_at": "",
+      "created_at": "2026-05-09T10:21:13Z",
+      "updated_at": "2026-05-10T14:30:00Z"
+    }
+  ]
+}
+```
+
+#### `POST /v1/review?key=<fact_key>`
+
+Resolve a flagged fact. Requires write access.
+
+**Request:**
+```json
+{
+  "action": "confirm",
+  "confidence": 0.9,
+  "note": "Verified by manual review"
+}
+```
+
+| Field | Type | Required | Notes |
+|-------|------|----------|-------|
+| `action` | string | yes | `confirm` (approve), `supersede` (replace with new value), `reject` (mark rejected), `reclassify` (re-tag) |
+| `confidence` | float | no | New confidence value |
+| `note` | string | no | Review note logged to resolution history |
+| `new_key` | string | conditional | Required for `supersede` — new fact key |
+| `new_value` | string | conditional | Required for `supersede` — new fact value |
+| `ttl_days` | int | no | Update TTL |
+| `tags` | []string | no | Replace tags |
+
+**Response:** Returns updated `factResponse` on success. Errors: `FORBIDDEN`, `NOT_FOUND`, `MISSING_ACTION`, `SUPERSEDE_CREATE_FAILED`.
+
+---
+
+### `/v1/review/stats` — GET
+
+Review queue statistics. Returns counts broken down by reason type and source type.
+
+**Response:**
+```json
+{
+  "total_needs_review": 12,
+  "by_reason": {
+    "stale": 5,
+    "contradiction": 3,
+    "low_confidence": 3,
+    "supersession": 1
+  },
+  "by_source_type": {
+    "pr_discussion": 6,
+    "agent_observation": 4,
+    "manual": 2
+  },
+  "oldest_item": "2026-05-01T10:00:00Z",
+  "avg_pending_days": 14.2
+}
+```
+
+---
+
+### `/v1/ingest` — POST
+
+Ingest a document or observation into the vault. Chunks are created, embedded, and stored in Qdrant. Requires write access.
+
+**Request:**
+```json
+{
+  "vault": "docs",
+  "content": "# New Policy\n\nAll engineers must use 2FA.",
+  "source": "internal-memo-2026-06",
+  "tags": ["security", "policy"]
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `vault` | string | no | `default` | Target vault name (multi-tenant only) |
+| `content` | string | yes | — | Document content to index |
+| `source` | string | yes | — | Source path/identifier for the content |
+| `tags` | []string | no | — | Optional tags |
+
+**Response:**
+```json
+{
+  "source": "internal-memo-2026-06",
+  "chunk_count": 5
+}
+```
+
+Max request body: 10 MB.
+
+---
+
+### `/v1/ingest/conversation` — POST
+
+Ingest an agent conversation into the session logstore. Creates a session with turns.
+
+**Request:**
+```json
+{
+  "agent": "review-bot",
+  "content": "Reviewed 12 pending facts, confirmed 8, rejected 4.",
+  "role": "assistant",
+  "tags": ["review-summary"]
+}
+```
+
+---
+
+### `/v1/sessions` — GET, POST
+
+Agent session management. Sessions group related turns from an agent's interaction.
+
+#### `GET /v1/sessions`
+
+**Query parameters:**
+
+| Parameter | Type | Required | Default | Notes |
+|-----------|------|----------|---------|-------|
+| `agent_id` | string | no | — | Filter by agent ID |
+| `vault` | string | no | — | Filter by vault name |
+| `limit` | int | no | 100 | Max results (1–1000) |
+| `before` | string | no | — | Cursor pagination |
+
+**Response:**
+```json
+{
+  "sessions": [
+    {
+      "id": "uuid",
+      "agent_id": "review-bot",
+      "turn_count": 3,
+      "source": "review-session-1",
+      "vault": "default",
+      "created_at": "2026-05-10T10:00:00Z",
+      "updated_at": "2026-05-10T10:05:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+#### `POST /v1/sessions`
+
+**Request:**
+```json
+{
+  "agent_id": "review-bot",
+  "content": "Initial analysis...",
+  "source": "review-session-1",
+  "vault": "default"
+}
+```
+
+**Response:** Returns the created `sessionResponse` with an `id` and `turn_count` of 1.
+
+#### `GET /v1/sessions/{id}`
+
+Retrieve a session with its turns. Returns the same shape as the list response plus a `turns` array.
+
+#### `POST /v1/sessions/{id}/turns`
+
+Append a turn to an existing session.
+
+**Request:**
+```json
+{
+  "content": "Additional analysis...",
+  "role": "assistant"
+}
+```
+
+#### `DELETE /v1/sessions/{id}`
+
+Delete a session and its turns.
+
+---
+
+### `/v1/logs` — GET, POST
+
+System log store. Append entries via POST, query via GET. Backed by the SQLite logstore.
+
+#### `POST /v1/logs`
+
+Max body: 64 KB.
+
+**Request:**
+```json
+{
+  "agent": "review-bot",
+  "type": "summary",
+  "body": "Reviewed 12 pending facts.",
+  "tags": ["review"],
+  "timestamp": "2026-06-06T15:00:00Z"
+}
+```
+
+**Response:**
+```json
+{
+  "id": 12345,
+  "inserted": true
+}
+```
+
+#### `GET /v1/logs`
+
+**Query parameters:**
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `agent` | string | Filter by agent identifier |
+| `type` | string | Filter by log type |
+| `tag` | string | Filter by tag value |
+| `since` | string | ISO8601 start time |
+| `until` | string | ISO8601 end time |
+| `before` | string | Cursor: entries before this ID |
+| `limit` | int | Max results (1–1000, default 100) |
+
+**Response (200):**
+```json
+{
+  "entries": [
+    {
+      "id": 12345,
+      "agent": "review-bot",
+      "type": "summary",
+      "body": "Reviewed 12 pending facts.",
+      "tags": ["review"],
+      "timestamp": "2026-06-06T15:00:00Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### `/v1/auth/check` — GET, POST
+
+Check current authentication status. Returns access level and vault permissions.
+
+**Response (authenticated):**
+```json
+{
+  "authenticated": true,
+  "access": "write",
+  "vaults": ["docs", "code"]
+}
+```
+
+**Response (unauthenticated):**
+```json
+{
+  "authenticated": false
+}
+```
+
+---
+
+### `/v1/snapshot` — GET
+
+Downloads the vault as a gzip-compressed tar archive. Requires write access. Skips the `.ragamuffin/` operational metadata directory.
+
+Response is `Content-Type: application/gzip` with `Content-Disposition: attachment; filename="vault-YYYY-MM-DD.tar.gz"`.
+
+---
+
+### `/inbox` — POST
+
+Create an inbox entry in the vault. Inbox entries are JSON files stored under `_inbox/` in the vault directory.
+
+**Query parameter:** `vault` (string, optional) — vault name for multi-tenant.
+
+**Request:**
+```json
+{
+  "content": "New onboarding document needed for JSON-RPC API",
+  "source": "meeting-notes",
+  "tags": ["documentation", "api"],
+  "vault": "docs"
+}
+```
+
+**Response:**
+```json
+{
+  "id": "new-onboarding-document",
+  "created": true
+}
+```
+
+Max request body: 256 KB.
+
+### `/inbox/{id}` — GET, DELETE
+
+Read or delete an inbox entry by its slugified ID.
+
+**Response (GET):**
+```json
+{
+  "id": "new-onboarding-document",
+  "content": "New onboarding document needed for JSON-RPC API",
+  "source": "meeting-notes",
+  "tags": ["documentation", "api"],
+  "created_at": "2026-06-06T15:00:00Z",
+  "processed": false
+}
+```
+
+---
+
+### `/version` — GET
+
+Server version information.
+
+**Response:**
+```json
+{
+  "version": "0.7.0",
+  "commit": "abc1234",
+  "build_date": "2026-06-06T12:00:00Z",
+  "go_version": "go1.25.0"
+}
+```
+
+---
+
+### `/metrics` — GET
+
+Prometheus-format metrics. Returns `ragamuffin_requests_total{endpoint,status}` counters per endpoint and HTTP status, plus indexed file and chunk counts.
+
+```
+Content-Type: text/plain; version=0.0.4
+
+# HELP ragamuffin_requests_total Total HTTP requests by endpoint and status.
+# TYPE ragamuffin_requests_total counter
+ragamuffin_requests_total{endpoint="/recall",status="200"} 142
+ragamuffin_requests_total{endpoint="/health",status="200"} 38
+# HELP ragamuffin_files_total Total indexed files.
+# TYPE ragamuffin_files_total gauge
+ragamuffin_files_total 247
+# HELP ragamuffin_chunks_total Total indexed chunks.
+# TYPE ragamuffin_chunks_total gauge
+ragamuffin_chunks_total 1893
+```
+
+---
+
+### `/vaults` — GET, POST
+
+List or create vaults. For multi-tenant deployments.
+
+#### `GET /vaults`
+
+Lists all configured vaults with their indexing stats.
+
+**Response (single-tenant):**
+```json
+{
+  "vaults": [
+    {
+      "name": "default",
+      "path": "/opt/vault",
+      "indexed_files": 247,
+      "total_chunks": 1893,
+      "last_indexed": "2026-06-06T12:00:00Z",
+      "indexing": false
+    }
+  ]
+}
+```
+
+#### `POST /vaults`
+
+Create a new vault (requires write access).
+
+**Request:**
+```json
+{
+  "name": "projects",
+  "path": "/data/vaults/projects"
+}
+```
+
+---
+
+### `/events` — GET
+
+Server-Sent Events stream of vault and lifecycle CloudEvents. SSE format:
+
+```
+event: fact.created
+data: {"specversion":"1.0","type":"fact.created","source":"/ragamuffin","subject":"org/prefer-rust-cli","time":"2026-06-06T15:00:00Z"}
+
+```
+
+Event types: `fact.created`, `fact.flagged`, `fact.reviewed`, `pruner.scan.complete`, `vault.file.changed`, `vault.file.deleted`.
+
+Slow consumer protection: a buffer of 64 events per subscriber. Older events are dropped if the buffer fills.
+
+---
+
+### `/reindex` — POST
+
+Force a full re-index of the vault. Requires write access. Returns 200 `{"reindexed": true}` on success. Returns 409 if already indexing.
+
+---
+
+### `/mcp` — SSE
+
+Model Context Protocol SSE transport. Provides tool-based access to Ragamuffin's core operations for MCP-compatible agents (e.g., Claude Desktop). Includes tools for recall, ask, draft, fact management, chunk retrieval, and session management.
+
+Connection is maintained as an open SSE stream. Tools are called via JSON-RPC messages over the same connection.
+
+---
+
+### Vault-scoped Endpoints
+
+All global endpoints have vault-scoped variants under `/vault/{name}/`:
+
+| Vault endpoint | Equivalent global |
+|---|---|
+| `POST /vault/{name}/recall` | `/recall` |
+| `POST /vault/{name}/ask` | `/ask` |
+| `POST /vault/{name}/draft` | `/draft` |
+| `POST /vault/{name}/audit` | `/audit` |
+| `GET,POST /vault/{name}/v1/facts` | `/v1/facts` |
+| `GET /vault/{name}/v1/facts/{key}/graph` | `/v1/facts/{key}/graph` |
+| `GET /vault/{name}/v1/logs` | `/v1/logs` |
+| `GET /vault/{name}/v1/snapshot` | `/v1/snapshot` |
+| `POST /vault/{name}/reindex` | `/reindex` |
+| `GET /vault/{name}/graph` | `/graph` |
+| `POST /vault/{name}/inbox` | `/inbox` |
+| `GET,DELETE /vault/{name}/inbox/{id}` | `/inbox/{id}` |
 
 ---
 
@@ -689,12 +1290,14 @@ RAGAMUFFIN_EMBEDDING_API_KEY=sk-...
 RAGAMUFFIN_VAULT_PATH=/opt/vault
 # Multi-tenant vaults (mutually exclusive with VAULT_PATH)
 # RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code
+# RAGAMUFFIN_VAULTS_ROOT=/opt/vaults           # Restricts runtime vault creation to this path prefix
 
 # ── Optional — Embedding ──────────────────────────────────────────────────────
 RAGAMUFFIN_EMBEDDING_PROVIDER=openai
 RAGAMUFFIN_EMBEDDING_MODEL=text-embedding-3-small
 RAGAMUFFIN_EMBEDDING_BASE_URL=https://api.openai.com/v1
 RAGAMUFFIN_EMBEDDING_DIMS=1536
+# RAGAMUFFIN_EMBEDDING_TIMEOUT=30s
 RAGAMUFFIN_CHUNK_VECTOR_SIZE=0           # 0 = inherit from EMBEDDING_DIMS
 
 # ── Optional — Qdrant ─────────────────────────────────────────────────────────
@@ -749,6 +1352,7 @@ RAGAMUFFIN_RATE_LIMIT_LOGS=60
 RAGAMUFFIN_RATE_LIMIT_SNAPSHOT=5
 RAGAMUFFIN_RATE_LIMIT_REINDEX=30
 RAGAMUFFIN_RATE_LIMIT_INGEST=30
+RAGAMUFFIN_RATE_LIMIT_CHUNKS=30
 RAGAMUFFIN_RATE_LIMIT_REVIEW=30
 
 # ── Optional — Pruner (background fact health) ────────────────────────────────
@@ -757,15 +1361,20 @@ RAGAMUFFIN_PRUNER_STALE_INTERVAL=24h
 RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL=72h
 RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL=24h
 RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL=24h
+# RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL=24h — how often to scan for facts past valid_until
+RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL=24h
 RAGAMUFFIN_PRUNER_STALE_DAYS=90
 RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE=50
+RAGAMUFFIN_PRUNER_CONFLICT_THRESHOLD=0.85
 RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD=0.5
+RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD=0.0
 
 # ── Optional — Misc ───────────────────────────────────────────────────────────
 RAGAMUFFIN_PORT=8000
 RAGAMUFFIN_HOST=0.0.0.0
 RAGAMUFFIN_LOG_LEVEL=info
 # RAGAMUFFIN_EVENT_WEBHOOK_URL=https://hooks.example.com/ragamuffin
+# RAGAMUFFIN_EVENT_WEBHOOK_EVENTS=fact.created,fact.flagged,fact.reviewed
 # RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD=0.1
 
 # ── Optional — Log Store (session/event persistence) ─────────────────────────
@@ -829,6 +1438,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_RATE_LIMIT_LOGS` | no | `60` | Requests per minute for `/v1/logs` |
 | `RAGAMUFFIN_RATE_LIMIT_SNAPSHOT` | no | `5` | Requests per minute for `/v1/snapshot` |
 | `RAGAMUFFIN_RATE_LIMIT_REINDEX` | no | `30` | Requests per minute for `/reindex` |
+| `RAGAMUFFIN_RATE_LIMIT_CHUNKS` | no | `30` | Requests per minute for `/v1/chunks` |
 | `RAGAMUFFIN_RATE_LIMIT_INGEST` | no | `30` | Requests per minute for `/v1/ingest` |
 | `RAGAMUFFIN_RATE_LIMIT_REVIEW` | no | `30` | Requests per minute for `/v1/review` |
 | `RAGAMUFFIN_PRUNER_ENABLED` | no | `false` | Enable background pruner for fact health |
@@ -836,10 +1446,13 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | no | `72h` | How often to scan for semantic conflicts |
 | `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | no | `24h` | How often to scan for supersession chains |
 | `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL` | no | `24h` | How often to check fact source staleness |
+| `RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL` | no | `24h` | How often to scan for facts with `valid_until` in the past |
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | no | `90` | Days without update before marked stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | no | `50` | Fact pairs to compare per conflict scan |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | no | `0.5` | Below this → flag `needs_review` |
 | `RAGAMUFFIN_PRUNER_CONFLICT_THRESHOLD` | no | `0.85` | Cosine similarity threshold for contradiction detection |
+| `RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD` | no | `0.0` | Facts above this skip stale scan (0.0 = disabled) |
+| `RAGAMUFFIN_VAULTS_ROOT` | no | — | Root directory for multi-tenant vaults (used with `VAULTS` format) |
 | `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | no | `0.1` | Snapshot restore drift tolerance (0.0–1.0) |
 | `RAGAMUFFIN_LOGSTORE_PATH` | no | heuristic | Explicit path for `logs.db` (default: vault-root `/.ragamuffin/logs.db`) |
 | `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | no | `100000` | Max rows before pruning session log |
