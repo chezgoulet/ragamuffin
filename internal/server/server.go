@@ -457,7 +457,8 @@ func (s *Server) ensureFactIndexes() {
 	if s.facts == nil {
 		return
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	factsCollection := s.cfg.FactsCollection
 
 	// Detect Qdrant schema mismatch: vector size changed between runs.
