@@ -121,23 +121,18 @@ Point Ragamuffin at a filesystem directory. It watches for changes (poll or inot
 chunks files, embeds them, and indexes into Qdrant. Agents search the vault with
 natural language queries. Optional LLM-backed answer synthesis.
 
-```
-┌──────────────────┐     ┌──────────────┐     ┌──────────────┐
-│  File System     │────▶│  Ragamuffin  │────▶│  Qdrant      │
-│  (vault dir)     │     │  (Go binary) │     │  collections │
-│  docs/           │     │              │     └──────────────┘
-│  ops/            │     │  ┌─────────┐ │
-│  policies/       │     │  │ SQLite  │ │
-└──────────────────┘     │  │ (logs)  │ │
-                          │  └─────────┘ │
-                          └──────┬───────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    ▼                         ▼
-               ┌──────────┐            ┌──────────┐
-               │ Agent A  │            │ Agent B  │
-               │ (search) │            │ (search) │
-               └──────────┘            └──────────┘
+```mermaid
+flowchart LR
+    FS["File System<br/>(vault dir)<br/>docs/<br/>ops/<br/>policies/"]
+    R["Ragamuffin<br/>(Go binary)<br/><br/>SQLite (logs)"]
+    Q["Qdrant<br/>collections"]
+    A1["Agent A<br/>(search)"]
+    A2["Agent B<br/>(search)"]
+
+    FS -->|watches| R
+    R -->|indexes| Q
+    Q --> A1
+    Q --> A2
 ```
 
 **Who this is for:** Teams that want agents to search shared documentation,
@@ -152,24 +147,31 @@ session memory, and cross-agent recall — with zero agent discipline required.
 The harness routes memory operations transparently: no `curl`, no tool calls
 from the agent itself.
 
-```
-┌──────────────────┐     ┌──────────────┐     ┌──────────────────────┐
-│  OpenClaw        │     │  Ragamuffin  │     │  Qdrant              │
-│  (dev agent)     │────▶│              │────▶│  agent::dev          │
-│  memory-ragamuffin│    │  POST /v1/   │     │  ┌────────────────┐  │
-│  plugin          │     │  ingest      │     │  │ session turns  │  │
-├──────────────────┤     │              │     │  │ recalled facts │  │
-│  Hermes          │     │  POST /v1/   │     │  │ summaries      │  │
-│  (robot agent)   │────▶│  recall      │     │  └────────────────┘  │
-│  memory-ragamuffin│    │              │────▶├──────────────────────┤
-│  plugin          │     │              │     │  Qdrant              │
-└──────────────────┘     │  POST /v1/   │     │  agent::robot        │
-                          │  recall?     │     │  ┌────────────────┐  │
-                          │  vault=agent::│    │  │ session turns  │  │
-   (cross-agent)          │  robot       │     │  │ recalled facts │  │
-                          │             │      │  │ summaries      │  │
-                          └──────────────┘     │  └────────────────┘  │
-                                               └──────────────────────┘
+```mermaid
+flowchart LR
+    OC["OpenClaw<br/>(dev agent)<br/>memory-ragamuffin plugin"]
+    H["Hermes<br/>(robot agent)<br/>memory-ragamuffin plugin"]
+    R["Ragamuffin"]
+    Q1["Qdrant<br/>agent::dev"]
+    Q2["Qdrant<br/>agent::robot"]
+
+    OC -->|POST /v1/ingest| R
+    H -->|POST /v1/recall| R
+    R -->|POST /v1/recall?<br/>vault=agent::robot| R
+    R --> Q1
+    R --> Q2
+
+    subgraph Q1 [agent::dev]
+        D1A[session turns]
+        D1B[recalled facts]
+        D1C[summaries]
+    end
+
+    subgraph Q2 [agent::robot]
+        D2A[session turns]
+        D2B[recalled facts]
+        D2C[summaries]
+    end
 ```
 
 **Who this is for:** Operators running multi-agent systems who need:
@@ -202,24 +204,18 @@ Hermes) while using Ragamuffin exclusively as a **cross-harness recall bridge**
 and **structured fact store**. Agents get two additional tools that call
 Ragamuffin's API directly — no plugin swap required.
 
-```
-┌──────────────────┐     ┌──────────────┐
-│  OpenClaw        │     │  Claudemem   │ ← per-turn auto-persist (unchanged)
-│  (dev agent)     │────▶│              │
-│                  │     └──────────────┘
-│  ragamuffin_     │
-│  recall/store    ├───▶┌──────────────┐
-│  (agent tools)   │     │  Ragamuffin  │ ← cross-harness bridge
-└──────────────────┘     │              │
-                          │  agent::dev │
-┌──────────────────┐     │  agent::robot│
-│  Hermes          │     │  agent::scout│
-│  (robot agent)   │────▶│              │
-│                  │     └──────────────┘
-│  ragamuffin_     │
-│  recall/store    ├───▶┌──────────────┐
-│  (agent tools)   │     │  Honcho      │ ← per-turn auto-persist (unchanged)
-└──────────────────┘     └──────────────┘
+```mermaid
+flowchart LR
+    subgraph OC [OpenClaw — dev agent]
+        OC_TOOL["ragamuffin_recall/store<br/>(agent tools)"]
+    end
+    subgraph H [Hermes — robot agent]
+        H_TOOL["ragamuffin_recall/store<br/>(agent tools)"]
+    end
+    CL[Claudemem] ---|per-turn auto-persist<br/>unchanged| OC
+    HN[Honcho] ---|per-turn auto-persist<br/>unchanged| H
+    OC_TOOL --> R["Ragamuffin<br/>cross-harness bridge<br/><br/>agent::dev<br/>agent::robot<br/>agent::scout"]
+    H_TOOL --> R
 ```
 
 **Why run this way:**
@@ -309,15 +305,16 @@ Those go through `/draft` or the file watcher.
 
 ### Which Path Should My Client Use?
 
-```
-Is the content a human-editable file?
-├─ Yes → Is the agent proposing it?
-│        ├─ Yes → use POST /draft (ragamuffin_draft MCP tool)
-│        └─ No  → use file watcher (write file to vault directory)
-└─ No  → use POST /v1/ingest (ragamuffin_store MCP tool)
-        Is this a harness-managed session?
-        ├─ Yes → harness plugin calls ingest automatically
-        └─ No  → agent calls store tool explicitly
+```mermaid
+flowchart TD
+    Q{"Is the content a<br/>human-editable file?"}
+    Q -->|Yes| Q2{"Is the agent<br/>proposing it?"}
+    Q -->|No| I["POST /v1/ingest<br/>(ragamuffin_store MCP tool)"]
+    Q2 -->|Yes| D["POST /draft<br/>(ragamuffin_draft MCP tool)"]
+    Q2 -->|No| W["File watcher<br/>(write file to vault dir)"]
+    I --> Q3{"Is this a harness-<br/>managed session?"}
+    Q3 -->|Yes| HP["Harness plugin calls<br/>ingest automatically"]
+    Q3 -->|No| AC["Agent calls store<br/>tool explicitly"]
 ```
 
 ### Agent Write Discipline
@@ -1903,20 +1900,19 @@ seconds until the rate window resets.
 
 ## Architecture
 
-```
-┌────────────┐     ┌──────────────┐     ┌──────────┐
-│   Agent    │────▶│  Ragamuffin  │────▶│  Qdrant  │
-│ (curl/MCP) │◀────│  (Go binary) │◀────│ (vector) │
-└────────────┘     │              │     └──────────┘
-                   │  ┌─────────┐ │
-                   │  │ SQLite  │ │
-                   │  │ (logs)  │ │
-                   │  └─────────┘ │
-                   │  ┌─────────┐ │
-                   │  │ Filesys │ │
-                   │  │ (vault) │ │
-                   │  └─────────┘ │
-                   └──────────────┘
+```mermaid
+flowchart LR
+    A["Agent<br/>(curl / MCP)"]
+    R["Ragamuffin<br/>(Go binary)"]
+    Q["Qdrant<br/>(vector)"]
+
+    A <-->|HTTP| R
+    R <-->|index / search| Q
+
+    subgraph R [Ragamuffin]
+        SQL[(SQLite / logs)]
+        FS[(Filesys / vault)]
+    end
 ```
 
 - **All endpoints return JSON** with a uniform error format: `{"error": true, "code": "ERROR_CODE", "message": "..."}`
