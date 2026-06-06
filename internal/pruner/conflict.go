@@ -173,29 +173,14 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 // markContradiction adds the other fact's key to this fact's contradicts list
 // and sets conflict_resolved = false, status = needs_review.
 func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string) error {
-	// Read the target fact to get current contradicts list (the only field we need)
-	keyFilter := &pb.Filter{
-		Must: []*pb.Condition{
-			{
-				ConditionOneOf: &pb.Condition_Field{
-					Field: &pb.FieldCondition{
-						Key: "fact_key",
-						Match: &pb.Match{
-							MatchValue: &pb.Match_Keyword{
-								Keyword: otherKey,
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	points, err := p.facts.ScrollFiltered(ctx, p.facts.Collection(), keyFilter, 1, "")
+	// Retrieve the target fact by point ID — we only need the contradicts field
+	points, err := p.facts.GetPoints(ctx, p.facts.Collection(), []*pb.PointId{{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
+	}})
 	if err != nil || len(points) == 0 {
 		return fmt.Errorf("read target fact: %w", err)
 	}
 
-	// Use the existing GetPayload directly — no need to copy all fields
 	sourcePayload := points[0].GetPayload()
 	existing := qutil.GetPayloadStringList(sourcePayload, "contradicts")
 	for _, s := range existing {

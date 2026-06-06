@@ -16,6 +16,18 @@ type factGraphTestStore struct {
 	points map[string]*pb.RetrievedPoint // key → point
 }
 
+func (s *factGraphTestStore) GetPoints(_ context.Context, _ string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+	var result []*pb.RetrievedPoint
+	for _, id := range ids {
+		for _, pt := range s.points {
+			if pt.GetId().GetUuid() == id.GetUuid() {
+				result = append(result, pt)
+			}
+		}
+	}
+	return result, nil
+}
+
 func (s *factGraphTestStore) ScrollFiltered(_ context.Context, _ string, filter *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
 	var result []*pb.RetrievedPoint
 	for _, pt := range s.points {

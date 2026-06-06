@@ -279,6 +279,22 @@ func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) (
 	return resp.Result, resp.NextPageOffset, nil
 }
 
+// GetPoints returns points by their IDs from the given collection.
+// Excludes vectors since we only need payload fields.
+func (c *Client) GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+	req := &pb.GetPoints{
+		CollectionName: collection,
+		Ids:            ids,
+		WithVectors:    &pb.WithVectorsSelector{SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: false}},
+	}
+
+	resp, err := c.points.Get(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("get points: %w", err)
+	}
+	return resp.GetResult(), nil
+}
+
 // Health checks if Qdrant is reachable.
 func (c *Client) Health(ctx context.Context) error {
 	_, err := c.collections.List(ctx, &pb.ListCollectionsRequest{})
