@@ -101,6 +101,12 @@ func Middleware(auth Authenticator) func(http.Handler) http.Handler {
 			if r.Header.Get("Authorization") == "" {
 				if token := r.URL.Query().Get("token"); token != "" {
 					r.Header.Set("Authorization", "Bearer "+token)
+					// Strip token from query string so it never appears in access
+					// logs, metrics labels, or proxy forwarding (#436).
+					if q := r.URL.Query(); q != nil {
+						q.Del("token")
+						r.URL.RawQuery = q.Encode()
+					}
 				}
 			}
 
