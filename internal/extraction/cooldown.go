@@ -21,6 +21,7 @@ func NewCooldownTracker(intervalSec int) *CooldownTracker {
 }
 
 // TryAcquire returns true if the session is allowed to extract (not in cooldown).
+// Lazy eviction: removes entries older than 2× the cooldown interval.
 func (ct *CooldownTracker) TryAcquire(sessionID string) bool {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
@@ -30,8 +31,17 @@ func (ct *CooldownTracker) TryAcquire(sessionID string) bool {
 		return true
 	}
 
-	last, ok := ct.last[sessionID]
 	now := time.Now()
+	evictBefore := now.Add(-2 * ct.interval)
+
+	// Lazy eviction: sweep stale entries
+	for sid, last := range ct.last {
+		if last.Before(evictBefore) {
+			delete(ct.last, sid)
+		}
+	}
+
+	last, ok := ct.last[sessionID]
 	if ok && now.Sub(last) < ct.interval {
 		return false
 	}

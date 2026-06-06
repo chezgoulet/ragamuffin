@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -386,9 +387,9 @@ func Load() (*Config, error) {
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
-		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED", false),
+		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED"),
 		ExtractWindow:             envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
-		ExtractMaxConfidence:      envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85),
+		ExtractMaxConfidence:      math.Min(envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85), 0.85),
 		ExtractDedupThreshold:     envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
 		ExtractConcurrency:        envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
 		ExtractPerSessionCooldown: envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),

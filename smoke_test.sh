@@ -357,49 +357,6 @@ curl -s -X DELETE "$HOST/v1/facts?key=test/temporal-fact" \
 # ── Extraction Pipeline ────────────────────────────────────────────────────
 echo "--- Extraction pipeline ---"
 
-# Conversations list (GET should be empty or not fail)
-RESP=$(curl -s -w "\n%{http_code}" "$HOST/v1/conversations" -H "Authorization: Bearer $TOKEN" 2>&1 || true)
-HTTP=$(echo "$RESP" | tail -1)
-if [ "$HTTP" = "404" ] || [ "$HTTP" = "200" ] || [ "$HTTP" = "405" ]; then
-  # GET on /v1/conversations may return 404/405 since we only support POST — that's expected
-  echo "  ✓ conversations endpoint reachable"
-  PASS=$((PASS + 1))
-else
-  echo "  ✗ conversations endpoint: unexpected $HTTP"
-  FAIL=$((FAIL + 1))
-fi
-
-# POST /v1/conversations with auto_extract
-RESP=$(curl -s -w "\n%{http_code}" -X POST "$HOST/v1/conversations" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"agent_id":"smoke-test","auto_extract":true}' 2>&1 || true)
-HTTP=$(echo "$RESP" | tail -1)
-CONV_ID=$(echo "$RESP" | head -1 | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
-if [ "$HTTP" != "201" ]; then
-  echo "  ✗ POST /v1/conversations: $HTTP"
-  FAIL=$((FAIL + 1))
-else
-  echo "  ✓ POST /v1/conversations: created $CONV_ID"
-  PASS=$((PASS + 1))
-fi
-
-# POST /v1/conversations/{id}/turns
-if [ -n "$CONV_ID" ]; then
-  RESP=$(curl -s -w "\n%{http_code}" -X POST "$HOST/v1/conversations/$CONV_ID/turns" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"content":"I prefer Rust over Go for CLI tools because of its memory safety.","role":"user","auto_extract":true}' 2>&1 || true)
-  HTTP=$(echo "$RESP" | tail -1)
-  if [ "$HTTP" != "200" ]; then
-    echo "  ✗ POST /v1/conversations/{id}/turns: $HTTP"
-    FAIL=$((FAIL + 1))
-  else
-    echo "  ✓ POST /v1/conversations/{id}/turns: turn appended"
-    PASS=$((PASS + 1))
-  fi
-fi
-
 # GET /v1/extraction/stats
 RESP=$(curl -s -w "\n%{http_code}" "$HOST/v1/extraction/stats" -H "Authorization: Bearer $TOKEN" 2>&1 || true)
 HTTP=$(echo "$RESP" | tail -1)

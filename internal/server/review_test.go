@@ -145,7 +145,7 @@ func newReviewServer(store *reviewMockStore) *Server {
 	idxm := indexer.NewManager()
 	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
 	logger := slog.New(slog.DiscardHandler)
-	return New(cfg, store, store, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, logger)
+	return New(cfg, store, store, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, logger, nil)
 }
 
 func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdrant.RetrievedPoint {

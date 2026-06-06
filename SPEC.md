@@ -901,7 +901,11 @@ Append a turn to an existing session.
 
 Delete a session and its turns.
 
-### `/v1/conversations` — POST (v0.8)
+### `/v1/conversations` — POST (v0.8, temporarily deferred)
+
+> **Note:** These endpoints are documented but the handler implementation was deferred during review. They will be restored in the next release.
+>
+> Use the sessions API (`POST /v1/sessions`, `POST /v1/sessions/{id}/turns`) instead, which supports the same `auto_extract` parameter.
 
 Create a conversation session with optional automatic extraction.
 

@@ -1300,7 +1300,7 @@ func (s *Server) mcpTurnAppend(ctx context.Context, args map[string]interface{})
 		extract = s.extractor.SessionAutoExtract(sessionID)
 	}
 	if extract && s.extractor != nil && s.extractor.Enabled() {
-		go s.extractor.Extract(context.Background(), sessionID, content, role)
+		go s.extractor.Extract(s.shutdownCtx, sessionID, content, role)
 	}
 
 	return map[string]interface{}{
