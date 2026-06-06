@@ -1564,6 +1564,7 @@ fact lifecycle. Each scan type can be configured independently.
 | `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | `24h` | Stale scan interval (0 = disabled) |
 | `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | `72h` | Conflict scan interval (0 = disabled) |
 | `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | `24h` | Supersede scan interval (0 = disabled) |
+| `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL` | `0` (disabled) | Source stale scan interval — reindexes facts tied to stale source files (0 = disabled) |
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past TTL expiry before a fact is flagged stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Pairs per conflict scan cycle |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Below this → flagged `needs_review` |
