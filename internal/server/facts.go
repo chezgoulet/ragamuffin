@@ -454,11 +454,14 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	var nextToken string
 	resp := make([]factResponse, 0, limit)
 	for _, p := range points {
-		if prefix != "" {
-			key, _ := qutil.GetPayloadString(p.Payload, "fact_key")
-			if !strings.HasPrefix(key, prefix) {
-				continue
-			}
+		key, _ := qutil.GetPayloadString(p.Payload, "fact_key")
+		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		// Skip internal keys (_ragamuffin/ prefix) in list results (#437).
+		// Explicit key lookups via ?key= are unaffected.
+		if strings.HasPrefix(key, "_ragamuffin/") {
+			continue
 		}
 		if len(resp) >= limit {
 			if id := p.Id.GetUuid(); id != "" {

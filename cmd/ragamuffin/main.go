@@ -95,6 +95,15 @@ func buildVault(
 	*watcherDoneChs = append(*watcherDoneChs, doneCh)
 	*prunerEventChs = append(*prunerEventChs, prunevents)
 
+	// Back-pressure semaphore: limits concurrent retry goroutines to cap (#435).
+	// Under sustained burst (e.g. 10k file git pull), the default case fires and
+	// spawns a goroutine. The semaphore prevents unbounded growth — when full,
+	// the event is dropped immediately with a warning instead of blocking or
+	// spawning another goroutine.
+	const fanoutSemCap = 1000
+	idxSem := make(chan struct{}, fanoutSemCap)
+	pruneSem := make(chan struct{}, fanoutSemCap)
+
 	go w.Watch(rawEvents, doneCh)
 	go func() {
 		for {
@@ -108,24 +117,36 @@ func buildVault(
 				select {
 				case idxEvents <- e:
 				default:
-					go func(ev watcher.Event) {
-						select {
-						case idxEvents <- ev:
-						case <-time.After(30 * time.Second):
-							l.Warn("indexer event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
-						}
-					}(e)
+					select {
+					case idxSem <- struct{}{}:
+						go func(ev watcher.Event) {
+							defer func() { <-idxSem }()
+							select {
+							case idxEvents <- ev:
+							case <-time.After(30 * time.Second):
+								l.Warn("indexer event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
+							}
+						}(e)
+					default:
+						l.Warn("indexer event dropped — fan-out semaphore full", "path", e.Path, "action", e.Action, "cap", fanoutSemCap)
+					}
 				}
 				select {
 				case prunevents <- e:
 				default:
-					go func(ev watcher.Event) {
-						select {
-						case prunevents <- ev:
-						case <-time.After(30 * time.Second):
-							l.Warn("pruner event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
-						}
-					}(e)
+					select {
+					case pruneSem <- struct{}{}:
+						go func(ev watcher.Event) {
+							defer func() { <-pruneSem }()
+							select {
+							case prunevents <- ev:
+							case <-time.After(30 * time.Second):
+								l.Warn("pruner event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
+							}
+						}(e)
+					default:
+						l.Warn("pruner event dropped — fan-out semaphore full", "path", e.Path, "action", e.Action, "cap", fanoutSemCap)
+					}
 				}
 			case <-doneCh:
 				return
