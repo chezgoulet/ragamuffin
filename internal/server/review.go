@@ -372,7 +372,9 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 			}
 			// Record review resolution for threshold tuning
 			if s.logStore != nil {
-				_ = s.logStore.RecordResolution(r.Context(), key, "supersede", "manual", nil)
+				if err := s.logStore.RecordResolution(r.Context(), key, "supersede", "manual", nil); err != nil {
+					s.log(r.Context()).Error("failed to record review resolution", "error", err)
+				}
 			}
 			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
 			return
@@ -454,7 +456,9 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	// Record review resolution for threshold tuning
 	if s.logStore != nil {
-		_ = s.logStore.RecordResolution(r.Context(), key, req.Action, "manual", nil)
+		if err := s.logStore.RecordResolution(r.Context(), key, req.Action, "manual", nil); err != nil {
+			s.log(r.Context()).Error("failed to record review resolution", "error", err)
+		}
 	}
 
 	resp := pointToFactResponse(payload, key)

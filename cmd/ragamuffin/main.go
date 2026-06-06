@@ -361,6 +361,7 @@ func main() {
 	prunerCfg.SourceStaleScanInterval = cfg.PrunerSourceStaleInterval
 	prunerCfg.StaleDays = cfg.PrunerStaleDays
 	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
+	prunerCfg.ConflictThreshold = cfg.PrunerConflictThreshold
 	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
 	prunerCfg.ImportanceThreshold = cfg.PrunerImportanceThreshold
 	prunerCfg.LogScanFn = func(scanName string, dur time.Duration, flagged int, errStr string) {

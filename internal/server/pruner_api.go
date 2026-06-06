@@ -5,7 +5,6 @@ import (
 	"strconv"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
-	"github.com/chezgoulet/ragamuffin/internal/logstore"
 )
 
 // handlePrunerAutoTune returns threshold recommendations based on
@@ -51,38 +50,61 @@ func (s *Server) handlePrunerAutoTune(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per-recommendation response type with applied status
+	type recEntry struct {
+		ReasonType     string  `json:"reason_type"`
+		Current        float64 `json:"current"`
+		Recommended    float64 `json:"recommended"`
+		AcceptRate     float64 `json:"accept_rate"`
+		SampleSize     int     `json:"sample_size"`
+		Rationale      string  `json:"rationale"`
+		Applied        bool    `json:"applied"`
+		Note           string  `json:"note,omitempty"`
+	}
+
 	type autoTuneResponse struct {
-		DryRun         bool                            `json:"dry_run"`
-		Recommendations []logstore.ThresholdRecommendation `json:"recommendations"`
-		SampleCount    int                             `json:"sample_count"`
-		Applied        bool                            `json:"applied"`
+		DryRun         bool       `json:"dry_run"`
+		Recommendations []recEntry `json:"recommendations"`
+		SampleCount    int        `json:"sample_count"`
+	}
+
+	// Build per-recommendation entries
+	entries := make([]recEntry, 0, len(recs))
+	for _, rec := range recs {
+		e := recEntry{
+			ReasonType:  rec.ReasonType,
+			Current:     rec.Current,
+			Recommended: rec.Recommended,
+			AcceptRate:  rec.AcceptRate,
+			SampleSize:  rec.SampleSize,
+			Rationale:   rec.Rationale,
+		}
+
+		// Apply recommendations when dry_run=false
+		if !dryRun && s.pruner != nil && rec.Recommended != rec.Current && rec.Recommended != 0 {
+			switch rec.ReasonType {
+			case "low_confidence":
+				s.pruner.SetLowConfidenceThreshold(rec.Recommended)
+				e.Applied = true
+				s.log(r.Context()).Info("auto-tune: applied low_confidence threshold",
+					"from", rec.Current, "to", rec.Recommended)
+			case "conflict":
+				s.pruner.SetConflictThreshold(rec.Recommended)
+				e.Applied = true
+				s.log(r.Context()).Info("auto-tune: applied conflict threshold",
+					"from", rec.Current, "to", rec.Recommended)
+			default:
+				e.Note = "threshold changes for this reason type must be applied manually"
+			}
+		}
+
+		entries = append(entries, e)
 	}
 
 	resp := autoTuneResponse{
 		DryRun:         dryRun,
-		Recommendations: recs,
-		SampleCount:    len(recs),
-		Applied:        false,
-	}
-
-	// Apply recommendations when dry_run=false
-	if !dryRun && s.pruner != nil {
-		for _, rec := range recs {
-			if rec.Recommended == rec.Current || rec.Recommended == 0 {
-				continue
-			}
-			switch rec.ReasonType {
-			case "conflict":
-				// Conflict threshold is embedded in the scan logic; log intent
-				s.log(r.Context()).Info("auto-tune: conflict threshold recommendation",
-					"current", rec.Current, "recommended", rec.Recommended)
-			case "low_confidence":
-				s.pruner.SetLowConfidenceThreshold(rec.Recommended)
-				resp.Applied = true
-				s.log(r.Context()).Info("auto-tune: applied low_confidence threshold",
-					"from", rec.Current, "to", rec.Recommended)
-			}
-		}
+		Recommendations: entries,
+		SampleCount:    len(entries),
 	}
 
 	writeJSON(w, 200, resp)
@@ -107,6 +129,7 @@ func (s *Server) handlePrunerConfig(w http.ResponseWriter, r *http.Request) {
 		Enabled                bool    `json:"enabled"`
 		StaleDays              int     `json:"stale_days"`
 		ConflictSampleSize     int     `json:"conflict_sample_size"`
+		ConflictThreshold      float64 `json:"conflict_threshold"`
 		LowConfidenceThreshold float64 `json:"low_confidence_threshold"`
 		ImportanceThreshold    float64 `json:"importance_threshold"`
 	}
@@ -114,6 +137,7 @@ func (s *Server) handlePrunerConfig(w http.ResponseWriter, r *http.Request) {
 		Enabled:                cfg.Enabled,
 		StaleDays:              cfg.StaleDays,
 		ConflictSampleSize:     cfg.ConflictSampleSize,
+		ConflictThreshold:      cfg.ConflictThreshold,
 		LowConfidenceThreshold: cfg.LowConfidenceThreshold,
 		ImportanceThreshold:    cfg.ImportanceThreshold,
 	})

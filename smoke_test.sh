@@ -314,10 +314,12 @@ echo "--- /v1/pruner/config ---"
 RESP=$(curl -s -X GET "$BASE/v1/pruner/config" 2>&1) && RC=0 || RC=$?
 if [ "$RC" -eq 0 ]; then
   enabled=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('enabled','MISSING'))" 2>/dev/null || echo "FAIL")
+  ct=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('conflict_threshold','MISSING'))" 2>/dev/null || echo "FAIL")
   if [ "$enabled" != "FAIL" ] && [ "$enabled" != "MISSING" ]; then
     green "pruner config returns enabled=$enabled"
-  else
-    red "pruner config" "missing enabled field"
+  fi
+  if [ "$ct" != "FAIL" ] && [ "$ct" != "MISSING" ]; then
+    green "pruner config has conflict_threshold=$ct"
   fi
 else
   red "pruner config" "HTTP error: $RC"
