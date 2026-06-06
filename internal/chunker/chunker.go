@@ -10,12 +10,13 @@ import (
 
 // Chunk represents a single indexed section of a file.
 type Chunk struct {
-	Text       string
-	SourceFile string
-	Header     string
-	ChunkIndex int
-	UpdatedAt  time.Time
-	LinksTo    []string // wikilinks [[path]] and markdown links [text](path) within this chunk
+	Text           string
+	FirstParagraph string // text up to first \n\n or 200 chars
+	SourceFile     string
+	Header         string
+	ChunkIndex     int
+	UpdatedAt      time.Time
+	LinksTo        []string // wikilinks [[path]] and markdown links [text](path) within this chunk
 }
 
 // Options configures chunking behavior.
@@ -43,6 +44,25 @@ func ChunkFile(content, sourcePath, ext string, modTime time.Time, opts Options)
 	return chunks
 }
 
+// extractFirstParagraph returns the first paragraph of text: up to the first
+// double-newline or 200 characters, whichever is shorter.
+func extractFirstParagraph(text string) string {
+	// Find first double-newline
+	idx := strings.Index(text, "\n\n")
+	if idx == -1 {
+		// No double-newline; cap at 200 chars
+		if len(text) > 200 {
+			return text[:200]
+		}
+		return text
+	}
+	// Found double-newline; cap at 200 chars
+	if idx > 200 {
+		return text[:200]
+	}
+	return text[:idx]
+}
+
 func chunkMarkdown(content, sourcePath string, modTime time.Time) []Chunk {
 	lines := strings.Split(content, "\n")
 	var chunks []Chunk
@@ -54,12 +74,13 @@ func chunkMarkdown(content, sourcePath string, modTime time.Time) []Chunk {
 		text := strings.TrimSpace(current.String())
 		if text != "" {
 			chunks = append(chunks, Chunk{
-				Text:       text,
-				SourceFile: sourcePath,
-				Header:     currentHeader,
-				ChunkIndex: chunkIndex,
-				UpdatedAt:  modTime,
-				LinksTo:    extractLinks(text),
+				Text:           text,
+				FirstParagraph: extractFirstParagraph(text),
+				SourceFile:     sourcePath,
+				Header:         currentHeader,
+				ChunkIndex:     chunkIndex,
+				UpdatedAt:      modTime,
+				LinksTo:        extractLinks(text),
 			})
 			chunkIndex++
 		}
@@ -94,11 +115,12 @@ func chunkPlain(content, sourcePath string, modTime time.Time) []Chunk {
 			continue
 		}
 		chunks = append(chunks, Chunk{
-			Text:       text,
-			SourceFile: sourcePath,
-			Header:     "",
-			ChunkIndex: chunkIndex,
-			UpdatedAt:  modTime,
+			Text:           text,
+			FirstParagraph: extractFirstParagraph(text),
+			SourceFile:     sourcePath,
+			Header:         "",
+			ChunkIndex:     chunkIndex,
+			UpdatedAt:      modTime,
 		})
 		chunkIndex++
 	}
@@ -125,12 +147,14 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 				continue
 			}
 			if tokenutil.EstTokens(current.String())+tokenutil.EstTokens(p) > maxTokens && current.Len() > 0 {
+				chunkText := strings.TrimSpace(current.String())
 				result = append(result, Chunk{
-					Text:       strings.TrimSpace(current.String()),
-					SourceFile: c.SourceFile,
-					Header:     c.Header,
-					ChunkIndex: idx,
-					UpdatedAt:  c.UpdatedAt,
+					Text:           chunkText,
+					FirstParagraph: extractFirstParagraph(chunkText),
+					SourceFile:     c.SourceFile,
+					Header:         c.Header,
+					ChunkIndex:     idx,
+					UpdatedAt:      c.UpdatedAt,
 				})
 				idx++
 				current.Reset()
@@ -141,12 +165,14 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 			current.WriteString(p)
 		}
 		if current.Len() > 0 {
+			chunkText := strings.TrimSpace(current.String())
 			result = append(result, Chunk{
-				Text:       strings.TrimSpace(current.String()),
-				SourceFile: c.SourceFile,
-				Header:     c.Header,
-				ChunkIndex: idx,
-				UpdatedAt:  c.UpdatedAt,
+				Text:           chunkText,
+				FirstParagraph: extractFirstParagraph(chunkText),
+				SourceFile:     c.SourceFile,
+				Header:         c.Header,
+				ChunkIndex:     idx,
+				UpdatedAt:      c.UpdatedAt,
 			})
 		}
 		if len(result) > 0 {
@@ -166,12 +192,14 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 				continue
 			}
 			if tokenutil.EstTokens(current.String())+tokenutil.EstTokens(s) > maxTokens && current.Len() > 0 {
+				chunkText := strings.TrimSpace(current.String())
 				result = append(result, Chunk{
-					Text:       strings.TrimSpace(current.String()),
-					SourceFile: c.SourceFile,
-					Header:     c.Header,
-					ChunkIndex: idx,
-					UpdatedAt:  c.UpdatedAt,
+					Text:           chunkText,
+					FirstParagraph: extractFirstParagraph(chunkText),
+					SourceFile:     c.SourceFile,
+					Header:         c.Header,
+					ChunkIndex:     idx,
+					UpdatedAt:      c.UpdatedAt,
 				})
 				idx++
 				current.Reset()
@@ -182,12 +210,14 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 			current.WriteString(s)
 		}
 		if current.Len() > 0 {
+			chunkText := strings.TrimSpace(current.String())
 			result = append(result, Chunk{
-				Text:       strings.TrimSpace(current.String()),
-				SourceFile: c.SourceFile,
-				Header:     c.Header,
-				ChunkIndex: idx,
-				UpdatedAt:  c.UpdatedAt,
+				Text:           chunkText,
+				FirstParagraph: extractFirstParagraph(chunkText),
+				SourceFile:     c.SourceFile,
+				Header:         c.Header,
+				ChunkIndex:     idx,
+				UpdatedAt:      c.UpdatedAt,
 			})
 		}
 		if len(result) > 0 {
@@ -205,19 +235,19 @@ func enforceMaxTokens(c Chunk, maxTokens int) []Chunk {
 		if end > len(words) {
 			end = len(words)
 		}
+		chunkText := strings.Join(words[i:end], " ")
 		result = append(result, Chunk{
-			Text:       strings.Join(words[i:end], " "),
-			SourceFile: c.SourceFile,
-			Header:     c.Header,
-			ChunkIndex: idx,
-			UpdatedAt:  c.UpdatedAt,
+			Text:           chunkText,
+			FirstParagraph: extractFirstParagraph(chunkText),
+			SourceFile:     c.SourceFile,
+			Header:         c.Header,
+			ChunkIndex:     idx,
+			UpdatedAt:      c.UpdatedAt,
 		})
 		idx++
 	}
 	return result
 }
-
-
 
 // splitSentences splits text on period+space boundaries.
 func splitSentences(text string) []string {
@@ -251,7 +281,7 @@ func extractLinks(text string) []string {
 	runes := []rune(text)
 	for i := 0; i < len(runes)-1; i++ {
 		if runes[i] == '[' && i+1 < len(runes) && runes[i+1] == '[' {
-			// Find the closing ]] 
+			// Find the closing ]]
 			end := i + 2
 			for end < len(runes)-1 && !(runes[end] == ']' && runes[end+1] == ']') {
 				end++
