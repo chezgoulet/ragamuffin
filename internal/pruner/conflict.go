@@ -140,12 +140,11 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 
 			sim := cosineSimilarity(vectors[i], vectors[j])
 
-			// High similarity suggests contradiction (two facts saying different things
-		// Similarity above 0.85 suggests the two facts make related claims about
-		// the same subject — potential contradiction. This threshold catches
-		// near-duplicates and competing statements. A two-stage approach
-		// (embedding → LLM confirmation) is a future improvement.
-			if sim < 0.85 {
+			// High similarity suggests contradiction (two facts saying different things).
+			// Threshold is configured via PrunerConfig.ConflictThreshold (default 0.85).
+			// This threshold catches near-duplicates and competing statements.
+			// A two-stage approach (embedding → LLM confirmation) is a future improvement.
+			if sim < p.cfg.ConflictThreshold {
 				continue
 			}
 

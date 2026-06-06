@@ -552,6 +552,7 @@ Returns the current pruner configuration.
   "enabled": false,
   "stale_days": 90,
   "conflict_sample_size": 50,
+  "conflict_threshold": 0.85,
   "low_confidence_threshold": 0.5,
   "importance_threshold": 0.0
 }
@@ -838,6 +839,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | no | `90` | Days without update before marked stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | no | `50` | Fact pairs to compare per conflict scan |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | no | `0.5` | Below this → flag `needs_review` |
+| `RAGAMUFFIN_PRUNER_CONFLICT_THRESHOLD` | no | `0.85` | Cosine similarity threshold for contradiction detection |
 | `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | no | `0.1` | Snapshot restore drift tolerance (0.0–1.0) |
 | `RAGAMUFFIN_LOGSTORE_PATH` | no | heuristic | Explicit path for `logs.db` (default: vault-root `/.ragamuffin/logs.db`) |
 | `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | no | `100000` | Max rows before pruning session log |

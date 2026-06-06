@@ -105,6 +105,9 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
+	rl.SetLimit("/v1/chunks", cfg.RateLimitIngest)
+	rl.SetLimit("/v1/pruner/auto-tune", cfg.RateLimitAudit)
+	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/review", cfg.RateLimitReview)
 
 	// Ensure payload indexes for facts lifecycle queries
@@ -173,8 +176,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
 
 		// Pruner endpoints (auto-tune, config)
-		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withRateLimit("/audit", s.withQdrant(s.handlePrunerAutoTune))))
-		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withRateLimit("/audit", s.withQdrant(s.handlePrunerConfig))))
+		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
+		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
 		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
 	}
 
@@ -184,7 +187,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Chunk retrieval
-	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/ingest", s.handleChunkGet))))
+	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunkGet))))
 
 	// Review queue (stats MUST be registered before the prefix match)
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))

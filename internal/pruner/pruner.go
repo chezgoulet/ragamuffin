@@ -44,6 +44,7 @@ type PrunerConfig struct {
 	ConflictSampleSize     int           // default 50 — pairs per scan cycle
 	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
 	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
+	ConflictThreshold     float64       // default 0.85 — cosine similarity for contradiction detection
 
 	// ImportanceThreshold (0.0-1.0) — facts with importance scores above this
 	// threshold are skipped during stale scanning even if they exceed age/staleness.
@@ -72,6 +73,7 @@ func DefaultConfig() PrunerConfig {
 		ConflictSampleSize:      50,
 		LowConfidenceThreshold:  0.5,
 		ConfidenceBoost:         0.1,
+		ConflictThreshold:       0.85,
 	}
 }
 
@@ -179,6 +181,13 @@ func (p *Pruner) SetLowConfidenceThreshold(threshold float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.cfg.LowConfidenceThreshold = threshold
+}
+
+// SetConflictThreshold updates the conflict detection similarity threshold.
+func (p *Pruner) SetConflictThreshold(threshold float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.cfg.ConflictThreshold = threshold
 }
 
 // RecordFlagged increments the flagged counter. Called by scan implementations.
