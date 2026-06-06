@@ -905,7 +905,7 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 		}
 
 		// Prefer stored key_prefix; fall back to Go parse for old facts
-		candidatePrefix, _ := getPayloadString(payload, "key_prefix")
+		candidatePrefix, _ := qutil.GetPayloadString(payload, "key_prefix")
 		if candidatePrefix == "" {
 			candidatePrefix = versionKeyPrefix(factKey)
 		}
@@ -1031,7 +1031,7 @@ func (s *Server) migrateFacts() {
 			}
 			// key_prefix: populate from fact_key (#409)
 			if _, ok := payload["key_prefix"]; !ok {
-				fk, _ := getPayloadString(payload, "fact_key")
+				fk, _ := qutil.GetPayloadString(payload, "fact_key")
 				payload["key_prefix"] = qutil.Nv(versionKeyPrefix(fk))
 				needsUpdate = true
 			}
