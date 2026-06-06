@@ -901,6 +901,73 @@ Append a turn to an existing session.
 
 Delete a session and its turns.
 
+### `/v1/conversations` — POST (v0.8)
+
+Create a conversation session with optional automatic extraction.
+
+**Request (auto-extract enabled):**
+```json
+{
+  "agent_id": "support-bot",
+  "auto_extract": true,
+  "content": "Hello, how can I help you?"
+}
+```
+
+**Response (201):**
+```json
+{
+  "session_id": "uuid",
+  "vault": "agent::support-bot",
+  "agent_id": "support-bot",
+  "turn_count": 1,
+  "auto_extract": true,
+  "created_at": "2026-06-06T15:00:00Z"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `agent_id` | string | **Required.** Agent identity |
+| `auto_extract` | bool | Enable automatic fact extraction for all turns in this session |
+| `content` | string | Optional initial message |
+| `vault` | string | Target vault (default: `agent::{agent_id}`) |
+
+### `/v1/conversations/{id}/turns` — POST (v0.8)
+
+Append a turn to an existing conversation session. When `auto_extract` is `true` and the extraction pipeline is enabled, extraction runs asynchronously.
+
+**Request:**
+```json
+{
+  "content": "I prefer Rust over Go for CLI tools",
+  "role": "user",
+  "auto_extract": true
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `content` | string | **Required.** Turn content (max 10 MB) |
+| `role` | string | `user`, `assistant`, or `system` (default: `user`) |
+| `auto_extract` | bool | Override session-level auto_extract for this turn |
+
+### `/v1/extraction/stats` — GET (v0.8)
+
+Pipeline statistics for the automatic extraction system.
+
+**Response:**
+```json
+{
+  "total_attempted": 12,
+  "facts_created": 8,
+  "facts_skipped": 3,
+  "facts_rejected": 1,
+  "avg_confidence": 0.72,
+  "last_extraction": "2026-06-06T15:05:00Z"
+}
+```
+
 ---
 
 ### `/v1/logs` — GET, POST
@@ -1266,6 +1333,19 @@ If `RAGAMUFFIN_LLM_PROVIDER` is unset or empty, LLM features are disabled. Ragam
 starts without an LLM and returns `LLM_NOT_CONFIGURED` for `/ask` and semantic conflict
 audit checks.
 
+### Automatic Extraction (v0.8)
+
+Optional — enables autonomous fact extraction from conversation turns. Defaults to disabled.
+
+| Env var | Required | Default | Notes |
+|---------|----------|---------|-------|
+| `RAGAMUFFIN_EXTRACT_ENABLED` | no | `false` | Master switch |
+| `RAGAMUFFIN_EXTRACT_WINDOW` | no | `10` | Preceding turns in LLM context |
+| `RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE` | no | `0.85` | Hard ceiling for LLM-assigned confidence |
+| `RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD` | no | `0.85` | Cosine similarity threshold for duplicate detection |
+| `RAGAMUFFIN_EXTRACT_CONCURRENCY` | no | `2` | Max concurrent extraction workers |
+| `RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN` | no | `30` | Seconds between extractions for the same session |
+
 ### Git Provider (for /draft PR mode)
 
 Optional. If unconfigured, `/draft` only supports direct mode.
@@ -1321,6 +1401,14 @@ RAGAMUFFIN_WATCHER_MODE=poll
 # RAGAMUFFIN_LLM_MODEL=deepseek/deepseek-chat
 # RAGAMUFFIN_LLM_API_KEY=sk-...
 # RAGAMUFFIN_LLM_TIMEOUT=120s
+
+# ── Optional — Automatic Extraction ───────────────────────────────────────────
+# RAGAMUFFIN_EXTRACT_ENABLED=false
+# RAGAMUFFIN_EXTRACT_WINDOW=10
+# RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE=0.85
+# RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD=0.85
+# RAGAMUFFIN_EXTRACT_CONCURRENCY=2
+# RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN=30
 
 # ── Optional — Git Provider (enables /draft PR mode) ──────────────────────────
 # RAGAMUFFIN_GIT_PROVIDER_ENABLED=true

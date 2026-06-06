@@ -462,6 +462,7 @@ func main() {
 		}
 		return entries, nil
 	}
+	ext.SetEmitter(emitter)
 
 	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext)
 

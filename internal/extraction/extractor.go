@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/events"
+
 	"github.com/google/uuid"
 	pb "github.com/qdrant/go-client/qdrant"
 
@@ -75,6 +77,7 @@ type Extractor struct {
 	sem       chan struct{} // concurrency semaphore
 	mu        sync.RWMutex
 	sessionAE map[string]bool // session_id → auto_extract
+	emitter   *events.Emitter
 
 	// Interface for getting recent turns — set by server
 	RecentTurnsFn func(ctx context.Context, sessionID string, n int) ([]TurnEntry, error)
@@ -103,6 +106,9 @@ func New(cfg Config, lm llm.Synthesizer, embedder embedding.Embedder, facts qdra
 		sessionAE: make(map[string]bool),
 	}
 }
+
+// SetEmitter attaches a CloudEvents emitter for extraction_complete events.
+func (e *Extractor) SetEmitter(em *events.Emitter) { e.emitter = em }
 
 // Enabled returns whether the extraction pipeline is enabled.
 func (e *Extractor) Enabled() bool { return e.cfg.Enabled }
@@ -204,6 +210,17 @@ func (e *Extractor) Extract(ctx context.Context, sessionID, content, role string
 	avgC := avgConfidence(facts)
 	e.stats.RecordConfidence(avgC)
 	e.stats.SetLastExtraction(time.Now())
+
+	// Emit CloudEvent if emitter is configured
+	if e.emitter != nil {
+		e.emitter.Emit("extraction_complete", map[string]interface{}{
+			"session_id":     sessionID,
+			"count":          created,
+			"skipped":        skipped,
+			"duration_ms":    duration.Milliseconds(),
+			"avg_confidence": avgC,
+		})
+	}
 
 	e.logger.Info("extraction complete",
 		"session", sessionID,
