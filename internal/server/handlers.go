@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	pb "github.com/qdrant/go-client/qdrant"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -169,15 +170,18 @@ type recallFilters struct {
 }
 
 type recallRequest struct {
-	Query          string        `json:"query"`
-	TopK           int           `json:"top_k"`
-	ScoreThreshold float64       `json:"score_threshold"`
-	SourceFilter   string        `json:"source_filter"`
+	Query          string         `json:"query"`
+	TopK           int            `json:"top_k"`
+	ScoreThreshold float64        `json:"score_threshold"`
+	SourceFilter   string         `json:"source_filter"`
 	Filters        *recallFilters `json:"filters,omitempty"`
+	Detail         string         `json:"detail"`
 }
 
 type recallResult struct {
-	Text            string  `json:"text"`
+	ChunkID         string  `json:"chunk_id"`
+	Text            string  `json:"text,omitempty"`
+	FirstParagraph  string  `json:"first_paragraph,omitempty"`
 	SourceFile      string  `json:"source_file"`
 	Header          string  `json:"header"`
 	ChunkIndex      int     `json:"chunk_index"`
@@ -290,6 +294,15 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		req.TopK = 100
 	}
 
+	// Detail level validation
+	if req.Detail == "" {
+		req.Detail = "l2"
+	}
+	if req.Detail != "l0" && req.Detail != "l1" && req.Detail != "l2" {
+		writeError(w, 400, "INVALID_REQUEST", "detail must be one of: l0, l1, l2")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -312,12 +325,18 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	var topScore float32
 	for _, r := range results {
 		payload := r.Payload
-		res := recallResult{Score: r.Score}
+		res := recallResult{
+			Score:   r.Score,
+			ChunkID: r.Id.GetUuid(),
+		}
 		if r.Score > topScore {
 			topScore = r.Score
 		}
 		if v, ok := payload["text"]; ok {
 			res.Text = v.GetStringValue()
+		}
+		if v, ok := payload["first_paragraph"]; ok {
+			res.FirstParagraph = v.GetStringValue()
 		}
 		if v, ok := payload["source_file"]; ok {
 			res.SourceFile = v.GetStringValue()
@@ -331,6 +350,17 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		if v, ok := payload["file_last_updated"]; ok {
 			res.FileLastUpdated = v.GetStringValue()
 		}
+
+		// Apply detail-level field filtering
+		switch req.Detail {
+		case "l0":
+			res.Text = ""
+			res.FirstParagraph = ""
+		case "l1":
+			res.Text = ""
+		}
+		// l2: no change
+
 		out = append(out, res)
 	}
 
@@ -338,6 +368,74 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		"results":   out,
 		"top_score": topScore,
 	})
+}
+
+// ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────────
+
+func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+		return
+	}
+
+	chunkID := r.PathValue("chunk_id")
+	if chunkID == "" {
+		writeError(w, 400, "INVALID_REQUEST", "chunk_id is required")
+		return
+	}
+
+	// Parse UUID string to Qdrant PointId
+	uid, err := uuid.Parse(chunkID)
+	if err != nil {
+		writeError(w, 400, "INVALID_REQUEST", "chunk_id must be a valid UUID")
+		return
+	}
+	pointID := pb.NewIDUUID(uid.String())
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	qc := s.qdrantFor(ctx)
+	pts, err := qc.GetPoints(ctx, qc.Collection(), []*pb.PointId{pointID})
+	if err != nil {
+		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("qdrant get failed: %s", err))
+		return
+	}
+	if len(pts) == 0 {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("chunk with ID %s not found", chunkID))
+		return
+	}
+
+	payload := pts[0].GetPayload()
+	resp := map[string]interface{}{
+		"chunk_id":   chunkID,
+		"source_file": "",
+		"header":     "",
+		"text":       "",
+		"chunk_index": 0,
+		"file_last_updated": "",
+	}
+
+	if v, ok := payload["source_file"]; ok {
+		resp["source_file"] = v.GetStringValue()
+	}
+	if v, ok := payload["header"]; ok {
+		resp["header"] = v.GetStringValue()
+	}
+	if v, ok := payload["text"]; ok {
+		resp["text"] = v.GetStringValue()
+	}
+	if v, ok := payload["first_paragraph"]; ok {
+		resp["first_paragraph"] = v.GetStringValue()
+	}
+	if v, ok := payload["chunk_index"]; ok {
+		resp["chunk_index"] = int(v.GetIntegerValue())
+	}
+	if v, ok := payload["file_last_updated"]; ok {
+		resp["file_last_updated"] = v.GetStringValue()
+	}
+
+	writeJSON(w, 200, resp)
 }
 
 // ── /ask ───────────────────────────────────────────────────────────────────────

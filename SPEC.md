@@ -170,13 +170,16 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `top_k` | integer | no | 10 | Max results (1–100) |
 | `score_threshold` | float | no | 0.0 | Minimum similarity score (0.0–1.0) |
 | `source_filter` | string | no | — | Restrict to files under this path prefix |
+| `detail` | string | no | `l2` | Response detail level: `l0` (no text/first_paragraph), `l1` (first_paragraph only), `l2` (full) |
 
 **Response:**
 ```json
 {
   "results": [
     {
+      "chunk_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "text": "Contractor rates are reviewed quarterly...",
+      "first_paragraph": "Contractor rates are reviewed quarterly...",
       "source_file": "contractors/rates.md",
       "header": "## Review Cycle",
       "chunk_index": 3,
@@ -185,6 +188,37 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
     }
   ],
   "top_score": 0.87
+}
+```
+
+---
+
+### `/v1/chunks/{chunk_id}` — GET
+
+Retrieve a single chunk by its unique chunk ID. Returns the full payload including
+full text, source, and metadata.
+
+**Path parameter:** `chunk_id` — UUID string from the `chunk_id` field in recall results.
+
+**Response:**
+```json
+{
+  "chunk_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+  "source_file": "contractors/rates.md",
+  "header": "## Review Cycle",
+  "text": "Full chunk text...",
+  "first_paragraph": "Contractor rates are reviewed quarterly...",
+  "chunk_index": 3,
+  "file_last_updated": "2026-05-09T10:21:13Z"
+}
+```
+
+**Error (not found):**
+```json
+{
+  "error": true,
+  "code": "NOT_FOUND",
+  "message": "chunk with ID a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d not found"
 }
 ```
 

@@ -88,12 +88,71 @@ if [ "$RC" = "0" ]; then
   fi
 fi
 
+# /recall: verify chunk_id field
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  cid=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('chunk_id','MISSING') if r else 'NO_RESULTS')" 2>/dev/null || echo "PARSE_ERROR")
+  if [ "$cid" = "MISSING" ] || [ "$cid" = "PARSE_ERROR" ]; then
+    red "recall chunk_id field" "not found"
+  else
+    green "recall chunk_id field present ($cid)"
+  fi
+fi
+
 # /recall error: missing query
 RESP=$(curl -s -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
   -d '{}' 2>&1)
 assert_field "recall missing query" "error" "True" "$RESP"
 assert_field "recall error code" "code" "INVALID_REQUEST" "$RESP"
+
+# /recall detail=l0: no text or first_paragraph
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1,"detail":"l0"}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  txt=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('text','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  fp=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('first_paragraph','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  if [ "$txt" = "" ]; then green "/recall detail=l0 text empty"; else red "/recall detail=l0" "text not empty: $txt"; fi
+  if [ "$fp" = "" ]; then green "/recall detail=l0 first_paragraph empty"; else red "/recall detail=l0" "first_paragraph not empty: $fp"; fi
+fi
+
+# /recall detail=l1: text empty, first_paragraph present
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1,"detail":"l1"}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  txt=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('text','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  fp=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('first_paragraph','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  if [ "$txt" = "" ]; then green "/recall detail=l1 text empty"; else red "/recall detail=l1" "text not empty: $txt"; fi
+  if [ "$fp" != "" ] && [ "$fp" != "MISSING" ]; then green "/recall detail=l1 first_paragraph present"; else red "/recall detail=l1" "first_paragraph missing"; fi
+fi
+
+# /recall invalid detail: expect 400
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","detail":"l3"}' 2>&1)
+assert_field "/recall invalid detail" "error" "True" "$RESP"
+
+# ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────
+echo "--- /v1/chunks ---"
+# Get a valid chunk_id first
+CID=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1}' 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('chunk_id','') if r else '')" 2>/dev/null || echo "")
+if [ -n "$CID" ]; then
+  RESP=$(curl -sf "$BASE/v1/chunks/$CID" 2>&1) && RC=0 || RC=$?
+  assert_status "GET /v1/chunks/{id} returns 200" "0" "$RC" "$RESP"
+  assert_field_type "chunk has chunk_id" "chunk_id" "str" "$RESP"
+  assert_field_type "chunk has source_file" "source_file" "str" "$RESP"
+  # 404 for bad UUID
+  RESP=$(curl -s "$BASE/v1/chunks/00000000-0000-0000-0000-000000000000" 2>&1)
+  assert_field "chunk 404 not found" "code" "NOT_FOUND" "$RESP"
+else
+  red "/v1/chunks/{id}" "could not retrieve a chunk_id from recall"
+fi
 
 # ── /draft (direct mode) ───────────────────────────────────────────────────
 echo "--- /draft ---"
@@ -183,6 +242,51 @@ RESP=$(curl -s -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","id":3,"method":"nonexistent","params":{}}' 2>&1)
 assert_field "MCP unknown method" "code" "-32601" "$RESP"
+
+# MCP recall with detail=l0 — no text
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l0"}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
+  if [ "$has_text" = "no" ]; then green "MCP recall detail=l0 no text"; else red "MCP recall detail=l0" "text field present: $has_text"; fi
+fi
+
+# MCP recall with detail=l1 — first_paragraph present, no text
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l1"}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
+  has_fp=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'first_paragraph' in res else 'no')" 2>/dev/null)
+  if [ "$has_text" = "no" ]; then green "MCP recall detail=l1 text absent"; else red "MCP recall detail=l1" "text present: $has_text"; fi
+  if [ "$has_fp" = "yes" ]; then green "MCP recall detail=l1 first_paragraph present"; else red "MCP recall detail=l1" "first_paragraph missing"; fi
+fi
+
+# MCP get_chunk — call recall to get a chunk_id, then retrieve it
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  CID_MCP=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print(res.get('chunk_id',''))" 2>/dev/null || echo "")
+  if [ -n "$CID_MCP" ]; then
+    GET_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+      -H 'Content-Type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"ragamuffin_get_chunk\",\"arguments\":{\"chunk_id\":\"$CID_MCP\"}}}" 2>&1) && RC2=0 || RC2=$?
+    if [ "$RC2" = "0" ]; then
+      has_src=$(echo "$GET_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); print('yes' if 'source_file' in o else 'no')" 2>/dev/null)
+      if [ "$has_src" = "yes" ]; then
+        green "MCP get_chunk full payload"
+      else
+        red "MCP get_chunk" "no source_file in response"
+      fi
+    else
+      red "MCP get_chunk" "call failed (RC=$RC2)"
+    fi
+  else
+    red "MCP get_chunk" "could not get chunk_id from recall"
+  fi
+fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
