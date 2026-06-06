@@ -213,7 +213,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.log(r.Context()).Error("fact read for created_at failed", "error", err)
 		} else if len(points) > 0 {
-			createdAt, _ = getPayloadString(points[0].GetPayload(), "created_at")
+			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
 			// Carry forward confirmation_count and last_confirmed_at
 			// Only updated explicitly via PUT — preserve existing value on upsert
 		}
@@ -455,7 +455,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	resp := make([]factResponse, 0, limit)
 	for _, p := range points {
 		if prefix != "" {
-			key, _ := getPayloadString(p.Payload, "fact_key")
+			key, _ := qutil.GetPayloadString(p.Payload, "fact_key")
 			if !strings.HasPrefix(key, prefix) {
 				continue
 			}
@@ -899,7 +899,7 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 	marked := 0
 	for _, pt := range points {
 		payload := pt.GetPayload()
-		factKey, _ := getPayloadString(payload, "fact_key")
+		factKey, _ := qutil.GetPayloadString(payload, "fact_key")
 		if factKey == key {
 			continue // skip self
 		}
@@ -1066,7 +1066,7 @@ func (s *Server) migrateFacts() {
 			}
 			// version: populate from key pattern or default 0
 			if _, ok := payload["version"]; !ok {
-				factKey, _ := getPayloadString(payload, "fact_key")
+				factKey, _ := qutil.GetPayloadString(payload, "fact_key")
 				v := parseVersionFromKey(factKey)
 				payload["version"] = qutil.Nv(float64(v))
 				needsUpdate = true
@@ -1186,30 +1186,30 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	if keyOverride != "" {
 		fr.Key = keyOverride
 	} else {
-		fr.Key, _ = getPayloadString(payload, "fact_key")
+		fr.Key, _ = qutil.GetPayloadString(payload, "fact_key")
 	}
 
-	fr.Value, _ = getPayloadString(payload, "fact_value")
-	fr.Tags = getPayloadStringList(payload, "fact_tags")
-	fr.Source, _ = getPayloadString(payload, "source")
-	fr.SourceType, _ = getPayloadString(payload, "source_type")
-	if c, ok := getPayloadFloat(payload, "confidence"); ok {
+	fr.Value, _ = qutil.GetPayloadString(payload, "fact_value")
+	fr.Tags = qutil.GetPayloadStringList(payload, "fact_tags")
+	fr.Source, _ = qutil.GetPayloadString(payload, "source")
+	fr.SourceType, _ = qutil.GetPayloadString(payload, "source_type")
+	if c, ok := qutil.GetPayloadFloat(payload, "confidence"); ok {
 		fr.Confidence = &c
 	}
-	fr.Status, _ = getPayloadString(payload, "status")
-	fr.Version, _ = getPayloadInt(payload, "version")
-	fr.Supersedes, _ = getPayloadString(payload, "supersedes")
-	fr.SupersededBy, _ = getPayloadInt(payload, "superseded_by")
-	fr.Contradicts = getPayloadStringList(payload, "contradicts")
-	fr.Refines, _ = getPayloadString(payload, "refines")
-	fr.Supports = getPayloadStringList(payload, "supports")
-	fr.ConflictResolved, _ = getPayloadBool(payload, "conflict_resolved")
-	fr.ConfirmationCount, _ = getPayloadInt(payload, "confirmation_count")
-	fr.LastConfirmedAt, _ = getPayloadString(payload, "last_confirmed_at")
-	fr.CreatedAt, _ = getPayloadString(payload, "created_at")
-	fr.UpdatedAt, _ = getPayloadString(payload, "updated_at")
-	fr.ExpiresAt, _ = getPayloadString(payload, "expires_at")
-	fr.RelatedChunks = getPayloadStringList(payload, "related_chunks")
+	fr.Status, _ = qutil.GetPayloadString(payload, "status")
+	fr.Version, _ = qutil.GetPayloadInt(payload, "version")
+	fr.Supersedes, _ = qutil.GetPayloadString(payload, "supersedes")
+	fr.SupersededBy, _ = qutil.GetPayloadInt(payload, "superseded_by")
+	fr.Contradicts = qutil.GetPayloadStringList(payload, "contradicts")
+	fr.Refines, _ = qutil.GetPayloadString(payload, "refines")
+	fr.Supports = qutil.GetPayloadStringList(payload, "supports")
+	fr.ConflictResolved, _ = qutil.GetPayloadBool(payload, "conflict_resolved")
+	fr.ConfirmationCount, _ = qutil.GetPayloadInt(payload, "confirmation_count")
+	fr.LastConfirmedAt, _ = qutil.GetPayloadString(payload, "last_confirmed_at")
+	fr.CreatedAt, _ = qutil.GetPayloadString(payload, "created_at")
+	fr.UpdatedAt, _ = qutil.GetPayloadString(payload, "updated_at")
+	fr.ExpiresAt, _ = qutil.GetPayloadString(payload, "expires_at")
+	fr.RelatedChunks = qutil.GetPayloadStringList(payload, "related_chunks")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1322,51 +1322,6 @@ func intValue(p *int) int {
 
 // ── Payload extraction helpers ───────────────────────────────────────────
 
-// getPayloadString extracts a string value from a Qdrant payload map.
-func getPayloadString(payload map[string]*qdrant.Value, key string) (string, bool) {
-	return qutil.GetPayloadString(payload, key)
-}
-
-// getPayloadStringList extracts a list of strings from a Qdrant payload.
-func getPayloadStringList(payload map[string]*qdrant.Value, key string) []string {
-	return qutil.GetPayloadStringList(payload, key)
-}
-
-// getPayloadFloat extracts a float64 from a Qdrant payload.
-func getPayloadFloat(payload map[string]*qdrant.Value, key string) (float64, bool) {
-	return qutil.GetPayloadFloat(payload, key)
-}
-
-// getPayloadBool extracts a bool from a Qdrant payload.
-func getPayloadBool(payload map[string]*qdrant.Value, key string) (bool, bool) {
-	return qutil.GetPayloadBool(payload, key)
-}
-
-// getPayloadInt extracts an integer from a Qdrant payload (stored as double).
-func getPayloadInt(payload map[string]*qdrant.Value, key string) (int, bool) {
-	return qutil.GetPayloadInt(payload, key)
-}
-
-// ── Single-value convenience helpers ────────────────────────────────────────
-// These wrap the (value, exists) tuple variants above for callers that only
-// need the value with zero-as-default semantics.
-
-func getPayloadStringValue(payload map[string]*qdrant.Value, key string) string {
-	return qutil.GetPayloadStringValue(payload, key)
-}
-
-func getPayloadFloatValue(payload map[string]*qdrant.Value, key string) float64 {
-	return qutil.GetPayloadFloatValue(payload, key)
-}
-
-func getPayloadBoolValue(payload map[string]*qdrant.Value, key string) bool {
-	return qutil.GetPayloadBoolValue(payload, key)
-}
-
-func getPayloadIntValue(payload map[string]*qdrant.Value, key string) int {
-	return qutil.GetPayloadIntValue(payload, key)
-}
-
 func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(factKey), 1, "")
 	if err != nil || len(points) == 0 {
@@ -1380,7 +1335,7 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 	}
 
 	// Read current access_count or default 0
-	currentCount := getPayloadIntValue(pt.GetPayload(), "access_count")
+	currentCount := qutil.GetPayloadIntValue(pt.GetPayload(), "access_count")
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	setPayload := map[string]*qdrant.Value{

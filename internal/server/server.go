@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"log/slog"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/google/uuid"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
@@ -323,13 +323,7 @@ func requestID(ctx context.Context) string {
 }
 
 func newRequestID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	b[6] = (b[6] & 0x0f) | 0x40 // version 4
-	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
-	// Format as canonical UUID per RFC 9562: time_low-time_mid-time_hi_and_version-clock_seq-node
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+	return uuid.New().String()
 }
 
 // indexerFor returns the indexer for the vault in context, or the first/only

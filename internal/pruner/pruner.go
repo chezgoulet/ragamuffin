@@ -390,26 +390,6 @@ func (p *Pruner) updateFactPayload(ctx context.Context, pointID string, updates 
 	}}, updates)
 }
 
-// getPayloadString extracts a string from a Qdrant payload.
-func getPayloadString(payload map[string]*pb.Value, key string) (string, bool) {
-	return qutil.GetPayloadString(payload, key)
-}
-
-// getPayloadFloat extracts a float64 from a Qdrant payload.
-func getPayloadFloat(payload map[string]*pb.Value, key string) (float64, bool) {
-	return qutil.GetPayloadFloat(payload, key)
-}
-
-// getPayloadStringList extracts a []string from a Qdrant payload list value.
-func getPayloadStringList(payload map[string]*pb.Value, key string) []string {
-	return qutil.GetPayloadStringList(payload, key)
-}
-
-// getPayloadInt extracts an int from a Qdrant payload (stored as double).
-func getPayloadInt(payload map[string]*pb.Value, key string) (int, bool) {
-	return qutil.GetPayloadInt(payload, key)
-}
-
 // cosineSimilarity computes cosine similarity between two vectors.
 func cosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {

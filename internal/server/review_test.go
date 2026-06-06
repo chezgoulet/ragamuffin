@@ -17,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	internalQdrant "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qdrant "github.com/qdrant/go-client/qdrant"
 )
@@ -101,7 +102,7 @@ func (m *reviewMockStore) ScrollFiltered(ctx context.Context, collection string,
 	}
 	var result []*qdrant.RetrievedPoint
 	for _, p := range m.points {
-		if status, _ := getPayloadString(p.GetPayload(), "status"); status == "needs_review" {
+		if status, _ := qutil.GetPayloadString(p.GetPayload(), "status"); status == "needs_review" {
 			result = append(result, p)
 		}
 	}
@@ -335,7 +336,7 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 		var result []*qdrant.RetrievedPoint
 	outer:
 		for _, p := range store.points {
-			if status, _ := getPayloadString(p.GetPayload(), "status"); status != "needs_review" {
+			if status, _ := qutil.GetPayloadString(p.GetPayload(), "status"); status != "needs_review" {
 				continue
 			}
 			// Apply min_confidence filter if present
@@ -343,7 +344,7 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 				for _, cond := range filter.Must {
 					if fc := cond.GetField(); fc != nil && fc.Key == "confidence" {
 						if rng := fc.GetRange(); rng != nil {
-							if conf, _ := getPayloadFloat(p.GetPayload(), "confidence"); rng.Lt != nil && conf >= *rng.Lt {
+							if conf, _ := qutil.GetPayloadFloat(p.GetPayload(), "confidence"); rng.Lt != nil && conf >= *rng.Lt {
 								continue outer
 							}
 						}
@@ -422,7 +423,7 @@ func TestReviewPost_Confirm(t *testing.T) {
 		t.Fatal("expected at least 1 upsert")
 	}
 	last := upserted[len(upserted)-1]
-	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "active" {
+	if s, _ := qutil.GetPayloadString(last.GetPayload(), "status"); s != "active" {
 		t.Errorf("expected status 'active', got %q", s)
 	}
 }
@@ -448,12 +449,12 @@ func TestReviewPost_ConfirmWithConfidence(t *testing.T) {
 	last := store.upserted[len(store.upserted)-1]
 	store.mu.Unlock()
 
-	c, _ := getPayloadFloat(last.GetPayload(), "confidence")
+	c, _ := qutil.GetPayloadFloat(last.GetPayload(), "confidence")
 	if c != 0.95 {
 		t.Errorf("expected confidence 0.95, got %f", c)
 	}
 	// confirmation_count should be 1 (incremented from 0)
-	cc, _ := getPayloadInt(last.GetPayload(), "confirmation_count")
+	cc, _ := qutil.GetPayloadInt(last.GetPayload(), "confirmation_count")
 	if cc != 1 {
 		t.Errorf("expected confirmation_count 1, got %d", cc)
 	}
@@ -482,7 +483,7 @@ func TestReviewPost_Reject(t *testing.T) {
 	last := store.upserted[len(store.upserted)-1]
 	store.mu.Unlock()
 
-	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "rejected" {
+	if s, _ := qutil.GetPayloadString(last.GetPayload(), "status"); s != "rejected" {
 		t.Errorf("expected status 'rejected', got %q", s)
 	}
 }
@@ -517,16 +518,16 @@ func TestReviewPost_Supersede(t *testing.T) {
 
 	// Last upsert should be the old fact marked as superseded
 	last := upserted[len(upserted)-1]
-	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "superseded" {
+	if s, _ := qutil.GetPayloadString(last.GetPayload(), "status"); s != "superseded" {
 		t.Errorf("expected old fact status 'superseded', got %q", s)
 	}
 
 	// First upsert should be the new fact
 	first := upserted[0]
-	if k, _ := getPayloadString(first.GetPayload(), "fact_key"); k != "new-key" {
+	if k, _ := qutil.GetPayloadString(first.GetPayload(), "fact_key"); k != "new-key" {
 		t.Errorf("expected new fact key 'new-key', got %q", k)
 	}
-	if s, _ := getPayloadString(first.GetPayload(), "status"); s != "active" {
+	if s, _ := qutil.GetPayloadString(first.GetPayload(), "status"); s != "active" {
 		t.Errorf("expected new fact status 'active', got %q", s)
 	}
 }
@@ -554,16 +555,16 @@ func TestReviewPost_Reclassify(t *testing.T) {
 	last := store.upserted[len(store.upserted)-1]
 	store.mu.Unlock()
 
-	c, _ := getPayloadFloat(last.GetPayload(), "confidence")
+	c, _ := qutil.GetPayloadFloat(last.GetPayload(), "confidence")
 	if c != 0.85 {
 		t.Errorf("expected confidence 0.85, got %f", c)
 	}
-	ttl, _ := getPayloadInt(last.GetPayload(), "ttl_days")
+	ttl, _ := qutil.GetPayloadInt(last.GetPayload(), "ttl_days")
 	if ttl != 30 {
 		t.Errorf("expected ttl_days 30, got %d", ttl)
 	}
 	// Reclassify sets status to active
-	if s, _ := getPayloadString(last.GetPayload(), "status"); s != "active" {
+	if s, _ := qutil.GetPayloadString(last.GetPayload(), "status"); s != "active" {
 		t.Errorf("expected status 'active' after reclassify, got %q", s)
 	}
 }
@@ -726,11 +727,11 @@ func TestFactsPut_UpdateFields(t *testing.T) {
 	last := store.upserted[len(store.upserted)-1]
 	store.mu.Unlock()
 
-	v, _ := getPayloadString(last.GetPayload(), "fact_value")
+	v, _ := qutil.GetPayloadString(last.GetPayload(), "fact_value")
 	if v != "updated-val" {
 		t.Errorf("expected fact_value 'updated-val', got %q", v)
 	}
-	c, _ := getPayloadFloat(last.GetPayload(), "confidence")
+	c, _ := qutil.GetPayloadFloat(last.GetPayload(), "confidence")
 	if c != 0.99 {
 		t.Errorf("expected confidence 0.99, got %f", c)
 	}

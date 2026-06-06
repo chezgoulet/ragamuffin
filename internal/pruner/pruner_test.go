@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -175,17 +176,17 @@ func TestGetPayloadString(t *testing.T) {
 		"empty":  nv(""),
 	}
 
-	v, ok := getPayloadString(payload, "status")
+	v, ok := qutil.GetPayloadString(payload, "status")
 	if !ok || v != "active" {
 		t.Errorf("expected active, got %q (ok=%v)", v, ok)
 	}
 
-	_, ok = getPayloadString(payload, "missing")
+	_, ok = qutil.GetPayloadString(payload, "missing")
 	if ok {
 		t.Error("expected missing key to return false")
 	}
 
-	v, ok = getPayloadString(payload, "empty")
+	v, ok = qutil.GetPayloadString(payload, "empty")
 	if !ok || v != "" {
 		t.Errorf("expected empty string, got %q (ok=%v)", v, ok)
 	}
@@ -197,12 +198,12 @@ func TestGetPayloadFloat(t *testing.T) {
 		"zero":  nv(0.0),
 	}
 
-	v, ok := getPayloadFloat(payload, "score")
+	v, ok := qutil.GetPayloadFloat(payload, "score")
 	if !ok || math.Abs(v-0.85) > 0.001 {
 		t.Errorf("expected ~0.85, got %f (ok=%v)", v, ok)
 	}
 
-	_, ok = getPayloadFloat(payload, "missing")
+	_, ok = qutil.GetPayloadFloat(payload, "missing")
 	if ok {
 		t.Error("expected missing key to return false")
 	}
@@ -213,12 +214,12 @@ func TestGetPayloadInt(t *testing.T) {
 		"count": nv(float64(42)),
 	}
 
-	v, ok := getPayloadInt(payload, "count")
+	v, ok := qutil.GetPayloadInt(payload, "count")
 	if !ok || v != 42 {
 		t.Errorf("expected 42, got %d (ok=%v)", v, ok)
 	}
 
-	_, ok = getPayloadInt(payload, "missing")
+	_, ok = qutil.GetPayloadInt(payload, "missing")
 	if ok {
 		t.Error("expected missing key to return false")
 	}
@@ -226,7 +227,7 @@ func TestGetPayloadInt(t *testing.T) {
 
 func TestGetPayloadStringList(t *testing.T) {
 	t.Run("missing key", func(t *testing.T) {
-		result := getPayloadStringList(nil, "missing")
+		result := qutil.GetPayloadStringList(nil, "missing")
 		if result != nil {
 			t.Errorf("expected nil, got %v", result)
 		}
@@ -236,7 +237,7 @@ func TestGetPayloadStringList(t *testing.T) {
 		payload := map[string]*pb.Value{
 			"tags": nv("single"),
 		}
-		result := getPayloadStringList(payload, "tags")
+		result := qutil.GetPayloadStringList(payload, "tags")
 		if len(result) != 1 || result[0] != "single" {
 			t.Errorf("expected [single], got %v", result)
 		}
@@ -251,7 +252,7 @@ func TestGetPayloadStringList(t *testing.T) {
 				},
 			},
 		}
-		result := getPayloadStringList(payload, "tags")
+		result := qutil.GetPayloadStringList(payload, "tags")
 		if len(result) != 3 || result[0] != "a" || result[1] != "b" || result[2] != "c" {
 			t.Errorf("expected [a b c], got %v", result)
 		}
@@ -713,7 +714,7 @@ func TestSupersedeCrossReference_TargetMarked(t *testing.T) {
 	if len(upserted) != 1 {
 		t.Fatalf("expected 1 upsert (mark target superseded), got %d", len(upserted))
 	}
-	status, _ := getPayloadString(upserted[0].GetPayload(), "status")
+	status, _ := qutil.GetPayloadString(upserted[0].GetPayload(), "status")
 	if status != "superseded" {
 		t.Errorf("expected status 'superseded', got %q", status)
 	}
@@ -807,7 +808,7 @@ func TestSupersedeKeyPattern_HigherVersionSupersedes(t *testing.T) {
 	if len(upserted) != 1 {
 		t.Fatalf("expected 1 upsert (v1 superseded), got %d", len(upserted))
 	}
-	status, _ := getPayloadString(upserted[0].GetPayload(), "status")
+	status, _ := qutil.GetPayloadString(upserted[0].GetPayload(), "status")
 	if status != "superseded" {
 		t.Errorf("expected status 'superseded', got %q", status)
 	}
@@ -905,10 +906,10 @@ func TestMarkContradiction(t *testing.T) {
 		t.Fatalf("expected 1 upsert, got %d", len(upserted))
 	}
 	payload := upserted[0].GetPayload()
-	if status, _ := getPayloadString(payload, "status"); status != "needs_review" {
+	if status, _ := qutil.GetPayloadString(payload, "status"); status != "needs_review" {
 		t.Errorf("expected status needs_review, got %q", status)
 	}
-	if resolved, _ := getPayloadFloat(payload, "conflict_resolved"); resolved != 0 {
+	if resolved, _ := qutil.GetPayloadFloat(payload, "conflict_resolved"); resolved != 0 {
 		t.Errorf("expected conflict_resolved false, got %f", resolved)
 	}
 }
@@ -1095,7 +1096,7 @@ func TestUpdateFactStatus(t *testing.T) {
 		t.Fatalf("expected 1 upsert, got %d", len(upserted))
 	}
 	payload := upserted[0].GetPayload()
-	if s, _ := getPayloadString(payload, "status"); s != "needs_review" {
+	if s, _ := qutil.GetPayloadString(payload, "status"); s != "needs_review" {
 		t.Errorf("expected status 'needs_review', got %q", s)
 	}
 	if _, ok := payload["updated_at"]; !ok {
@@ -1125,7 +1126,7 @@ func TestUpdateFactPayload(t *testing.T) {
 		t.Fatalf("expected 1 upsert, got %d", len(upserted))
 	}
 	upsertPayload := upserted[0].GetPayload()
-	if c, _ := getPayloadFloat(upsertPayload, "confidence"); math.Abs(c-0.95) > 0.001 {
+	if c, _ := qutil.GetPayloadFloat(upsertPayload, "confidence"); math.Abs(c-0.95) > 0.001 {
 		t.Errorf("expected confidence 0.95, got %f", c)
 	}
 	if _, ok := upsertPayload["updated_at"]; !ok {

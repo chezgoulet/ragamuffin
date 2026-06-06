@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -91,7 +92,7 @@ func (p *Pruner) staleScan(ctx context.Context) {
 		}
 
 		// Skip facts referenced by active graph edges first
-		key, _ := getPayloadString(pt.GetPayload(), "fact_key")
+		key, _ := qutil.GetPayloadString(pt.GetPayload(), "fact_key")
 		if key != "" && referencedKeys[key] {
 			skippedEdges++
 			continue
@@ -161,18 +162,18 @@ func (p *Pruner) collectReferencedKeys(ctx context.Context) (map[string]bool, er
 			continue
 		}
 
-		if s, _ := getPayloadString(payload, "supersedes"); s != "" {
+		if s, _ := qutil.GetPayloadString(payload, "supersedes"); s != "" {
 			keys[s] = true
 		}
-		if s, _ := getPayloadString(payload, "refines"); s != "" {
+		if s, _ := qutil.GetPayloadString(payload, "refines"); s != "" {
 			keys[s] = true
 		}
-		for _, t := range getPayloadStringList(payload, "contradicts") {
+		for _, t := range qutil.GetPayloadStringList(payload, "contradicts") {
 			if t != "" {
 				keys[t] = true
 			}
 		}
-		for _, t := range getPayloadStringList(payload, "supports") {
+		for _, t := range qutil.GetPayloadStringList(payload, "supports") {
 			if t != "" {
 				keys[t] = true
 			}

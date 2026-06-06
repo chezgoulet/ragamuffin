@@ -98,8 +98,8 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 	facts := make([]factPair, 0, len(sample))
 	for _, pt := range sample {
 		payload := pt.GetPayload()
-		key, _ := getPayloadString(payload, "fact_key")
-		value, _ := getPayloadString(payload, "fact_value")
+		key, _ := qutil.GetPayloadString(payload, "fact_key")
+		value, _ := qutil.GetPayloadString(payload, "fact_value")
 		if key == "" || value == "" {
 			continue
 		}
@@ -197,7 +197,7 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 
 	// Use the existing GetPayload directly — no need to copy all fields
 	sourcePayload := points[0].GetPayload()
-	existing := getPayloadStringList(sourcePayload, "contradicts")
+	existing := qutil.GetPayloadStringList(sourcePayload, "contradicts")
 	for _, s := range existing {
 		if s == otherKey {
 			return nil // already listed

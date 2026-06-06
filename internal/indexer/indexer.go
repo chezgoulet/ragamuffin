@@ -166,7 +166,7 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 			return nil
 		}
 		relPath, _ := filepath.Rel(idx.vaultPath, absPath)
-		if !isIndexable(relPath) {
+		if !indexutil.IsIndexable(relPath) {
 			return nil
 		}
 		files = append(files, relPath)
@@ -383,9 +383,7 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 	return nil
 }
 
-func isIndexable(path string) bool {
-	return indexutil.IsIndexable(path)
-}
+
 
 // pointID generates a deterministic UUID from a file path and chunk index.
 // Uses SHA-256 (not SHA-1) for compatibility with Qdrant's UUID parser,

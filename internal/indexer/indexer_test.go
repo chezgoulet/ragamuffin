@@ -3,6 +3,8 @@ package indexer
 import (
 	"context"
 	"testing"
+
+	"github.com/chezgoulet/ragamuffin/internal/indexutil"
 	"time"
 )
 
@@ -28,9 +30,9 @@ func TestIsIndexable(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			result := isIndexable(tt.path)
+			result := indexutil.IsIndexable(tt.path)
 			if result != tt.expected {
-				t.Errorf("isIndexable(%q) = %v, want %v", tt.path, result, tt.expected)
+				t.Errorf("indexutil.IsIndexable(%q) = %v, want %v", tt.path, result, tt.expected)
 			}
 		})
 	}

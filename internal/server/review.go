@@ -175,32 +175,32 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	}
 	payload := p.GetPayload()
 
-	key, _ := getPayloadString(payload, "fact_key")
-	value, _ := getPayloadString(payload, "fact_value")
+	key, _ := qutil.GetPayloadString(payload, "fact_key")
+	value, _ := qutil.GetPayloadString(payload, "fact_value")
 	if key == "" || value == "" {
 		return nil
 	}
 
-	status, _ := getPayloadString(payload, "status")
+	status, _ := qutil.GetPayloadString(payload, "status")
 	if status != "needs_review" {
 		return nil
 	}
 
 	var confidence *float64
-	if c, ok := getPayloadFloat(payload, "confidence"); ok {
+	if c, ok := qutil.GetPayloadFloat(payload, "confidence"); ok {
 		confidence = &c
 	}
 	r := &reviewResponse{
 		Key:     key,
 		Value:   value,
-		Tags:    getPayloadStringList(payload, "fact_tags"),
-		Source:  getPayloadStringValue(payload, "source"),
-		SourceType: getPayloadStringValue(payload, "source_type"),
+		Tags:    qutil.GetPayloadStringList(payload, "fact_tags"),
+		Source:  qutil.GetPayloadStringValue(payload, "source"),
+		SourceType: qutil.GetPayloadStringValue(payload, "source_type"),
 		Confidence: confidence,
 		Status:  status,
-		LastConfirmedAt: getPayloadStringValue(payload, "last_confirmed_at"),
-		CreatedAt: getPayloadStringValue(payload, "created_at"),
-		UpdatedAt: getPayloadStringValue(payload, "updated_at"),
+		LastConfirmedAt: qutil.GetPayloadStringValue(payload, "last_confirmed_at"),
+		CreatedAt: qutil.GetPayloadStringValue(payload, "created_at"),
+		UpdatedAt: qutil.GetPayloadStringValue(payload, "updated_at"),
 	}
 
 	// Compute review reasons dynamically from payload fields
@@ -208,10 +208,10 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	reasons := []reviewReason{}
 
 	// Stale check: expires_at is in the past
-	expiresAt := getPayloadStringValue(payload, "expires_at")
+	expiresAt := qutil.GetPayloadStringValue(payload, "expires_at")
 	if expiresAt != "" {
 		if expTime, err := time.Parse(time.RFC3339, expiresAt); err == nil && now.After(expTime) {
-			ttlDays := getPayloadIntValue(payload, "ttl_days")
+			ttlDays := qutil.GetPayloadIntValue(payload, "ttl_days")
 			reasons = append(reasons, reviewReason{
 				Type:   "stale",
 				Detail: fmt.Sprintf("Expired %s ago (TTL: %d days)", now.Sub(expTime).Truncate(time.Hour).String(), ttlDays),
@@ -220,8 +220,8 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	}
 
 	// Contradiction check: non-empty contradicts list and not resolved
-	contradicts := getPayloadStringList(payload, "contradicts")
-	conflictResolved := getPayloadBoolValue(payload, "conflict_resolved")
+	contradicts := qutil.GetPayloadStringList(payload, "contradicts")
+	conflictResolved := qutil.GetPayloadBoolValue(payload, "conflict_resolved")
 	if len(contradicts) > 0 && !conflictResolved {
 		reasons = append(reasons, reviewReason{
 			Type:         "contradiction",
@@ -239,7 +239,7 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	}
 
 	// Supersession check
-	supersedes := getPayloadStringValue(payload, "supersedes")
+	supersedes := qutil.GetPayloadStringValue(payload, "supersedes")
 	if supersedes != "" {
 		reasons = append(reasons, reviewReason{
 			Type:   "supersession",
@@ -312,7 +312,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		payload["status"] = qutil.Nv("active")
 		payload["last_confirmed_at"] = qutil.Nv(now)
 		// Increment confirmation_count
-		cc := getPayloadIntValue(payload, "confirmation_count") + 1
+		cc := qutil.GetPayloadIntValue(payload, "confirmation_count") + 1
 		payload["confirmation_count"] = qutil.Nv(float64(cc))
 		if req.Confidence != nil {
 			payload["confidence"] = qutil.Nv(*req.Confidence)
@@ -464,11 +464,11 @@ func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string,
 	}
 
 	// Inherit fields from old fact
-	source, _ := getPayloadString(oldPayload, "source")
-	sourceType, _ := getPayloadString(oldPayload, "source_type")
-	tags := getPayloadStringList(oldPayload, "fact_tags")
+	source, _ := qutil.GetPayloadString(oldPayload, "source")
+	sourceType, _ := qutil.GetPayloadString(oldPayload, "source_type")
+	tags := qutil.GetPayloadStringList(oldPayload, "fact_tags")
 	confidence := 1.0
-	if raw, ok := getPayloadFloat(oldPayload, "confidence"); ok {
+	if raw, ok := qutil.GetPayloadFloat(oldPayload, "confidence"); ok {
 		confidence = raw
 	}
 
@@ -573,37 +573,37 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 		for _, p := range points {
 			payload := p.GetPayload()
 
-			sourceType, _ := getPayloadString(payload, "source_type")
+			sourceType, _ := qutil.GetPayloadString(payload, "source_type")
 			if sourceType != "" {
 				stats.BySourceType[sourceType]++
 			} else {
 				stats.BySourceType["unknown"]++
 			}
 
-			expiresAt, _ := getPayloadString(payload, "expires_at")
+			expiresAt, _ := qutil.GetPayloadString(payload, "expires_at")
 			if expiresAt != "" {
 				if expTime, err := time.Parse(time.RFC3339, expiresAt); err == nil && now.After(expTime) {
 					stats.ByReason["stale"]++
 				}
 			}
 
-			contradicts := getPayloadStringList(payload, "contradicts")
-			conflictResolved, _ := getPayloadBool(payload, "conflict_resolved")
+			contradicts := qutil.GetPayloadStringList(payload, "contradicts")
+			conflictResolved, _ := qutil.GetPayloadBool(payload, "conflict_resolved")
 			if len(contradicts) > 0 && !conflictResolved {
 				stats.ByReason["contradiction"]++
 			}
 
-			supersedes, _ := getPayloadString(payload, "supersedes")
+			supersedes, _ := qutil.GetPayloadString(payload, "supersedes")
 			if supersedes != "" {
 				stats.ByReason["supersession"]++
 			}
 
-			confidence, _ := getPayloadFloat(payload, "confidence")
+			confidence, _ := qutil.GetPayloadFloat(payload, "confidence")
 			if confidence < s.cfg.PrunerLowConfidenceThreshold {
 				stats.ByReason["low_confidence"]++
 			}
 
-			createdAt, _ := getPayloadString(payload, "created_at")
+			createdAt, _ := qutil.GetPayloadString(payload, "created_at")
 			if createdAt != "" {
 				if ct, err := time.Parse(time.RFC3339, createdAt); err == nil {
 					if oldestTime.IsZero() || ct.Before(oldestTime) {

@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	pb "github.com/qdrant/go-client/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
 
@@ -168,20 +169,20 @@ func (s *Server) findReverseEdges(ctx context.Context, factsStore store.FactStor
 		if p == nil || p.Payload == nil {
 			continue
 		}
-		factKey, _ := getPayloadString(p.Payload, "fact_key")
+		factKey, _ := qutil.GetPayloadString(p.Payload, "fact_key")
 		if factKey == "" {
 			continue
 		}
-		if sv, _ := getPayloadString(p.Payload, "supersedes"); sv == key {
+		if sv, _ := qutil.GetPayloadString(p.Payload, "supersedes"); sv == key {
 			results = append(results, reverseEdge{key: factKey, relationship: "superseded_by"})
 		}
-		if sv, _ := getPayloadString(p.Payload, "refines"); sv == key {
+		if sv, _ := qutil.GetPayloadString(p.Payload, "refines"); sv == key {
 			results = append(results, reverseEdge{key: factKey, relationship: "refined_by"})
 		}
-		if stringContains(getPayloadStringList(p.Payload, "contradicts"), key) {
+		if stringContains(qutil.GetPayloadStringList(p.Payload, "contradicts"), key) {
 			results = append(results, reverseEdge{key: factKey, relationship: "contradicted_by"})
 		}
-		if stringContains(getPayloadStringList(p.Payload, "supports"), key) {
+		if stringContains(qutil.GetPayloadStringList(p.Payload, "supports"), key) {
 			results = append(results, reverseEdge{key: factKey, relationship: "supported_by"})
 		}
 	}
