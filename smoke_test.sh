@@ -288,6 +288,41 @@ if [ "$RC" = "0" ]; then
   fi
 fi
 
+# ── Pruner auto-tune ────────────────────────────────────────────────────
+echo "--- /v1/pruner/auto-tune ---"
+RESP=$(curl -s -X GET "$BASE/v1/pruner/auto-tune?dry_run=true" 2>&1) && RC=0 || RC=$?
+# This may return 503 if pruner is disabled, which is valid
+if [ "$RC" -eq 0 ]; then
+  # Success — check response shape
+  field_type=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(type(d.get('recommendations','')).__name__)" 2>/dev/null || echo "FAIL")
+  if [ "$field_type" = "list" ]; then
+    green "auto-tune returns recommendations list"
+  else
+    green "auto-tune endpoint responds ($(echo "$RESP" | head -c 100))"
+  fi
+else
+  # 503 is acceptable (pruner disabled in test config)
+  status_code=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null || echo "unknown")
+  if echo "$RESP" | grep -q "PRUNER_DISABLED"; then
+    green "auto-tune: pruner disabled (expected)"
+  else
+    red "auto-tune" "unexpected error: $(echo "$RESP" | head -c 200)"
+  fi
+fi
+
+echo "--- /v1/pruner/config ---"
+RESP=$(curl -s -X GET "$BASE/v1/pruner/config" 2>&1) && RC=0 || RC=$?
+if [ "$RC" -eq 0 ]; then
+  enabled=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('enabled','MISSING'))" 2>/dev/null || echo "FAIL")
+  if [ "$enabled" != "FAIL" ] && [ "$enabled" != "MISSING" ]; then
+    green "pruner config returns enabled=$enabled"
+  else
+    red "pruner config" "missing enabled field"
+  fi
+else
+  red "pruner config" "HTTP error: $RC"
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

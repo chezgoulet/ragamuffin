@@ -4,6 +4,7 @@ import (
 	"context"
 
 	pb "github.com/qdrant/go-client/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 )
 
 // lowConfidenceFilter builds a Qdrant filter for active facts with confidence
@@ -70,9 +71,13 @@ func (p *Pruner) lowConfidenceScan(ctx context.Context) {
 		if pointID == "" {
 			continue
 		}
+		key, _ := qutil.GetPayloadString(pt.GetPayload(), "fact_key")
 		if err := p.updateFactStatus(ctx, pointID, "needs_review"); err != nil {
 			p.logger.Error("lowConfidenceScan: failed to mark fact", "point_id", pointID, "error", err)
 			continue
+		}
+		if p.cfg.FlagCallback != nil && key != "" {
+			p.cfg.FlagCallback(key, "low_confidence")
 		}
 		marked++
 	}

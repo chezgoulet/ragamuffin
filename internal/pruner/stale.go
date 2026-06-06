@@ -113,6 +113,9 @@ func (p *Pruner) staleScan(ctx context.Context) {
 			p.logger.Error("staleScan: failed to mark fact", "point_id", pointID, "error", err)
 			continue
 		}
+		if p.cfg.FlagCallback != nil {
+			p.cfg.FlagCallback(key, "stale")
+		}
 		marked++
 	}
 

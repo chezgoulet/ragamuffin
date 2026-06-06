@@ -513,6 +513,54 @@ Routes: `GET /v1/facts/{key}/graph` (global) and `GET /vault/{name}/v1/facts/{ke
 
 ---
 
+### `/v1/pruner/auto-tune` — GET
+
+Returns adaptive threshold recommendations based on review resolution history.
+Operators can preview changes with `?dry_run=true` (default) or apply by passing
+`?dry_run=false`.
+
+**Response (200):**
+```json
+{
+  "dry_run": true,
+  "recommendations": [
+    {
+      "reason_type": "conflict",
+      "current": 0.85,
+      "recommended": 0.90,
+      "accept_rate": 0.67,
+      "sample_size": 12,
+      "rationale": "67% of conflict flags were rejected; consider raising similarity threshold from 0.85 to 0.90"
+    }
+  ],
+  "sample_count": 1,
+  "applied": false
+}
+```
+
+**Error (503):** Returns `PRUNER_DISABLED` if the pruner is not enabled.
+
+---
+
+### `/v1/pruner/config` — GET
+
+Returns the current pruner configuration.
+
+**Response (200):**
+```json
+{
+  "enabled": false,
+  "stale_days": 90,
+  "conflict_sample_size": 50,
+  "low_confidence_threshold": 0.5,
+  "importance_threshold": 0.0
+}
+```
+
+Requires admin access.
+
+---
+
 ## Architecture
 
 ```
@@ -794,6 +842,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_LOGSTORE_PATH` | no | heuristic | Explicit path for `logs.db` (default: vault-root `/.ragamuffin/logs.db`) |
 | `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | no | `100000` | Max rows before pruning session log |
 | `RAGAMUFFIN_EVENT_WEBHOOK_URL` | no | — | CloudEvents v1.0 webhook for fact lifecycle |
+| `RAGAMUFFIN_EVENT_WEBHOOK_EVENTS` | no | all | Comma-separated event types to POST to webhook (e.g. `fact.created,fact.reviewed`). Empty = all events. |
 | `RAGAMUFFIN_AUDIT_SAMPLE_SIZE` | no | `50` | Chunk pairs to LLM-compare in semantic conflict audit |
 | `RAGAMUFFIN_AUDIT_ENTITY_EXTRACTION` | no | `false` | Enable LLM entity extraction in audit |
 | `RAGAMUFFIN_AUTO_THRESHOLD` | no | `0.75` | Threshold for auto-decisions |

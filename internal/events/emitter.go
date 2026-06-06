@@ -19,28 +19,39 @@ type LogStorer interface {
 // Emitter sends CloudEvents to a configured webhook URL and persists
 // them to a logstore if configured. Also broadcasts to SSE subscribers.
 type Emitter struct {
-	webhookURL string
-	source     string
-	client     *http.Client
-	logger     *slog.Logger
-	logStore   LogStorer      // optional — persists events
-	broker     *Broker        // optional — SSE fan-out
-	closed     bool
-	mu         sync.Mutex
-	queue      []CloudEvent
+	webhookURL    string
+	source        string
+	client        *http.Client
+	logger        *slog.Logger
+	logStore      LogStorer      // optional — persists events
+	broker        *Broker        // optional — SSE fan-out
+	allowedEvents map[string]bool // optional — if non-nil, only these event types are POSTed to webhook
+	closed        bool
+	mu            sync.Mutex
+	queue         []CloudEvent
 }
 
 // NewEmitter creates an Emitter. If webhookURL is empty, Emit is a no-op.
-func NewEmitter(webhookURL, source string, logger *slog.Logger, logStore LogStorer, broker *Broker) *Emitter {
+// allowedEvents optionally filters which event types are POSTed to the webhook;
+// nil means all events are sent. SSE broadcast is unaffected.
+func NewEmitter(webhookURL, source string, logger *slog.Logger, logStore LogStorer, broker *Broker, allowedEvents []string) *Emitter {
+	var ae map[string]bool
+	for _, e := range allowedEvents {
+		if ae == nil {
+			ae = make(map[string]bool)
+		}
+		ae[e] = true
+	}
 	return &Emitter{
-		webhookURL: webhookURL,
-		source:     source,
+		webhookURL:    webhookURL,
+		source:        source,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		logger:   logger,
-		logStore: logStore,
-		broker:   broker,
+		logger:        logger,
+		logStore:      logStore,
+		broker:        broker,
+		allowedEvents: ae,
 	}
 }
 
@@ -80,6 +91,11 @@ func (e *Emitter) Emit(eventType string, data any) {
 		return
 	}
 
+	// Check event type filter — empty allowedEvents means send all
+	if e.allowedEvents != nil && !e.allowedEvents[eventType] {
+		return
+	}
+
 	e.post(evt)
 }
 
@@ -107,6 +123,11 @@ func (e *Emitter) EmitSync(ctx context.Context, eventType string, data any) erro
 	}
 
 	if e.webhookURL == "" {
+		return nil
+	}
+
+	// Check event type filter — empty allowedEvents means send all
+	if e.allowedEvents != nil && !e.allowedEvents[eventType] {
 		return nil
 	}
 

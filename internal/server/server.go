@@ -171,6 +171,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
 		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
 		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
+
+		// Pruner endpoints (auto-tune, config)
+		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withRateLimit("/audit", s.withQdrant(s.handlePrunerAutoTune))))
+		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withRateLimit("/audit", s.withQdrant(s.handlePrunerConfig))))
 		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
 	}
 

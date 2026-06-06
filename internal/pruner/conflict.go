@@ -157,7 +157,9 @@ func (p *Pruner) conflictScan(ctx context.Context) {
 					"a", facts[i].key, "b", facts[j].key, "error", err)
 				continue
 			}
-
+			if p.cfg.FlagCallback != nil {
+				p.cfg.FlagCallback(facts[j].key, "conflict")
+			}
 			flagged++
 			p.logger.Info("conflictScan: flagging contradiction",
 				"a", facts[i].key, "b", facts[j].key, "similarity", fmt.Sprintf("%.4f", sim))

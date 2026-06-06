@@ -133,6 +133,17 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_sessions_agent   ON sessions(agent_id);
 		CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at);
 		CREATE INDEX IF NOT EXISTS idx_turns_session    ON session_turns(session_id);
+
+		CREATE TABLE IF NOT EXISTS review_resolutions (
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			fact_key    TEXT NOT NULL,
+			action      TEXT NOT NULL,
+			reason_type TEXT NOT NULL,
+			similarity  REAL,
+			created_at  TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_res_reason ON review_resolutions(reason_type);
+		CREATE INDEX IF NOT EXISTS idx_res_created ON review_resolutions(created_at);
 	`)
 	return err
 }
@@ -503,6 +514,119 @@ func (s *Store) SetLogger(l *slog.Logger) {
 	s.logger = l
 }
 // Close closes the database connection.
+// Resolution records a single review queue resolution.
+type Resolution struct {
+	ID         int64   `json:"id"`
+	FactKey    string  `json:"fact_key"`
+	Action     string  `json:"action"`
+	ReasonType string  `json:"reason_type"`
+	Similarity float64 `json:"similarity,omitempty"`
+	CreatedAt  string  `json:"created_at"`
+}
+
+// ThresholdRecommendation is a single suggested threshold adjustment.
+type ThresholdRecommendation struct {
+	ReasonType     string  `json:"reason_type"`
+	Recommended    float64 `json:"recommended"`
+	Current        float64 `json:"current"`
+	AcceptRate     float64 `json:"accept_rate"`
+	SampleSize     int     `json:"sample_size"`
+	Rationale      string  `json:"rationale"`
+}
+
+// RecordResolution inserts a review resolution record into the logstore.
+func (s *Store) RecordResolution(ctx context.Context, factKey, action, reasonType string, similarity *float64) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	sim := sql.NullFloat64{}
+	if similarity != nil {
+		sim = sql.NullFloat64{Float64: *similarity, Valid: true}
+	}
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO review_resolutions (fact_key, action, reason_type, similarity, created_at) VALUES (?, ?, ?, ?, ?)`,
+		factKey, action, reasonType, sim, now)
+	if err != nil {
+		return fmt.Errorf("logstore: record resolution: %w", err)
+	}
+	return nil
+}
+
+// ThresholdRecommendations queries the review_resolutions table and returns
+// suggested threshold adjustments based on resolution history.
+func (s *Store) ThresholdRecommendations(ctx context.Context, dryRun bool) ([]ThresholdRecommendation, error) {
+	// Query acceptance rates per reason type
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			reason_type,
+			COUNT(*) AS total,
+			SUM(CASE WHEN action = 'confirm' OR action = 'reclassify' THEN 1 ELSE 0 END) AS accepted,
+			SUM(CASE WHEN action = 'reject' THEN 1 ELSE 0 END) AS rejected
+		FROM review_resolutions
+		GROUP BY reason_type
+		HAVING total >= 3
+		ORDER BY total DESC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("logstore: query recommendations: %w", err)
+	}
+	defer rows.Close()
+
+	var recs []ThresholdRecommendation
+	for rows.Next() {
+		var reasonType string
+		var total, accepted, rejected int
+		if err := rows.Scan(&reasonType, &total, &accepted, &rejected); err != nil {
+			return nil, fmt.Errorf("logstore: scan recommendation: %w", err)
+		}
+
+		acceptRate := float64(accepted) / float64(total)
+		var rec ThresholdRecommendation
+		rec.ReasonType = reasonType
+		rec.SampleSize = total
+		rec.AcceptRate = acceptRate
+
+		// Generate recommendations based on reason type
+		switch reasonType {
+		case "conflict":
+			rec.Current = 0.85 // default conflict similarity threshold
+			if rejectRate := float64(rejected) / float64(total); rejectRate > 0.3 {
+				// Most conflict flags are being rejected -- threshold too low
+				rec.Recommended = 0.90
+				rec.Rationale = fmt.Sprintf("%.0f%% of conflict flags were rejected; consider raising similarity threshold from 0.85 to 0.90", rejectRate*100)
+			} else if acceptRate > 0.85 {
+				// Most conflict flags are accepted -- threshold may be too high
+				rec.Recommended = 0.80
+				rec.Rationale = fmt.Sprintf("%.0f%% of conflict flags were confirmed; consider lowering similarity threshold from 0.85 to 0.80", acceptRate*100)
+			} else {
+				rec.Recommended = rec.Current
+				rec.Rationale = fmt.Sprintf("Current threshold (0.85) is appropriate based on %.0f%% acceptance rate", acceptRate*100)
+			}
+		case "low_confidence":
+			rec.Current = 0.5
+			if rejectRate := float64(rejected) / float64(total); rejectRate > 0.3 {
+				rec.Recommended = 0.4
+				rec.Rationale = fmt.Sprintf("%.0f%% of low-confidence flags were rejected; consider lowering threshold from 0.5 to 0.4", rejectRate*100)
+			} else if acceptRate > 0.85 {
+				rec.Recommended = 0.6
+				rec.Rationale = fmt.Sprintf("%.0f%% of low-confidence flags were confirmed; consider raising threshold from 0.5 to 0.6", acceptRate*100)
+			} else {
+				rec.Recommended = rec.Current
+				rec.Rationale = fmt.Sprintf("Current threshold (%.1f) is appropriate based on %.0f%% acceptance rate", rec.Current, acceptRate*100)
+			}
+		default:
+			// For other reason types (stale, source_deleted), thresholds don't apply
+			rec.Recommended = rec.Current
+			rec.Rationale = "Threshold-based tuning not applicable for this reason type"
+		}
+
+		recs = append(recs, rec)
+	}
+
+	if recs == nil {
+		recs = []ThresholdRecommendation{}
+	}
+	return recs, rows.Err()
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
