@@ -51,6 +51,10 @@ type FactStore interface {
 	// Close shuts down the underlying gRPC connection.
 	Close() error
 
+	// GetVectorSize probes the vector dimension of a named collection.
+	// Returns 0 if the collection does not exist.
+	GetVectorSize(ctx context.Context, collectionName string) (uint64, error)
+
 	// GetPoints returns points by their IDs from the given collection.
 	GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
 

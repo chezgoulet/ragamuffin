@@ -218,22 +218,34 @@ func (p *Pruner) supersedeKeyPattern(ctx context.Context) {
 //
 // Recognized patterns: /vN/, /vN (at end), vN/ at start
 // where N is a positive integer.
+// When multiple version segments exist (e.g. api/v2/models/v3/config), the
+// LAST segment wins — nested API versions are more specific.
 func parseVersionedKey(key string) (prefix string, version int) {
 	parts := strings.Split(key, "/")
-	for i, part := range parts {
+	// Iterate in reverse so the last version segment wins
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
 		if len(part) > 1 && part[0] == 'v' {
-			var v int
-			for _, c := range part[1:] {
+			// Verify all remaining chars are digits (skip "vegetables")
+			digits := part[1:]
+			allDigits := len(digits) > 0
+			for _, c := range digits {
 				if c < '0' || c > '9' {
-					v = 0
+					allDigits = false
 					break
 				}
+			}
+			if !allDigits {
+				continue
+			}
+
+			var v int
+			for _, c := range digits {
 				v = v*10 + int(c-'0')
 			}
 			if v >= 1 {
 				// Reconstruct prefix from parts before the version segment
-				parts = parts[:i] // drop version and everything after
-				prefix = strings.Join(parts, "/")
+				prefix = strings.Join(parts[:i], "/")
 				return prefix, v
 			}
 		}

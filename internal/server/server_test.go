@@ -549,3 +549,34 @@ func TestEmbeddingFor_VaultContext_BothNil(t *testing.T) {
 		t.Error("expected nil when neither server nor per-vault embedder is configured")
 	}
 }
+
+// ── parseVersionFromKey ────────────────────────────────────────────────────────
+
+func TestParseVersionFromKey(t *testing.T) {
+	tests := []struct {
+		key     string
+		version int
+	}{
+		{"org/v2/decision", 2},
+		{"org/v10/decision", 10},
+		{"project/feature/v3", 3},
+		{"v1/key", 1},
+		{"noversion/key", 0},
+		{"org/v/key", 0},
+		{"org/v0/key", 0},
+		{"org/decision", 0},
+		{"", 0},
+		{"vegetables/price", 0},
+		{"api/v2/models/v3/config", 3},
+		{"v1/api/v2", 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			v := parseVersionFromKey(tt.key)
+			if v != tt.version {
+				t.Errorf("expected version %d, got %d", tt.version, v)
+			}
+		})
+	}
+}

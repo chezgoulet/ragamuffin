@@ -442,7 +442,48 @@ func (s *Server) ensureFactIndexes() {
 		return
 	}
 	ctx := context.Background()
-	collection := s.cfg.FactsCollection
+	factsCollection := s.cfg.FactsCollection
+
+	// Detect Qdrant schema mismatch: vector size changed between runs.
+	// Most common cause: switching embedding models with a different dimension.
+	if expected := s.cfg.FactsVectorSize; expected > 0 {
+		actual, err := s.facts.GetVectorSize(ctx, factsCollection)
+		if err != nil {
+			s.logger.Error("facts: cannot probe vector size — Qdrant may be unreachable",
+				"collection", factsCollection, "error", err)
+		} else if actual > 0 && actual != expected {
+			s.logger.Error("facts: Qdrant vector size mismatch — data was indexed with one embedding model and now the config expects a different size",
+				"collection", factsCollection,
+				"existing_size", actual,
+				"configured_size", expected,
+				"hint", "Delete the Qdrant collection or recreate it with the new vector size (qdrant_collection_recreate).")
+		}
+	}
+
+	// Also check the main chunk collection (different client, same Qdrant)
+	if s.qdrant != nil {
+		mainCollection := s.cfg.QdrantCollection
+		if mainCollection != "" && mainCollection != factsCollection {
+			expectedChunk := uint64(s.cfg.EmbeddingDims)
+			if s.cfg.ChunkVectorSize > 0 {
+				expectedChunk = s.cfg.ChunkVectorSize
+			}
+			if expectedChunk > 0 {
+				actual, err := s.qdrant.GetVectorSize(ctx, mainCollection)
+				if err != nil {
+					s.logger.Warn("main collection: cannot probe vector size",
+						"collection", mainCollection, "error", err)
+				} else if actual > 0 && actual != expectedChunk {
+					s.logger.Error("main collection: Qdrant vector size mismatch",
+						"collection", mainCollection,
+						"existing_size", actual,
+						"configured_size", expectedChunk,
+						"hint", "Delete the Qdrant collection or recreate it after changing the embedding model.")
+				}
+			}
+		}
+	}
+
 
 	indexes := map[string]string{
 		"status":            "keyword",
@@ -460,7 +501,7 @@ func (s *Server) ensureFactIndexes() {
 	}
 
 	for field, fieldType := range indexes {
-		if err := s.facts.CreatePayloadIndex(ctx, collection, field, fieldType); err != nil {
+		if err := s.facts.CreatePayloadIndex(ctx, factsCollection, field, fieldType); err != nil {
 			s.logger.Warn("facts payload index not created (may already exist)",
 				"field", field, "error", err)
 		}

@@ -152,7 +152,7 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-		if r := pointToReviewEntry(p, reasonFilter); r != nil {
+		if r := pointToReviewEntry(p, reasonFilter, s.cfg.PrunerLowConfidenceThreshold); r != nil {
 			entries = append(entries, *r)
 		}
 	}
@@ -169,7 +169,8 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 
 // pointToReviewEntry converts a Qdrant point to a reviewResponse with computed
 // review_reasons. Filters reasons by type if reasonFilter is non-empty.
-func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewResponse {
+// minConfidence is the threshold below which facts are flagged as low_confidence.
+func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfidence float64) *reviewResponse {
 	if p == nil {
 		return nil
 	}
@@ -231,10 +232,10 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string) *reviewRe
 	}
 
 	// Low confidence check
-	if r.Confidence != nil && *r.Confidence < 0.5 {
+	if r.Confidence != nil && *r.Confidence < minConfidence {
 		reasons = append(reasons, reviewReason{
 			Type:   "low_confidence",
-			Detail: fmt.Sprintf("Confidence is %.2f (below threshold 0.5)", *r.Confidence),
+			Detail: fmt.Sprintf("Confidence is %.2f (below threshold %.2f)", *r.Confidence, minConfidence),
 		})
 	}
 

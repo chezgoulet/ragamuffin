@@ -36,6 +36,10 @@ type reviewMockStore struct {
 
 func (m *reviewMockStore) Collection() string { return m.collection }
 
+func (m *reviewMockStore) GetVectorSize(_ context.Context, _ string) (uint64, error) {
+	return 4, nil // default facts vector size
+}
+
 func (m *reviewMockStore) GetPoints(_ context.Context, _ string, ids []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -808,7 +812,7 @@ func TestHandleReview_InvalidMethod(t *testing.T) {
 // ── pointToReviewEntry ────────────────────────────────────────────────────────
 
 func TestPointToReviewEntry_NilPoint(t *testing.T) {
-	if r := pointToReviewEntry(nil, ""); r != nil {
+	if r := pointToReviewEntry(nil, "", 0.5); r != nil {
 		t.Error("expected nil for nil point")
 	}
 }
@@ -819,7 +823,7 @@ func TestPointToReviewEntry_NotNeedsReview(t *testing.T) {
 		"fact_value": nv("v"),
 		"status":     nv("active"),
 	}}
-	if r := pointToReviewEntry(p, ""); r != nil {
+	if r := pointToReviewEntry(p, "", 0.5); r != nil {
 		t.Error("expected nil for non-needs_review status")
 	}
 }
@@ -828,7 +832,7 @@ func TestPointToReviewEntry_MissingKeyValue(t *testing.T) {
 	p := &qdrant.RetrievedPoint{Payload: map[string]*qdrant.Value{
 		"status": nv("needs_review"),
 	}}
-	if r := pointToReviewEntry(p, ""); r != nil {
+	if r := pointToReviewEntry(p, "", 0.5); r != nil {
 		t.Error("expected nil for missing key/value")
 	}
 }

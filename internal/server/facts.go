@@ -801,16 +801,16 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 // parseVersionFromKey detects a version segment in a fact key and returns
 // the integer version value. Returns 0 if no version pattern is found.
 // Recognized patterns: /vN/, /vN at end, vN/ at start.
+// When multiple version segments exist (e.g. api/v2/models/v3/config), the
+// LAST segment wins — nested API versions are more specific.
 func parseVersionFromKey(key string) int {
 	parts := strings.Split(key, "/")
-	for _, part := range parts {
-		if len(part) > 1 && part[0] == 'v' {
+	// Iterate in reverse so the last version segment wins
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
+		if len(part) > 1 && part[0] == 'v' && isAllDigits(part[1:]) {
 			var v int
 			for _, c := range part[1:] {
-				if c < '0' || c > '9' {
-					v = 0
-					break
-				}
 				v = v*10 + int(c-'0')
 			}
 			if v >= 1 {
@@ -819,6 +819,16 @@ func parseVersionFromKey(key string) int {
 		}
 	}
 	return 0
+}
+
+// isAllDigits returns true if s is non-empty and every character is a decimal digit.
+func isAllDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // versionKeyPrefix returns the key prefix (everything before the version
