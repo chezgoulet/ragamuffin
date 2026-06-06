@@ -47,6 +47,9 @@ Final section text.
 		if chunks[i].SourceFile != "test.md" {
 			t.Errorf("chunk %d: source = %q, want test.md", i, chunks[i].SourceFile)
 		}
+		if chunks[i].FirstParagraph == "" {
+			t.Errorf("chunk %d: FirstParagraph should not be empty", i)
+		}
 	}
 
 	t.Run("chunk indices are sequential", func(t *testing.T) {
@@ -250,6 +253,30 @@ func TestSplitSentences(t *testing.T) {
 	}
 	if result[2] != "Third sentence." {
 		t.Errorf("third = %q", result[2])
+	}
+}
+
+func TestExtractFirstParagraph(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "empty", text: "", want: ""},
+		{name: "short_text", text: "hello world", want: "hello world"},
+		{name: "double_newline", text: "first paragraph\n\nsecond paragraph", want: "first paragraph"},
+		{name: "capped_at_200", text: strings.Repeat("a", 250), want: strings.Repeat("a", 200)},
+		{name: "newline_before_cap", text: strings.Repeat("a", 100) + "\n\n" + strings.Repeat("b", 100), want: strings.Repeat("a", 100)},
+		{name: "cap_beats_newline", text: strings.Repeat("a", 250) + "\n\n" + "trailing", want: strings.Repeat("a", 200)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractFirstParagraph(tt.text)
+			if got != tt.want {
+				t.Errorf("extractFirstParagraph() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

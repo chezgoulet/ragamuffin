@@ -347,6 +347,7 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 
 			payload := map[string]*pb.Value{
 				"text":              {Kind: &pb.Value_StringValue{StringValue: c.Text}},
+				"first_paragraph":   {Kind: &pb.Value_StringValue{StringValue: c.FirstParagraph}},
 				"source_file":       {Kind: &pb.Value_StringValue{StringValue: c.SourceFile}},
 				"header":            {Kind: &pb.Value_StringValue{StringValue: c.Header}},
 				"chunk_index":       {Kind: &pb.Value_IntegerValue{IntegerValue: int64(c.ChunkIndex)}},

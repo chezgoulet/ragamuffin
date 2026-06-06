@@ -74,6 +74,20 @@ assert_status "POST /recall returns 200" "0" "$RC" "$RESP"
 assert_field_type "recall has results" "results" "list" "$RESP"
 assert_field_type "recall has top_score" "top_score" "float" "$RESP"
 
+# /recall: verify first_paragraph is returned
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":3}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  # Check first result has first_paragraph field
+  result=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('first_paragraph','MISSING') if r else 'NO_RESULTS')" 2>/dev/null || echo "PARSE_ERROR")
+  if [ "$result" = "MISSING" ] || [ "$result" = "PARSE_ERROR" ]; then
+    red "recall first_paragraph field" "not found in response"
+  else
+    green "recall first_paragraph field present"
+  fi
+fi
+
 # /recall error: missing query
 RESP=$(curl -s -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
