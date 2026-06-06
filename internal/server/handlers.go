@@ -395,17 +395,18 @@ func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	pt, err := s.qdrantFor(ctx).Get(ctx, pointID)
+	qc := s.qdrantFor(ctx)
+	pts, err := qc.GetPoints(ctx, qc.Collection(), []*pb.PointId{pointID})
 	if err != nil {
 		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("qdrant get failed: %s", err))
 		return
 	}
-	if pt == nil {
+	if len(pts) == 0 {
 		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("chunk with ID %s not found", chunkID))
 		return
 	}
 
-	payload := pt.GetPayload()
+	payload := pts[0].GetPayload()
 	resp := map[string]interface{}{
 		"chunk_id":   chunkID,
 		"source_file": "",
