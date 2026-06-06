@@ -169,7 +169,37 @@ One field, not two — vault isolation already serves as namespace.
 
 Debt cleanup, operational UX, and internal quality. No new features for end-users.
 
-### 8. MCP-to-REST Adapter Layer
+### 8. Long-Term Memory Benchmarks
+
+**The problem:** Ragamuffin has no published benchmarks. Before v1.0 release, we need
+credible numbers on established long-term-memory benchmarks so operators can evaluate
+Ragamuffin's capabilities and track regressions across releases.
+
+**The approach:** A Python harness in `benchmarks/` that runs Ragamuffin against:
+
+- **LongMemEval** (`github.com/xiaowu0162/LongMemEval`) — 500 curated questions,
+  5 abilities (extraction, multi-session reasoning, temporal reasoning, knowledge
+  updates, abstention). Test on the "S" setting (16K–26K token histories).
+- **LoCoMo** (`github.com/Backboard-io/Backboard-Locomo-Benchmark`) — 1,986 QA pairs
+  across 10 conversations, excluding category 5 (adversarial) per standard practice.
+
+Four configurations tested against each benchmark:
+| Config | Description |
+|--------|-------------|
+| A | Pure vector search (`/recall` only) |
+| B | Recall + facts (hybrid) |
+| C | Tiered recall with detail levels (depends on v0.7) |
+| D | Fact lifecycle integration |
+
+Scored via LLM-as-judge. Results published to `benchmarks/RESULTS.md` with full
+configuration, date, and Ragamuffin version. Honest scores expected: 55-65%;
+temporal/multi-hop will likely lag behind purpose-built memory systems.
+
+No new Go code — Python `requests` + stdlib calling Ragamuffin's HTTP API.
+
+**Reference:** Issue #451, SPEC-benchmark.md at `benchmarks/SPEC-benchmark.md`.
+
+### 9. MCP-to-REST Adapter Layer
 
 **The problem:** `mcp_handlers.go` is 983 lines that largely duplicate REST
 handler logic with minor type conversions. Every REST bugfix needs manual
@@ -187,7 +217,7 @@ is injected from the MCP caller's identity.
 
 Expected reduction: ~983 lines → ~500 lines.
 
-### 9. Shared Utility Extraction
+### 10. Shared Utility Extraction
 
 **The problem:** Several utility functions are duplicated across packages. The
 `getPayloadString` family, `isIndexable`, and response helpers are copied across
@@ -202,7 +232,7 @@ Expected reduction: ~983 lines → ~500 lines.
 - `internal/server/response.go` — extract `writeError`, `writeJSON`, `errResp`
   from server.go (intra-package reorganization)
 
-### 10. Review Queue Dashboard
+### 11. Review Queue Dashboard
 
 **The problem:** The review queue is only accessible via curl or MCP tools. The
 embedded web UI (`web/`) is minimal. Operators need a lightweight dashboard to
@@ -230,7 +260,7 @@ Everything in v0.6–0.8 is about building the machine. v0.9 is about proving it
 won't fall over. Every item in this tier was chosen because it would have caused
 a real incident during the first week of unattended production on TrueNAS.
 
-### 11. OIDC-Native Authentication
+### 12. OIDC-Native Authentication
 
 **The problem:** Ragamuffin's auth model uses static pre-shared API keys
 (`AUTH_READ_KEY`, `AUTH_WRITE_KEY`). Every agent shares the same key for a given
@@ -360,7 +390,7 @@ Checklist:
 
 - [ ] v0.6: Sessions, vault-isolated facts, configurable embedding dims
 - [ ] v0.7: Fact-to-chunk bridge, adaptive pruner, webhooks, versioned supersede
-- [ ] v0.8: MCP adapter refactor, utility extraction, review dashboard
+- [ ] v0.8: Benchmarks, MCP adapter refactor, utility extraction, review dashboard
 - [ ] v0.9: OIDC auth, graceful TrueNAS lifecycle, ZFS watcher, logstore hygiene,
       restore-from-snapshot recovery
 - [ ] SPEC-MCP.md stable (no breaking changes on main for 30 days)
@@ -390,4 +420,4 @@ Items that are real but don't make the current priority cut.
 
 ---
 
-*Last updated: 2026-05-24*
+*Last updated: 2026-06-06*
