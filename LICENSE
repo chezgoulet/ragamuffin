@@ -1,23 +1,42 @@
-Copyright (C) 2026 Christopher Goulet.
-Copyright (C) 2026 ChezGoulet.org (Vermont LLC).
+---
+title: GNU Affero General Public License v3.0
+spdx-id: AGPL-3.0
+nickname: GNU AGPLv3
+redirect_from: /licenses/agpl/
+hidden: false
 
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU Affero General Public License as
-published by the Free Software Foundation, either version 3 of the
-License, or (at your option) any later version.
+description: Permissions of this strongest copyleft license are conditioned on making available complete source code of licensed works and modifications, which include larger works using a licensed work, under the same license. Copyright and license notices must be preserved. Contributors provide an express grant of patent rights. When a modified version is used to provide a service over a network, the complete source code of the modified version must be made available.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU Affero General Public License for more details.
+how: Create a text file (typically named LICENSE or LICENSE.txt) in the root of your source code and copy the text of the license into the file.
 
-You should have received a copy of the GNU Affero General Public License
-along with this program.  If not, see <https://www.gnu.org/licenses/>.
+note: The Free Software Foundation recommends taking the additional step of adding a boilerplate notice to the top of each file. The boilerplate can be found at the end of the license.
+
+using:
+  Grafana: https://github.com/grafana/grafana/blob/main/LICENSE
+  Mastodon: https://github.com/mastodon/mastodon/blob/main/LICENSE
+  Nextcloud Server: https://github.com/nextcloud/server/blob/master/COPYING
+
+permissions:
+  - commercial-use
+  - modifications
+  - distribution
+  - patent-use
+  - private-use
+
+conditions:
+  - include-copyright
+  - document-changes
+  - disclose-source
+  - network-use-disclose
+  - same-license
+
+limitations:
+  - liability
+  - warranty
 
 ---
-Full license text follows:
 
-GNU AFFERO GENERAL PUBLIC LICENSE
+                    GNU AFFERO GENERAL PUBLIC LICENSE
                        Version 3, 19 November 2007
 
  Copyright (C) 2007 Free Software Foundation, Inc. <https://fsf.org/>
@@ -652,8 +671,8 @@ the "copyright" line and a pointer to where the full notice is found.
     Copyright (C) <year>  <name of author>
 
     This program is free software: you can redistribute it and/or modify
-    it under the terms of the GNU Affero General Public License as published by
-    the Free Software Foundation, either version 3 of the License, or
+    it under the terms of the GNU Affero General Public License as published
+    by the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
 
     This program is distributed in the hope that it will be useful,
