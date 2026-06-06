@@ -534,7 +534,7 @@ RAGAMUFFIN_GIT_TOKEN=ghp_...                        # For PR mode (optional)
 # v0.4 Events — subscribe to vault changes via CloudEvents v1.0 webhook
 # When set, Ragamuffin emits vault.file.changed, vault.file.deleted, and
 # ragamuffin.started events as HTTP POST with Content-Type: application/cloudevents+json
-RAGAMUFFIN_EVENT_WEBHOOK_URL=http://listener:8080/events
+RAGAMUFFIN_EVENT_WEBHOOK_URL=http://listener:8000/events
 
 # v0.4 Multi-tenancy & Auth
 RAGAMUFFIN_VAULTS=docs:/path/to/docs,code:/path/to/code   # Multi-tenant vaults

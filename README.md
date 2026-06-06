@@ -574,24 +574,6 @@ curl -s -X POST http://localhost:8000/vault/agent::robot/recall \
 }
 ```
 
-#### `GET /v1/vaults/:name/health` — Check vault readiness
-
-Used during agent startup to confirm the vault is reachable and ready.
-
-```bash
-curl -s http://localhost:8000/v1/vaults/agent::dev/health
-```
-
-**Response:**
-```json
-{
-  "name": "agent::dev",
-  "exists": true,
-  "collection": "agent::dev",
-  "indexed": 142
-}
-```
-
 #### `GET /v1/sessions` — List sessions (placeholder)
 
 #### `GET /v1/sessions` — List sessions
@@ -1585,7 +1567,6 @@ fact lifecycle. Each scan type can be configured independently.
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past TTL expiry before a fact is flagged stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Pairs per conflict scan cycle |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Below this → flagged `needs_review` |
-| `RAGAMUFFIN_PRUNER_CONFIDENCE_BOOST` | `0.1` | Added on operator accept via review queue |
 
 **Scan types:**
 
