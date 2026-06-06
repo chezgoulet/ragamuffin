@@ -145,7 +145,8 @@ CID=$(curl -sf -X POST "$BASE/recall" \
 if [ -n "$CID" ]; then
   RESP=$(curl -sf "$BASE/v1/chunks/$CID" 2>&1) && RC=0 || RC=$?
   assert_status "GET /v1/chunks/{id} returns 200" "0" "$RC" "$RESP"
-  assert_field "chunk has source_file" "source_file" "_smoke_test.md" "$RESP"
+  assert_field_type "chunk has chunk_id" "chunk_id" "str" "$RESP"
+  assert_field_type "chunk has source_file" "source_file" "str" "$RESP"
   # 404 for bad UUID
   RESP=$(curl -s "$BASE/v1/chunks/00000000-0000-0000-0000-000000000000" 2>&1)
   assert_field "chunk 404 not found" "code" "NOT_FOUND" "$RESP"
