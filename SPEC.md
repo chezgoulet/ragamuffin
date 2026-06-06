@@ -177,6 +177,7 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `score_threshold` | float | no | 0.0 | Minimum similarity score (0.0–1.0) |
 | `source_filter` | string | no | — | Restrict to files under this path prefix |
 | `detail` | string | no | `l2` | Response detail level: `l0` (no text/first_paragraph), `l1` (first_paragraph only), `l2` (full) |
+| `time_filter` | string | no | `active` | Temporal filter: `active` (current index state), `active_at:<RFC3339>`, or `all`. `active_at` limits to chunks indexed before a point in time. |
 
 **Response:**
 ```json
@@ -425,6 +426,8 @@ incremented.
 | `tags` | array[string] | no | [] | Tags for filtering. |
 | `confidence` | float | no | 1.0 | 0.0–1.0. |
 | `ttl_days` | integer | no | 0 | Days until auto-expiry. 0 = never. |
+| `valid_from` | string | no | `created_at` | RFC 3339 timestamp; when this fact becomes effective |
+| `valid_until` | string | no | — | RFC 3339 timestamp; when this fact expires (null = no expiry) |
 
 **Response (200):**
 ```json
@@ -448,6 +451,8 @@ incremented.
   "created_at": "2026-05-09T10:21:13Z",
   "updated_at": "2026-05-10T14:30:00Z",
   "expires_at": "",
+  "valid_from": "2026-05-09T10:21:13Z",
+  "valid_until": "",
   "related_chunks": null
 }
 ```
@@ -556,6 +561,7 @@ List facts with optional filters. Supports key prefix, tag, and status filters.
 | `prefix` | string | no | — | Key prefix filter. |
 | `tag` | string | no | — | Filter by tag value. |
 | `status` | string | no | — | One of: `active`, `needs_review`, `superseded`, `rejected`. |
+| `time_filter` | string | no | `active` | Temporal filter: `active` (currently valid), `active_at:<RFC3339>`, or `all`. |
 | `limit` | integer | no | 100 | Max results (1–1000). |
 
 **Response:**
@@ -582,6 +588,8 @@ List facts with optional filters. Supports key prefix, tag, and status filters.
       "created_at": "2026-05-09T10:21:13Z",
       "updated_at": "2026-05-10T14:30:00Z",
       "expires_at": "",
+      "valid_from": "2026-05-09T10:21:13Z",
+      "valid_until": "",
       "related_chunks": null
     }
   ],
@@ -1353,6 +1361,8 @@ RAGAMUFFIN_PRUNER_STALE_INTERVAL=24h
 RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL=72h
 RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL=24h
 RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL=24h
+# RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL=24h — how often to scan for facts past valid_until
+RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL=24h
 RAGAMUFFIN_PRUNER_STALE_DAYS=90
 RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE=50
 RAGAMUFFIN_PRUNER_CONFLICT_THRESHOLD=0.85
@@ -1436,6 +1446,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | no | `72h` | How often to scan for semantic conflicts |
 | `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | no | `24h` | How often to scan for supersession chains |
 | `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL` | no | `24h` | How often to check fact source staleness |
+| `RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL` | no | `24h` | How often to scan for facts with `valid_until` in the past |
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | no | `90` | Days without update before marked stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | no | `50` | Fact pairs to compare per conflict scan |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | no | `0.5` | Below this → flag `needs_review` |

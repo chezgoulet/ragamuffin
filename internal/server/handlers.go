@@ -176,6 +176,7 @@ type recallRequest struct {
 	SourceFilter   string         `json:"source_filter"`
 	Filters        *recallFilters `json:"filters,omitempty"`
 	Detail         string         `json:"detail"`
+	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
 }
 
 type recallResult struct {
@@ -313,8 +314,33 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build recall filters, applying time_filter if set
+	filter := recallFilter(req)
+	if isTemporalRecall(req.TimeFilter) {
+		dateTo := temporalRecallDate(req.TimeFilter)
+		if dateTo != "" {
+			conditions := []*pb.Condition{
+				{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "file_last_updated",
+							Range: &pb.Range{
+								Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+							},
+						},
+					},
+				},
+			}
+			if filter != nil {
+				filter.Must = append(filter.Must, conditions...)
+			} else {
+				filter = &pb.Filter{Must: conditions}
+			}
+		}
+	}
+
 	// Search Qdrant
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, recallFilter(req))
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
 	if err != nil {
 		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
 		return
@@ -863,4 +889,33 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		"vault":   vaultName,
 		"message": "Re-index started. Monitor progress via /health.",
 	})
+}
+
+// ── Temporal recall helpers ────────────────────────────────────────────────
+
+// isTemporalRecall returns true if the time_filter value is active or active_at:*.
+func isTemporalRecall(mode string) bool {
+	return mode == "active" || strings.HasPrefix(mode, "active_at:")
+}
+
+// temporalRecallDate extracts the date from "active_at:2006-01-02" or returns empty.
+func temporalRecallDate(mode string) string {
+	if strings.HasPrefix(mode, "active_at:") {
+		return strings.TrimPrefix(mode, "active_at:")
+	}
+	if mode == "active" {
+		return time.Now().UTC().Format(time.RFC3339)
+	}
+	return ""
+}
+
+// parseRFC3339Unix parses RFC 3339 or YYYY-MM-DD and returns Unix seconds as float64.
+func parseRFC3339Unix(s string) float64 {
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return float64(t.Unix())
+	}
+	if t, err := time.Parse("2006-01-02", s); err == nil {
+		return float64(t.Unix())
+	}
+	return 0
 }

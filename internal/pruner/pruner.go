@@ -40,6 +40,7 @@ type PrunerConfig struct {
 	ConflictScanInterval   time.Duration // default 72h
 	SupersedeScanInterval  time.Duration // default 24h
 	SourceStaleScanInterval time.Duration // default 0 (disabled)
+	ExpiredScanInterval    time.Duration // default 24h — flags facts with valid_until < now
 	StaleDays              int           // default 90 — facts past this TTL expiry are flagged
 	ConflictSampleSize     int           // default 50 — pairs per scan cycle
 	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
@@ -69,6 +70,7 @@ func DefaultConfig() PrunerConfig {
 		ConflictScanInterval:    72 * time.Hour,
 		SupersedeScanInterval:  24 * time.Hour,
 		SourceStaleScanInterval: 0,
+		ExpiredScanInterval:    24 * time.Hour,
 		StaleDays:               90,
 		ConflictSampleSize:      50,
 		LowConfidenceThreshold:  0.5,
@@ -270,6 +272,9 @@ func (p *Pruner) Run(ctx context.Context) {
 	}
 	if p.cfg.SourceStaleScanInterval > 0 {
 		go p.runScan(ctx, "SourceStaleScan", p.cfg.SourceStaleScanInterval, p.sourceStaleScan)
+	}
+	if p.cfg.ExpiredScanInterval > 0 {
+		go p.runScan(ctx, "ExpiredScan", p.cfg.ExpiredScanInterval, p.expiredScan)
 	}
 
 	// Also run a one-time low-confidence scan

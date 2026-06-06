@@ -359,6 +359,7 @@ func main() {
 	prunerCfg.ConflictScanInterval = cfg.PrunerConflictInterval
 	prunerCfg.SupersedeScanInterval = cfg.PrunerSupersedeInterval
 	prunerCfg.SourceStaleScanInterval = cfg.PrunerSourceStaleInterval
+	prunerCfg.ExpiredScanInterval = cfg.PrunerExpiredInterval
 	prunerCfg.StaleDays = cfg.PrunerStaleDays
 	prunerCfg.ConflictSampleSize = cfg.PrunerConflictSampleSize
 	prunerCfg.ConflictThreshold = cfg.PrunerConflictThreshold

@@ -42,9 +42,11 @@ type factPayload struct {
 	TTLDays       *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
 	Version       *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
 	RelatedChunks []string `json:"related_chunks,omitempty"` // server-populated; ignored on upsert
+	ValidFrom     *string  `json:"valid_from,omitempty"`   // RFC 3339; default = created_at
+	ValidUntil    *string  `json:"valid_until,omitempty"`  // RFC 3339; null = no expiry
 }
 
-// factResponse is the JSON response for a single fact (v0.5 lifecycle).
+// factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
 	Key              string   `json:"key"`
 	Value            string   `json:"value"`
@@ -66,6 +68,8 @@ type factResponse struct {
 	UpdatedAt        string   `json:"updated_at"`
 	ExpiresAt        string   `json:"expires_at,omitempty"`
 	RelatedChunks    []string `json:"related_chunks,omitempty"`
+	ValidFrom        string   `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil       string   `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
 }
 
 // factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
@@ -84,6 +88,8 @@ type factUpdateRequest struct {
 	ConfirmationCount *int     `json:"confirmation_count,omitempty"`
 	LastConfirmedAt  *string   `json:"last_confirmed_at,omitempty"`
 	TTLDays          *int      `json:"ttl_days,omitempty"`
+	ValidFrom        *string   `json:"valid_from,omitempty"`  // RFC 3339; set to "" to clear
+	ValidUntil       *string   `json:"valid_until,omitempty"` // RFC 3339; set to "" to clear
 }
 
 // factBulkUpdateRequest is the JSON body for PATCH /v1/facts (bulk update).
@@ -240,6 +246,26 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		version = parseVersionFromKey(fp.Key)
 	}
 
+	validFrom := createdAt
+	if fp.ValidFrom != nil && *fp.ValidFrom != "" {
+		validFrom = *fp.ValidFrom
+	}
+	validUntil := ""
+	if fp.ValidUntil != nil {
+		validUntil = *fp.ValidUntil
+	}
+
+	// Compute unix timestamps for Qdrant range filtering
+	var validFromUnix, validUntilUnix float64
+	if t, err := time.Parse(time.RFC3339, validFrom); err == nil {
+		validFromUnix = float64(t.Unix())
+	}
+	if validUntil != "" {
+		if t, err := time.Parse(time.RFC3339, validUntil); err == nil {
+			validUntilUnix = float64(t.Unix())
+		}
+	}
+
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":          fp.Key,
 		"key_prefix":        versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
@@ -262,6 +288,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"ttl_days":          intValue(fp.TTLDays),
 		"expires_at":        expiresAt,
 		"expires_at_unix":   expiresAtUnix,
+		"valid_from":        validFrom,
+		"valid_from_unix":   validFromUnix,
+		"valid_until":       validUntil,
+		"valid_until_unix":  validUntilUnix,
 	})
 	// Contradicts: empty list (server-managed)
 	payload["contradicts"] = &qdrant.Value{
@@ -343,6 +373,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	tag := r.URL.Query().Get("tag")
 	status := r.URL.Query().Get("status")
 	conflictResolvedStr := r.URL.Query().Get("conflict_resolved")
+	timeFilterMode := r.URL.Query().Get("time_filter")
 
 	// Exact key lookup
 	if key != "" {
@@ -422,6 +453,11 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
+	}
+
+	// Apply temporal filter
+	if tf := timeFilter(timeFilterMode); tf != nil {
+		conditions = append(conditions, tf)
 	}
 
 	var filter *qdrant.Filter
@@ -529,6 +565,27 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 	applyFieldUpdate(payload, "status", req.Status)
 	applyFieldUpdate(payload, "supersedes", req.Supersedes)
 	applyFieldUpdate(payload, "refines", req.Refines)
+	applyFieldUpdate(payload, "valid_from", req.ValidFrom)
+	applyFieldUpdate(payload, "valid_until", req.ValidUntil)
+	// Propagate unix timestamp for range filtering
+	if req.ValidFrom != nil {
+		if t, err := time.Parse(time.RFC3339, *req.ValidFrom); err == nil {
+			payload["valid_from_unix"] = qutil.Nv(float64(t.Unix()))
+		} else {
+			payload["valid_from_unix"] = qutil.Nv(float64(0))
+		}
+	}
+	if req.ValidUntil != nil {
+		if *req.ValidUntil != "" {
+			if t, err := time.Parse(time.RFC3339, *req.ValidUntil); err == nil {
+				payload["valid_until_unix"] = qutil.Nv(float64(t.Unix()))
+			} else {
+				payload["valid_until_unix"] = qutil.Nv(float64(0))
+			}
+		} else {
+			payload["valid_until_unix"] = qutil.Nv(float64(0))
+		}
+	}
 	if req.Supports != nil {
 		sv := make([]*qdrant.Value, len(*req.Supports))
 		for i, s := range *req.Supports {
@@ -647,6 +704,12 @@ func buildPatchUpdates(updates factUpdateRequest) map[string]*qdrant.Value {
 	}
 	if updates.LastConfirmedAt != nil {
 		m["last_confirmed_at"] = qutil.Nv(*updates.LastConfirmedAt)
+	}
+	if updates.ValidFrom != nil {
+		m["valid_from"] = qutil.Nv(*updates.ValidFrom)
+	}
+	if updates.ValidUntil != nil {
+		m["valid_until"] = qutil.Nv(*updates.ValidUntil)
 	}
 	if updates.TTLDays != nil {
 		ttl := *updates.TTLDays
@@ -1223,6 +1286,8 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.UpdatedAt, _ = qutil.GetPayloadString(payload, "updated_at")
 	fr.ExpiresAt, _ = qutil.GetPayloadString(payload, "expires_at")
 	fr.RelatedChunks = qutil.GetPayloadStringList(payload, "related_chunks")
+	fr.ValidFrom, _ = qutil.GetPayloadString(payload, "valid_from")
+	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1331,6 +1396,109 @@ func intValue(p *int) int {
 		return 0
 	}
 	return *p
+}
+
+// timeFilter builds a Qdrant Must condition for temporal filtering.
+// Modes:
+//   - "active" or "": valid_from <= now < valid_until (or no bounds = always active)
+//   - "active_at:2006-01-02T15:04:05Z": effective at a specific point in time
+//   - "all": no filter (returns nil)
+func timeFilter(mode string) *qdrant.Condition {
+	if mode == "all" {
+		return nil
+	}
+
+	now := time.Now().UTC()
+	target := now
+
+	if strings.HasPrefix(mode, "active_at:") {
+		ts := strings.TrimPrefix(mode, "active_at:")
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			target = t
+		} else if t, err := time.Parse("2006-01-02", ts); err == nil {
+			target = t
+		} else {
+			// Invalid timestamp — default to now
+			target = now
+		}
+	}
+
+	targetUnix := float64(target.Unix())
+
+	// Must: valid_from_unix <= target AND (valid_until_unix == 0 OR target < valid_until_unix)
+	return &qdrant.Condition{
+		ConditionOneOf: &qdrant.Condition_Filter{
+			Filter: &qdrant.Filter{
+				Must: []*qdrant.Condition{
+					// valid_from_unix <= target (or valid_from_unix == 0 for unset)
+					{
+						ConditionOneOf: &qdrant.Condition_Filter{
+							Filter: &qdrant.Filter{
+								Should: []*qdrant.Condition{
+									{
+										ConditionOneOf: &qdrant.Condition_Field{
+											Field: &qdrant.FieldCondition{
+												Key: "valid_from_unix",
+												Range: &qdrant.Range{
+													Lte: &targetUnix,
+												},
+											},
+										},
+									},
+									{
+										ConditionOneOf: &qdrant.Condition_Field{
+											Field: &qdrant.FieldCondition{
+												Key: "valid_from_unix",
+												Range: &qdrant.Range{
+													Gte: float64Ptr(0),
+													Lte: float64Ptr(0),
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					// (valid_until_unix == 0 OR target < valid_until_unix)
+					{
+						ConditionOneOf: &qdrant.Condition_Filter{
+							Filter: &qdrant.Filter{
+								Should: []*qdrant.Condition{
+									{
+										ConditionOneOf: &qdrant.Condition_Field{
+											Field: &qdrant.FieldCondition{
+												Key: "valid_until_unix",
+												Range: &qdrant.Range{
+													Gte: float64Ptr(0),
+													Lte: float64Ptr(0),
+												},
+											},
+										},
+									},
+									{
+										ConditionOneOf: &qdrant.Condition_Field{
+											Field: &qdrant.FieldCondition{
+												Key: "valid_until_unix",
+												Range: &qdrant.Range{
+													Gt: &targetUnix,
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// float64Ptr returns a pointer to the given float64 value.
+func float64Ptr(v float64) *float64 {
+	return &v
 }
 
 // ── Payload extraction helpers ───────────────────────────────────────────
