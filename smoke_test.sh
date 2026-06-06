@@ -243,6 +243,51 @@ RESP=$(curl -s -X POST "$BASE/mcp" \
   -d '{"jsonrpc":"2.0","id":3,"method":"nonexistent","params":{}}' 2>&1)
 assert_field "MCP unknown method" "code" "-32601" "$RESP"
 
+# MCP recall with detail=l0 — no text
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l0"}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
+  if [ "$has_text" = "no" ]; then green "MCP recall detail=l0 no text"; else red "MCP recall detail=l0" "text field present: $has_text"; fi
+fi
+
+# MCP recall with detail=l1 — first_paragraph present, no text
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l1"}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
+  has_fp=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'first_paragraph' in res else 'no')" 2>/dev/null)
+  if [ "$has_text" = "no" ]; then green "MCP recall detail=l1 text absent"; else red "MCP recall detail=l1" "text present: $has_text"; fi
+  if [ "$has_fp" = "yes" ]; then green "MCP recall detail=l1 first_paragraph present"; else red "MCP recall detail=l1" "first_paragraph missing"; fi
+fi
+
+# MCP get_chunk — call recall to get a chunk_id, then retrieve it
+MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1}}}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  CID_MCP=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print(res.get('chunk_id',''))" 2>/dev/null || echo "")
+  if [ -n "$CID_MCP" ]; then
+    GET_RESULT=$(curl -sf -X POST "$BASE/mcp" \
+      -H 'Content-Type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"ragamuffin_get_chunk\",\"arguments\":{\"chunk_id\":\"$CID_MCP\"}}}" 2>&1) && RC2=0 || RC2=$?
+    if [ "$RC2" = "0" ]; then
+      has_src=$(echo "$GET_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); print('yes' if 'source_file' in o else 'no')" 2>/dev/null)
+      if [ "$has_src" = "yes" ]; then
+        green "MCP get_chunk full payload"
+      else
+        red "MCP get_chunk" "no source_file in response"
+      fi
+    else
+      red "MCP get_chunk" "call failed (RC=$RC2)"
+    fi
+  else
+    red "MCP get_chunk" "could not get chunk_id from recall"
+  fi
+fi
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

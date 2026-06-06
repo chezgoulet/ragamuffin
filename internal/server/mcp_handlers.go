@@ -32,6 +32,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 					"top_k":           map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 10)"},
 					"score_threshold": map[string]interface{}{"type": "number", "description": "Minimum similarity score 0.0-1.0"},
 					"source_filter":   map[string]interface{}{"type": "string", "description": "Restrict to files under this path prefix"},
+					"detail":          map[string]interface{}{"type": "string", "description": "Response detail level: l0 (header only), l1 (first paragraph), l2 (full text, default)", "enum": []interface{}{"l0", "l1", "l2"}},
 				},
 				"required": []string{"query"},
 			},
@@ -179,6 +180,18 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
+			Name:        "ragamuffin_get_chunk",
+			Description: "Retrieve a single chunk by its chunk_id. Returns full text, source, and metadata. Use chunk_id from ragamuffin_recall results.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"chunk_id": map[string]interface{}{"type": "string", "description": "UUID chunk ID from recall results"},
+					"vault":    map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"chunk_id"},
+			},
+		},
+		{
 			Name:        "ragamuffin_turn_append",
 			Description: "Append a turn to an existing session.",
 			InputSchema: map[string]interface{}{
@@ -210,6 +223,8 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 	switch toolName {
 	case "ragamuffin_recall":
 		return s.mcpRecall(ctx, args)
+	case "ragamuffin_get_chunk":
+		return s.mcpChunkGet(ctx, args)
 	case "ragamuffin_ask":
 		return s.mcpAsk(ctx, args)
 	case "ragamuffin_store":
@@ -255,6 +270,14 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 
 	sourceFilter, _ := args["source_filter"].(string)
 
+	detail, _ := args["detail"].(string)
+	if detail == "" {
+		detail = "l2"
+	}
+	if detail != "l0" && detail != "l1" && detail != "l2" {
+		return nil, fmt.Errorf("detail must be one of: l0, l1, l2")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -272,13 +295,17 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 	var topScore float32
 	for _, r := range results {
 		res := map[string]interface{}{
-			"score": r.Score,
+			"score":    r.Score,
+			"chunk_id": r.Id.GetUuid(),
 		}
 		if r.Score > topScore {
 			topScore = r.Score
 		}
 		if v, ok := r.Payload["text"]; ok {
 			res["text"] = v.GetStringValue()
+		}
+		if v, ok := r.Payload["first_paragraph"]; ok {
+			res["first_paragraph"] = v.GetStringValue()
 		}
 		if v, ok := r.Payload["source_file"]; ok {
 			res["source_file"] = v.GetStringValue()
@@ -292,6 +319,17 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 		if v, ok := r.Payload["file_last_updated"]; ok {
 			res["file_last_updated"] = v.GetStringValue()
 		}
+
+		// Apply detail-level field filtering
+		switch detail {
+		case "l0":
+			delete(res, "text")
+			delete(res, "first_paragraph")
+		case "l1":
+			delete(res, "text")
+		}
+		// l2: include everything
+
 		out = append(out, res)
 	}
 
@@ -299,6 +337,66 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 		"results":   out,
 		"top_score": topScore,
 	}, nil
+}
+
+// ── ragamuffin_get_chunk ───────────────────────────────────────────────────────
+
+func (s *Server) mcpChunkGet(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	chunkID, _ := args["chunk_id"].(string)
+	if chunkID == "" {
+		return nil, fmt.Errorf("chunk_id is required")
+	}
+
+	uid, err := uuid.Parse(chunkID)
+	if err != nil {
+		return nil, fmt.Errorf("chunk_id must be a valid UUID")
+	}
+	pointID := pb.NewIDUUID(uid.String())
+
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	qc := s.qdrantFor(ctx)
+	pts, err := qc.GetPoints(ctx, qc.Collection(), []*pb.PointId{pointID})
+	if err != nil {
+		return nil, fmt.Errorf("chunk retrieval failed: %w", err)
+	}
+	if len(pts) == 0 {
+		return nil, fmt.Errorf("chunk with ID %s not found", chunkID)
+	}
+
+	pt := pts[0]
+	payload := pt.GetPayload()
+
+	resp := map[string]interface{}{
+		"chunk_id":   chunkID,
+		"source_file": "",
+		"header":     "",
+		"text":       "",
+		"chunk_index": 0,
+		"file_last_updated": "",
+	}
+
+	if v, ok := payload["source_file"]; ok {
+		resp["source_file"] = v.GetStringValue()
+	}
+	if v, ok := payload["header"]; ok {
+		resp["header"] = v.GetStringValue()
+	}
+	if v, ok := payload["text"]; ok {
+		resp["text"] = v.GetStringValue()
+	}
+	if v, ok := payload["first_paragraph"]; ok {
+		resp["first_paragraph"] = v.GetStringValue()
+	}
+	if v, ok := payload["chunk_index"]; ok {
+		resp["chunk_index"] = int(v.GetIntegerValue())
+	}
+	if v, ok := payload["file_last_updated"]; ok {
+		resp["file_last_updated"] = v.GetStringValue()
+	}
+
+	return resp, nil
 }
 
 func (s *Server) mcpAsk(ctx context.Context, args map[string]interface{}) (interface{}, error) {
