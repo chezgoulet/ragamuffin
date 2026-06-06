@@ -484,7 +484,9 @@ Update/replace a fact identified by `key` query parameter. Accepts partial field
   "ttl_days": 180,
   "supersedes": "",
   "refines": "",
-  "conflict_resolved": false
+  "conflict_resolved": false,
+  "valid_from": "",
+  "valid_until": ""
 }
 ```
 
@@ -512,7 +514,7 @@ Bulk partial update across multiple facts. Each key in `keys` receives the same 
 | Field | Type | Required | Notes |
 |-------|------|----------|-------|
 | `keys` | []string | yes | Fact keys to update (max 1000) |
-| `updates` | object | yes | Same fields as PUT request |
+| `updates` | object | yes | Same fields as PUT request (`valid_from`, `valid_until` supported) |
 
 **Response:**
 ```json
@@ -1193,7 +1195,7 @@ data: {"specversion":"1.0","type":"fact.created","source":"/ragamuffin","subject
 
 ```
 
-Event types: `fact.created`, `fact.flagged`, `fact.reviewed`, `pruner.scan.complete`, `vault.file.changed`, `vault.file.deleted`.
+Event types: `fact.created`, `fact.flagged`, `fact.reviewed`, `pruner.scan.complete`, `vault.file.changed`, `vault.file.deleted`, `vault.collection.reindexed`, `ragamuffin.started`, `ragamuffin.healthy`, `extraction_complete`.
 
 Slow consumer protection: a buffer of 64 events per subscriber. Older events are dropped if the buffer fills.
 
