@@ -88,12 +88,70 @@ if [ "$RC" = "0" ]; then
   fi
 fi
 
+# /recall: verify chunk_id field
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  cid=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('chunk_id','MISSING') if r else 'NO_RESULTS')" 2>/dev/null || echo "PARSE_ERROR")
+  if [ "$cid" = "MISSING" ] || [ "$cid" = "PARSE_ERROR" ]; then
+    red "recall chunk_id field" "not found"
+  else
+    green "recall chunk_id field present ($cid)"
+  fi
+fi
+
 # /recall error: missing query
 RESP=$(curl -s -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
   -d '{}' 2>&1)
 assert_field "recall missing query" "error" "True" "$RESP"
 assert_field "recall error code" "code" "INVALID_REQUEST" "$RESP"
+
+# /recall detail=l0: no text or first_paragraph
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1,"detail":"l0"}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  txt=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('text','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  fp=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('first_paragraph','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  if [ "$txt" = "" ]; then green "/recall detail=l0 text empty"; else red "/recall detail=l0" "text not empty: $txt"; fi
+  if [ "$fp" = "" ]; then green "/recall detail=l0 first_paragraph empty"; else red "/recall detail=l0" "first_paragraph not empty: $fp"; fi
+fi
+
+# /recall detail=l1: text empty, first_paragraph present
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1,"detail":"l1"}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  txt=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('text','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  fp=$(echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('first_paragraph','MISSING') if r else 'NO_RESULTS')" 2>/dev/null)
+  if [ "$txt" = "" ]; then green "/recall detail=l1 text empty"; else red "/recall detail=l1" "text not empty: $txt"; fi
+  if [ "$fp" != "" ] && [ "$fp" != "MISSING" ]; then green "/recall detail=l1 first_paragraph present"; else red "/recall detail=l1" "first_paragraph missing"; fi
+fi
+
+# /recall invalid detail: expect 400
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","detail":"l3"}' 2>&1)
+assert_field "/recall invalid detail" "error" "True" "$RESP"
+
+# ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────
+echo "--- /v1/chunks ---"
+# Get a valid chunk_id first
+CID=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","top_k":1}' 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('results',[]); print(r[0].get('chunk_id','') if r else '')" 2>/dev/null || echo "")
+if [ -n "$CID" ]; then
+  RESP=$(curl -sf "$BASE/v1/chunks/$CID" 2>&1) && RC=0 || RC=$?
+  assert_status "GET /v1/chunks/{id} returns 200" "0" "$RC" "$RESP"
+  assert_field "chunk has source_file" "source_file" "_smoke_test.md" "$RESP"
+  # 404 for bad UUID
+  RESP=$(curl -s "$BASE/v1/chunks/00000000-0000-0000-0000-000000000000" 2>&1)
+  assert_field "chunk 404 not found" "code" "NOT_FOUND" "$RESP"
+else
+  red "/v1/chunks/{id}" "could not retrieve a chunk_id from recall"
+fi
 
 # ── /draft (direct mode) ───────────────────────────────────────────────────
 echo "--- /draft ---"

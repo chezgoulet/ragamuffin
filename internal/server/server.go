@@ -179,6 +179,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
+	// Chunk retrieval
+	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/ingest", s.handleChunkGet))))
+
 	// Review queue (stats MUST be registered before the prefix match)
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
 	mux.HandleFunc("/v1/review", s.withRequestID(s.withRateLimit("/v1/review", s.handleReview)))
