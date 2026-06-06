@@ -369,6 +369,7 @@ func Load() (*Config, error) {
 		PrunerConflictInterval:       envDuration("RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL", 72*time.Hour),
 		PrunerSupersedeInterval:      envDuration("RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL", 24*time.Hour),
 		PrunerStaleDays:              envInt("RAGAMUFFIN_PRUNER_STALE_DAYS", 90),
+		PrunerSourceStaleInterval:    envDuration("RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL", 0),
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
