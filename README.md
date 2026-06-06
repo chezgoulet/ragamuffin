@@ -532,6 +532,51 @@ curl -s -X POST http://localhost:8000/v1/ingest \
 }
 ```
 
+#### `POST /v1/ingest/conversation` — Index a conversation session
+
+Creates or updates a structured conversation session with multiple turns.
+Each turn can include user inputs, assistant responses, and metadata.
+Sessions are stored in Qdrant and can be searched via `/recall`.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/ingest/conversation \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "sess_abc123",
+    "vault": "agent::dev",
+    "title": "Hermes integration discussion",
+    "agent_id": "dev",
+    "turns": [
+      {
+        "role": "user",
+        "text": "How do I configure Hermes?"
+      },
+      {
+        "role": "assistant",
+        "text": "Set MEMORY_PROVIDER=memory_ragamuffin in your config..."
+      }
+    ]
+  }'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `session_id` | string | — | Unique session identifier **(required)** |
+| `vault` | string | — | Target vault **(required)** |
+| `title` | string | — | Optional session title |
+| `agent_id` | string | — | Agent identifier |
+| `turns` | array | `[]` | List of conversation turns |
+| `turns[].role` | string | — | `user` or `assistant` |
+| `turns[].text` | string | — | Turn content |
+
+**Response:**
+```json
+{
+  "session_id": "sess_abc123",
+  "turns": 2
+}
+```
+
 #### `POST /vault/{name}/recall` — Semantic search across vaults
 
 Vault-prefixed recall targets a specific vault by name. Same semantics as `/recall`
@@ -639,6 +684,106 @@ curl -s -X DELETE "http://localhost:8000/v1/sessions/<session_id>"
 ```
 
 Returns `{"status": "deleted", "id": "<session_id>"}`.
+
+### Inbox
+
+The inbox is a per-vault append-only message queue for inter-agent
+notifications. Endpoints are available globally and vault-prefixed:
+- `/inbox`, `/inbox/{id}`
+- `/vault/{name}/inbox`, `/vault/{name}/inbox/{id}`
+
+#### `GET /inbox` — List inbox messages
+
+```bash
+curl -s "http://localhost:8000/inbox?vault=agent::dev&status=pending&limit=10"
+```
+
+| Param | Description | Default |
+|---|---|---|
+| `vault` | Target vault **(required)** | — |
+| `status` | Filter: `pending`, `read`, `archived` | `pending` |
+| `limit` | Max results | 50 |
+| `before` | Cursor pagination | — |
+
+**Response:**
+```json
+{
+  "messages": [
+    {
+      "id": "msg_123",
+      "from": "robot",
+      "subject": "Scan complete",
+      "body": "Nightly scan found 3 new issues",
+      "status": "pending",
+      "created_at": "2026-06-05T03:00:00Z"
+    }
+  ]
+}
+```
+
+#### `POST /inbox` — Send an inbox message
+
+```bash
+curl -s -X POST http://localhost:8000/inbox \
+  -H "Content-Type: application/json" \
+  -d '{
+    "vault": "agent::dev",
+    "from": "robot",
+    "subject": "Nightly review",
+    "body": "All scans completed. No action needed."
+  }'
+```
+
+| Field | Description |
+|---|---|
+| `vault` | Target vault **(required)** |
+| `from` | Sender identifier **(required)** |
+| `subject` | Short subject line **(required)** |
+| `body` | Message body |
+
+**Response:**
+```json
+{"id": "msg_123", "status": "created"}
+```
+
+#### `GET /inbox/{id}` — Read a message
+
+```bash
+curl -s "http://localhost:8000/inbox/msg_123?vault=agent::dev"
+```
+
+**Response:** Full message object. The message is marked as `read` automatically.
+
+#### `DELETE /inbox/{id}` — Archive a message
+
+```bash
+curl -s -X DELETE "http://localhost:8000/inbox/msg_123?vault=agent::dev"
+```
+
+**Response:** `{"status": "archived", "id": "msg_123"}`
+
+---
+
+#### `GET /v1/auth/check` — Verify authentication
+
+Confirms the current request has valid authentication credentials. Useful for
+clients to test their API key or JWT token without making a data-modifying call.
+
+```bash
+curl -s http://localhost:8000/v1/auth/check \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response (authenticated):**
+```json
+{
+  "authenticated": true,
+  "mode": "api_key",
+  "access": "read"
+}
+```
+
+**Response (unauthenticated):** Returns HTTP 401 `FORBIDDEN`.
 
 ### Structured Data Endpoints (v0.3)
 
@@ -786,6 +931,25 @@ curl -s -X PATCH http://localhost:8000/v1/facts \
     {"key":"deployment/url","ok":true},
     {"key":"api/endpoint","ok":true}
   ]
+}
+```
+
+#### `GET /v1/facts/{key}/graph` — Fact knowledge graph
+
+Returns the dependency graph for a fact — what it supersedes and what supersedes it.
+Available at `/v1/facts/{key}/graph` (global) and `/vault/{name}/v1/facts/{key}/graph` (vault-scoped).
+
+```bash
+curl -s "http://localhost:8000/v1/facts/deployment%2Furl/graph"
+```
+
+**Response:**
+```json
+{
+  "key": "deployment/url",
+  "value": "https://app.example.com",
+  "supersedes": ["deployment/old-url"],
+  "superseded_by": []
 }
 ```
 
@@ -1140,16 +1304,59 @@ Available vault-prefixed endpoints:
 - `/vault/{name}/v1/snapshot`
 - `/vault/{name}/reindex`
 - `/vault/{name}/graph`
+- `/vault/{name}/inbox`
 
-### Authentication (v0.4)
+**Runtime vault creation:** When the server is in multi-tenant mode and
+a vault is not in the configured list, `POST /vaults` can create it at
+runtime if the path is allowed.
+- `RAGAMUFFIN_VAULTS_ROOT` — restricts runtime vault creation to paths under this directory
 
-Three modes controlled by `RAGAMUFFIN_AUTH_MODE`:
+**Per-vault configuration overrides:** Each vault in `RAGAMUFFIN_VAULTS`
+can be further configured via `RAGAMUFFIN_VAULT_{NAME}_{SETTING}` env vars.
+Replace `{NAME}` with the uppercase vault name (e.g. `RAGAMUFFIN_VAULT_DOCS_CHUNK_STRATEGY`).
+
+**Chunking overrides:**
+| Env Var | Description |
+|---|---|
+| `RAGAMUFFIN_VAULT_{NAME}_CHUNK_STRATEGY` | Chunking strategy override |
+| `RAGAMUFFIN_VAULT_{NAME}_CHUNK_MAX_TOKENS` | Max tokens per chunk |
+| `RAGAMUFFIN_VAULT_{NAME}_CHUNK_FIXED_SIZE` | Fixed-size chunk size |
+| `RAGAMUFFIN_VAULT_{NAME}_CHUNK_FIXED_OVERLAP` | Fixed-size chunk overlap |
+
+**Embedding overrides:**
+| Env Var | Description |
+|---|---|
+| `RAGAMUFFIN_VAULT_{NAME}_EMBEDDING_MODEL` | Embedding model for this vault |
+| `RAGAMUFFIN_VAULT_{NAME}_EMBEDDING_DIMS` | Embedding output dimensions |
+| `RAGAMUFFIN_VAULT_{NAME}_EMBEDDING_ENDPOINT` | Embedding API endpoint |
+| `RAGAMUFFIN_VAULT_{NAME}_EMBEDDING_API_KEY` | Embedding API key |
+| `RAGAMUFFIN_VAULT_{NAME}_EMBEDDING_TIMEOUT` | Embedding request timeout |
+
+**LLM overrides:**
+| Env Var | Description |
+|---|---|
+| `RAGAMUFFIN_VAULT_{NAME}_LLM_PROVIDER` | LLM provider name |
+| `RAGAMUFFIN_VAULT_{NAME}_LLM_ENDPOINT` | LLM API endpoint |
+| `RAGAMUFFIN_VAULT_{NAME}_LLM_API_KEY` | LLM API key |
+| `RAGAMUFFIN_VAULT_{NAME}_LLM_MODEL` | LLM model name |
+| `RAGAMUFFIN_VAULT_{NAME}_LLM_TIMEOUT` | LLM request timeout |
+
+**Audit overrides:**
+| Env Var | Description |
+|---|---|
+| `RAGAMUFFIN_VAULT_{NAME}_AUDIT_ENTITY_EXTRACTION` | Enable entity extraction audit (true/false) |
+| `RAGAMUFFIN_VAULT_{NAME}_AUDIT_ENTITY_LLM` | LLM model for entity extraction |
+
+### Authentication
+
+Four modes controlled by `RAGAMUFFIN_AUTH_MODE`:
 
 | Mode | Description |
 |---|---|
 | `none` | No authentication (default) |
 | `api_key` | Static API keys from environment variables |
 | `jwt` | JWT tokens validated via JWKS endpoint |
+| `oidc` | OpenID Connect with discovery flow |
 
 **API Key mode:**
 - `RAGAMUFFIN_AUTH_READ_KEY` — global read key
@@ -1163,6 +1370,17 @@ Three modes controlled by `RAGAMUFFIN_AUTH_MODE`:
 - `RAGAMUFFIN_AUTH_JWT_JWKS_URL` — JWKS endpoint for key discovery
 
 JWT must include a `ragamuffin` claim with an `access` field (`read` or `read_write`).
+
+**OIDC mode:**
+- `RAGAMUFFIN_AUTH_OIDC_ISSUER` — OIDC provider issuer URL (required)
+- `RAGAMUFFIN_AUTH_OIDC_CLIENT_ID` — OIDC client ID for audience validation
+
+**Per-vault auth keys:** Keys can be scoped to a specific vault by appending `_{VAULT_NAME}`
+to the env var name. For example, `RAGAMUFFIN_AUTH_READ_KEY_DOCS=my-key` sets a read-only
+key that only works on the `docs` vault.
+
+**Auto-provisioning:**
+- `RAGAMUFFIN_AUTO_PROVISION_VAULTS` — when `true`, first ingest to a non-existent vault automatically creates it (default: `false`)
 
 > **Auth exemptions:** The `/events` (SSE) and `/mcp` (SSE + JSON-RPC)
 > endpoints do not require authentication. SSE clients need to connect
@@ -1471,6 +1689,8 @@ curl -s http://localhost:8000/v1/review/stats
 | `RAGAMUFFIN_EMBEDDING_MODEL` | `text-embedding-3-small` | Model name |
 | `RAGAMUFFIN_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | API base URL (for proxies) |
 | `RAGAMUFFIN_EMBEDDING_DIMS` | `1536` | Output dimensions |
+| `RAGAMUFFIN_EMBEDDING_TIMEOUT` | `30s` | Embedding request timeout (Go duration) |
+| `RAGAMUFFIN_CHUNK_VECTOR_SIZE` | `0` (uses `EMBEDDING_DIMS`) | Vector dimension for chunk/doc collections. Set separately when chunk and fact vectors differ. |
 
 ### LLM
 
@@ -1549,6 +1769,25 @@ with `Content-Type: application/cloudevents+json`. Delivery is fire-and-forget (
 | `RAGAMUFFIN_HOST` | `0.0.0.0` | HTTP listen host |
 | `RAGAMUFFIN_PORT` | `8000` | HTTP listen port |
 | `RAGAMUFFIN_LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
+| `RAGAMUFFIN_LOGSTORE_PATH` | — | Explicit path for `log.db` (default: heuristic next to vault) |
+| `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | `100000` | Max rows in the SQLite log store (0 = unlimited) |
+
+All handlers are wrapped in a panic recovery middleware that logs stack traces
+via slog and returns JSON 500 errors instead of silent connection drops.
+
+### Log Store
+
+Ragamuffin stores operation logs (`POST /v1/logs`) in a local SQLite database.
+The database path is resolved heuristically (next to the vault directory) unless
+`RAGAMUFFIN_LOGSTORE_PATH` is explicitly set. The log store uses SQLite in WAL
+mode for concurrent access safety.
+
+### Snapshot Restore
+
+When Ragamuffin starts, it runs a restore-from-snapshot detection pass.
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | `0.1` | Max allowed file-count mismatch between snapshot and Qdrant (0.0–1.0). Exceeding this triggers a full reindex. |
 
 All handlers are wrapped in a panic recovery middleware that logs stack traces
 via slog and returns JSON 500 errors instead of silent connection drops.
@@ -1568,6 +1807,7 @@ fact lifecycle. Each scan type can be configured independently.
 | `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past TTL expiry before a fact is flagged stale |
 | `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Pairs per conflict scan cycle |
 | `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Below this → flagged `needs_review` |
+| `RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD` | `0.0` | Importance floor — facts below this are not superseded (0.0 = disabled) |
 
 **Scan types:**
 
