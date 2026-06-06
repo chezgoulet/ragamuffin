@@ -35,6 +35,21 @@ type reviewMockStore struct {
 
 func (m *reviewMockStore) Collection() string { return m.collection }
 
+func (m *reviewMockStore) SetPayload(_ context.Context, _ string, ids []*qdrant.PointId, fields map[string]*qdrant.Value) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range ids {
+		for _, p := range m.points {
+			if p.GetId().GetUuid() == id.GetUuid() {
+				for k, v := range fields {
+					p.Payload[k] = v
+				}
+			}
+		}
+	}
+	return nil
+}
+
 func (m *reviewMockStore) Upsert(_ context.Context, points []*qdrant.PointStruct) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -145,10 +145,14 @@ func computeExpiresAt(ttlDays int) string {
 	return time.Now().UTC().AddDate(0, 0, ttlDays).Format(time.RFC3339)
 }
 
-// defaultConfidence returns 1.0 if nil/0, otherwise clamps to [0,1].
+// defaultConfidence returns 1.0 if nil (omitted), otherwise clamps to [0,1].
+// 0.0 is a valid confidence value — only nil means "not set" (#416).
 func defaultConfidence(c *float64) float64 {
-	if c == nil || *c < 0 {
+	if c == nil {
 		return 1.0
+	}
+	if *c < 0 {
+		return 0.0
 	}
 	if *c > 1.0 {
 		return 1.0
@@ -238,6 +242,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":          fp.Key,
+		"key_prefix":        versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
 		"fact_value":        fp.Value,
 		"source":            fp.Source,
 		"source_type":       fp.SourceType,
@@ -306,7 +311,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	// Auto-supersede: if version > 0, find any active facts with lower versions
 	// that share the same key prefix and mark them as superseded.
 	if version > 0 {
-		go s.supersedeOlderVersions(context.Background(), fp.Key, version)
+		go s.supersedeOlderVersions(s.shutdownCtx, fp.Key, version)
 	}
 
 	// Background fact-to-chunk bridge: link this fact to related chunks
@@ -357,12 +362,15 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Track access for importance scoring
-		go s.incrementFactAccess(context.Background(), key)
+		go s.incrementFactAccess(s.shutdownCtx, key)
 		writeJSON(w, 200, resp)
 		return
 	}
 
-	// Build list filter from optional tag, status, and conflict_resolved
+	// Build list filter from optional tag, status, and conflict_resolved.
+	// All filters combine independently (AND). conflict_resolved does NOT require
+	// status to be present — when used alone it filters all facts regardless of
+	// status (#395).
 	// Note: prefix filtering is applied in Go below (Qdrant has no native string
 	// prefix match for payload fields, and Match_Text performs tokenized full-text
 	// search which produces false positives).
@@ -591,6 +599,69 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 
 // ── PATCH /v1/facts ──────────────────────────────────────────────────────
 
+// buildPatchUpdates constructs a SetPayload-ready updates map from a factUpdateRequest.
+func buildPatchUpdates(updates factUpdateRequest) map[string]*qdrant.Value {
+	now := time.Now().UTC().Format(time.RFC3339)
+	m := make(map[string]*qdrant.Value)
+
+	if updates.Value != nil {
+		m["fact_value"] = qutil.Nv(*updates.Value)
+	}
+	if updates.Source != nil {
+		m["source"] = qutil.Nv(*updates.Source)
+	}
+	if updates.SourceType != nil {
+		m["source_type"] = qutil.Nv(*updates.SourceType)
+	}
+	if updates.Status != nil {
+		m["status"] = qutil.Nv(*updates.Status)
+	}
+	if updates.Supersedes != nil {
+		m["supersedes"] = qutil.Nv(*updates.Supersedes)
+	}
+	if updates.Refines != nil {
+		m["refines"] = qutil.Nv(*updates.Refines)
+	}
+	if updates.Supports != nil {
+		sv := make([]*qdrant.Value, len(*updates.Supports))
+		for i, s := range *updates.Supports {
+			sv[i] = qutil.Nv(s)
+		}
+		m["supports"] = &qdrant.Value{
+			Kind: &qdrant.Value_ListValue{
+				ListValue: &qdrant.ListValue{Values: sv},
+			},
+		}
+	}
+	if updates.Confidence != nil {
+		m["confidence"] = qutil.Nv(*updates.Confidence)
+	}
+	if updates.ConflictResolved != nil {
+		m["conflict_resolved"] = qutil.Nv(*updates.ConflictResolved)
+	}
+	if updates.ConfirmationCount != nil {
+		m["confirmation_count"] = qutil.Nv(float64(*updates.ConfirmationCount))
+	}
+	if updates.LastConfirmedAt != nil {
+		m["last_confirmed_at"] = qutil.Nv(*updates.LastConfirmedAt)
+	}
+	if updates.TTLDays != nil {
+		ttl := *updates.TTLDays
+		m["ttl_days"] = qutil.Nv(float64(ttl))
+		if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
+			m["expires_at"] = qutil.Nv(expiresAt)
+			m["expires_at_unix"] = qutil.Nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
+		} else {
+			m["expires_at"] = qutil.Nv("")
+			m["expires_at_unix"] = qutil.Nv(float64(0))
+		}
+	}
+
+	// Always set updated_at
+	m["updated_at"] = qutil.Nv(now)
+	return m
+}
+
 func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
 		writeError(w, 403, "FORBIDDEN", "write access required")
@@ -612,13 +683,23 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build SetPayload updates once — no per-key payload construction (#408).
+	// This avoids read-modify-write races by using Qdrant's SetPayload API
+	// which atomically updates only the specified fields.
+	updates := buildPatchUpdates(req.Updates)
+	collection := s.factsCollectionFor(r.Context())
+
 	results := make([]factBulkResult, 0, len(req.Keys))
 	succeeded := 0
 	failed := 0
 
 	for _, key := range req.Keys {
-		// Perform a single-key update via read-modify-write
-		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key), 1, "")
+		pointID := factKeyHash(key)
+
+		// Check existence first (separate from the atomic SetPayload).
+		// The NOT_FOUND check is racy, but the actual field update via
+		// SetPayload is atomic per-point.
+		points, err := s.facts.ScrollFiltered(r.Context(), collection, factKeyFilter(key), 1, "")
 		if err != nil {
 			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
 			failed++
@@ -630,90 +711,57 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		payload := make(map[string]*qdrant.Value)
-		for k, v := range points[0].GetPayload() {
-			payload[k] = v
-		}
-		now := time.Now().UTC().Format(time.RFC3339)
-
-		// Apply same updates to each key
-		applyFieldUpdate(payload, "fact_value", req.Updates.Value)
-		applyFieldUpdate(payload, "source", req.Updates.Source)
-		applyFieldUpdate(payload, "source_type", req.Updates.SourceType)
-		applyFieldUpdate(payload, "status", req.Updates.Status)
-		applyFieldUpdate(payload, "supersedes", req.Updates.Supersedes)
-		applyFieldUpdate(payload, "refines", req.Updates.Refines)
-		if req.Updates.Supports != nil {
-			sv := make([]*qdrant.Value, len(*req.Updates.Supports))
-			for i, s := range *req.Updates.Supports {
-				sv[i] = qutil.Nv(s)
-			}
-			payload["supports"] = &qdrant.Value{
-				Kind: &qdrant.Value_ListValue{
-					ListValue: &qdrant.ListValue{Values: sv},
-				},
-			}
-		}
-
-		if req.Updates.Confidence != nil {
-			payload["confidence"] = qutil.Nv(*req.Updates.Confidence)
-		}
-		if req.Updates.ConflictResolved != nil {
-			payload["conflict_resolved"] = qutil.Nv(*req.Updates.ConflictResolved)
-		}
-		if req.Updates.ConfirmationCount != nil {
-			payload["confirmation_count"] = qutil.Nv(float64(*req.Updates.ConfirmationCount))
-		}
-		if req.Updates.LastConfirmedAt != nil {
-			payload["last_confirmed_at"] = qutil.Nv(*req.Updates.LastConfirmedAt)
-		}
-		if req.Updates.TTLDays != nil {
-			ttl := *req.Updates.TTLDays
-			payload["ttl_days"] = qutil.Nv(float64(ttl))
-			if expiresAt := computeExpiresAt(ttl); expiresAt != "" {
-				payload["expires_at"] = qutil.Nv(expiresAt)
-				payload["expires_at_unix"] = qutil.Nv(float64(time.Now().UTC().AddDate(0, 0, ttl).Unix()))
-			} else {
-				payload["expires_at"] = qutil.Nv("")
-				payload["expires_at_unix"] = qutil.Nv(float64(0))
-			}
-		}
-		if req.Updates.Tags != nil {
-			delete(payload, "fact_tags")
-			if len(*req.Updates.Tags) > 0 {
-				setPayloadTags(payload, *req.Updates.Tags)
-			}
-		}
-
-		payload["updated_at"] = qutil.Nv(now)
-
-		point := &qdrant.PointStruct{
-			Id: &qdrant.PointId{
-				PointIdOptions: &qdrant.PointId_Uuid{
-					Uuid: factKeyHash(key),
-				},
-			},
-			Payload: payload,
-			Vectors: &qdrant.Vectors{
-				VectorsOptions: &qdrant.Vectors_Vector{
-					Vector: &qdrant.Vector{
-						Data: []float32{0, 0, 0, 0},
-					},
-				},
-			},
-		}
-
-		if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
+		// Atomic field-level update — no read-modify-write race (#408)
+		if err := s.facts.SetPayload(r.Context(), collection, []*qdrant.PointId{{
+			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+		}}, updates); err != nil {
 			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
 			failed++
 			continue
+		}
+
+		// Handle tags separately: SetPayload can't "delete" a key. We need
+		// to overwrite fact_tags. If nil was passed, don't touch tags.
+		if req.Updates.Tags != nil {
+			tagUpdates := make(map[string]*qdrant.Value)
+			tagUpdates["updated_at"] = qutil.Nv(time.Now().UTC().Format(time.RFC3339))
+			if len(*req.Updates.Tags) > 0 {
+				tagValues := make([]*qdrant.Value, len(*req.Updates.Tags))
+				for i, t := range *req.Updates.Tags {
+					tagValues[i] = qutil.Nv(t)
+				}
+				tagUpdates["fact_tags"] = &qdrant.Value{
+					Kind: &qdrant.Value_ListValue{
+						ListValue: &qdrant.ListValue{Values: tagValues},
+					},
+				}
+			} else {
+				// Tags explicitly set to empty — store empty list
+				tagUpdates["fact_tags"] = &qdrant.Value{
+					Kind: &qdrant.Value_ListValue{
+						ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
+					},
+				}
+			}
+			if err := s.facts.SetPayload(r.Context(), collection, []*qdrant.PointId{{
+				PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+			}}, tagUpdates); err != nil {
+				results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
+				failed++
+				continue
+			}
 		}
 
 		results = append(results, factBulkResult{Key: key, OK: true})
 		succeeded++
 	}
 
-	writeJSON(w, 200, map[string]any{
+	status := 200
+	if failed == len(req.Keys) {
+		status = 500 // all updates failed (#419)
+	}
+
+	writeJSON(w, status, map[string]any{
 		"results":   results,
 		"total":     len(req.Keys),
 		"succeeded": succeeded,
@@ -805,10 +853,9 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 		return
 	}
 
-	// Fetch all active facts — we post-filter by version in Go since Qdrant
-	// integer range filters require the *Range protobuf type where Lt is
-	// an optional double, and direct integer equality via Match_Integer only
-	// supports exact match (not lt/gt).
+	// Filter by status=active AND key_prefix=prefix, plus backward compat.
+	// New facts store key_prefix in the payload (#409); for old facts without
+	// the field, we include records where key_prefix is null and filter in Go.
 	activeFilter := &qdrant.Filter{
 		Must: []*qdrant.Condition{
 			{
@@ -819,6 +866,23 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 							MatchValue: &qdrant.Match_Keyword{
 								Keyword: "active",
 							},
+						},
+					},
+				},
+			},
+		},
+		Should: []*qdrant.Condition{
+			{
+				ConditionOneOf: &qdrant.Condition_IsNull{
+					IsNull: &qdrant.IsNullCondition{Key: "key_prefix"},
+				},
+			},
+			{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "key_prefix",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{Keyword: prefix},
 						},
 					},
 				},
@@ -840,8 +904,11 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 			continue // skip self
 		}
 
-		// Check prefix match
-		candidatePrefix := versionKeyPrefix(factKey)
+		// Prefer stored key_prefix; fall back to Go parse for old facts
+		candidatePrefix, _ := getPayloadString(payload, "key_prefix")
+		if candidatePrefix == "" {
+			candidatePrefix = versionKeyPrefix(factKey)
+		}
 		if candidatePrefix == "" || candidatePrefix != prefix {
 			continue
 		}
@@ -870,6 +937,10 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 	}
 }
 
+// Migration sentinel key — stored as a fact_key when migration completes (#412).
+// The key prefix `_ragamuffin/` is reserved for internal use.
+const migrationSentinelKey = "_ragamuffin/_migration/v0.6.1"
+
 // migrateFacts reads all existing facts and fills in default values for
 // v0.5 lifecycle fields that didn't exist before. This is a one-time
 // migration run at server startup. Errors are logged but non-fatal.
@@ -877,8 +948,15 @@ func (s *Server) migrateFacts() {
 	if s.facts == nil {
 		return
 	}
-	ctx := context.Background()
+	ctx := s.shutdownCtx
 	collection := s.cfg.FactsCollection
+
+	// Check migration sentinel — skip if already done (#412)
+	sentinelPoints, err := s.facts.ScrollFiltered(ctx, collection, factKeyFilter(migrationSentinelKey), 1, "")
+	if err == nil && len(sentinelPoints) > 0 {
+		s.logger.Info("facts migration already complete, skipping")
+		return
+	}
 
 	var offset string
 	const pageSize uint32 = 100
@@ -949,6 +1027,12 @@ func (s *Server) migrateFacts() {
 			// supersedes: default ""
 			if _, ok := payload["supersedes"]; !ok {
 				payload["supersedes"] = qutil.Nv("")
+				needsUpdate = true
+			}
+			// key_prefix: populate from fact_key (#409)
+			if _, ok := payload["key_prefix"]; !ok {
+				fk, _ := getPayloadString(payload, "fact_key")
+				payload["key_prefix"] = qutil.Nv(versionKeyPrefix(fk))
 				needsUpdate = true
 			}
 			// contradicts: default empty list
@@ -1041,6 +1125,26 @@ func (s *Server) migrateFacts() {
 	if migrated > 0 {
 		s.logger.Info("facts migration complete", "migrated", migrated)
 	}
+
+	// Write migration sentinel so we don't re-scan on every startup (#412)
+	sentinelPoint := &qdrant.PointStruct{
+		Id: &qdrant.PointId{
+			PointIdOptions: &qdrant.PointId_Uuid{Uuid: factKeyHash(migrationSentinelKey)},
+		},
+		Payload: qdrant.NewValueMap(map[string]any{
+			"fact_key":   migrationSentinelKey,
+			"status":     "active",
+			"created_at": time.Now().UTC().Format(time.RFC3339),
+		}),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{Data: []float32{0, 0, 0, 0}},
+			},
+		},
+	}
+	if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{sentinelPoint}); err != nil {
+		s.logger.Warn("facts migration: failed to write sentinel", "error", err)
+	}
 }
 
 // ── Route dispatcher ─────────────────────────────────────────────────────
@@ -1119,7 +1223,7 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 // for semantically similar chunks (score > 0.7), and stores the top chunk IDs
 // in the fact's related_chunks payload field. Runs as a background goroutine.
 func (s *Server) linkFactToChunks(key, value, vaultName string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(s.shutdownCtx, 30*time.Second)
 	defer cancel()
 
 	// Embed the fact value

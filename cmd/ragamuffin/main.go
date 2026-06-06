@@ -430,14 +430,17 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Unified signal handler — sequences: cancel indexers → close watchers → shutdown HTTP server
+	// Unified signal handler — sequences: cancel server goroutines → cancel indexers → close watchers → shutdown HTTP server
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigCh
 		logger.Info("shutting down...")
 
-		// 0. Flush SQLite pending writes
+		// 0. Cancel server background goroutines first (#420)
+		srv.Shutdown()
+
+		// 1. Flush SQLite pending writes
 		if logStore != nil {
 			if err := logStore.Flush(); err != nil {
 				logger.Warn("logstore flush failed", "error", err)
@@ -445,17 +448,17 @@ func main() {
 			logStore.Close()
 		}
 
-		// 1. Cancel all indexers (stopping in-flight indexing)
+		// 2. Cancel all indexers (stopping in-flight indexing)
 		for _, cancel := range idxCancelFuncs {
 			cancel()
 		}
 
-		// 2. Close all watcher event channels (no new events)
+		// 3. Close all watcher event channels (no new events)
 		for _, ch := range watcherDoneChs {
 			close(ch)
 		}
 
-		// 3. Graceful HTTP server drain
+		// 4. Graceful HTTP server drain
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		httpServer.Shutdown(shutdownCtx)

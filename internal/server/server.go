@@ -64,12 +64,16 @@ type Server struct {
 	mu          sync.Mutex
 	requestCounts map[string]map[string]int64 // endpoint -> status -> count
 
+	shutdownCtx    context.Context // cancelled by Shutdown() (#420)
+	shutdownCancel context.CancelFunc
+
 	qdrantReconnecting bool
 	qdrantMu          sync.RWMutex
 }
 
 // New creates a new Server.
 func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger) *Server {
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:           cfg,
 		qdrant:        qc,
@@ -87,6 +91,8 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		logger:        logger,
 		started:       time.Now(),
 		requestCounts: make(map[string]map[string]int64),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}
 
 	// Configure rate limits
@@ -847,4 +853,12 @@ func (s *Server) qdrantHealth() int {
 		return 0
 	}
 	return 1
+}
+
+// Shutdown cancels the server's background goroutines (fact supersede,
+// access tracking, linkFactToChunks, etc.). Call before httpServer.Shutdown() (#420).
+func (s *Server) Shutdown() {
+	if s.shutdownCancel != nil {
+		s.shutdownCancel()
+	}
 }
