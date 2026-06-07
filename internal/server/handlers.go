@@ -296,8 +296,6 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if req.TopK > 100 {
 		req.TopK = 100
 	}
-
-	// Detail level validation
 	if req.Detail == "" {
 		req.Detail = "l2"
 	}
@@ -309,97 +307,19 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Generate query embedding
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+	out, topScore, err := s.doRecall(ctx, req)
 	if err != nil {
-		writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("embedding failed: %s", err))
+		writeError(w, 502, "SEARCH_ERROR", err.Error())
 		return
 	}
 
-	// Build recall filters, applying time_filter if set
-	filter := recallFilter(req)
-	if isTemporalRecall(req.TimeFilter) {
-		dateTo := temporalRecallDate(req.TimeFilter)
-		if dateTo != "" {
-			conditions := []*pb.Condition{
-				{
-					ConditionOneOf: &pb.Condition_Field{
-						Field: &pb.FieldCondition{
-							Key: "file_last_updated",
-							Range: &pb.Range{
-								Lte: float64Ptr(parseRFC3339Unix(dateTo)),
-							},
-						},
-					},
-				},
-			}
-			if filter != nil {
-				filter.Must = append(filter.Must, conditions...)
-			} else {
-				filter = &pb.Filter{Must: conditions}
-			}
-		}
-	}
-
-	// Search Qdrant
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
-	if err != nil {
-		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("search failed: %s", err))
-		return
-	}
-
-	// Map results
-	out := make([]recallResult, 0, len(results))
-	var topScore float32
-	for _, r := range results {
-		payload := r.Payload
-		res := recallResult{
-			Score:   r.Score,
-			ChunkID: r.Id.GetUuid(),
-		}
-		if r.Score > topScore {
-			topScore = r.Score
-		}
-		if v, ok := payload["text"]; ok {
-			res.Text = v.GetStringValue()
-		}
-		if v, ok := payload["first_paragraph"]; ok {
-			res.FirstParagraph = v.GetStringValue()
-		}
-		if v, ok := payload["source_file"]; ok {
-			res.SourceFile = v.GetStringValue()
-		}
-		if v, ok := payload["header"]; ok {
-			res.Header = v.GetStringValue()
-		}
-		if v, ok := payload["chunk_index"]; ok {
-			res.ChunkIndex = int(v.GetIntegerValue())
-		}
-		if v, ok := payload["file_last_updated"]; ok {
-			res.FileLastUpdated = v.GetStringValue()
-		}
-
-		// Apply detail-level field filtering
-		switch req.Detail {
-		case "l0":
-			res.Text = ""
-			res.FirstParagraph = ""
-		case "l1":
-			res.Text = ""
-		}
-		// l2: no change
-
-		out = append(out, res)
-	}
-
-	// Synthesize answer if requested
+	// Synthesize answer if requested (unique to REST — MCP doesn't expose answer mode)
 	var answer string
 	if req.Answer && len(out) > 0 {
-		// Build context from top results
 		var b strings.Builder
 		for i, r := range out {
 			if i >= 5 {
-				break // limit context to top 5 chunks
+				break
 			}
 			if r.Text != "" {
 				b.WriteString(r.Text)
@@ -410,8 +330,7 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if b.Len() > 0 {
-			ansCtx := b.String()
-			ans, err := s.llmFor(ctx).Synthesize(ctx, req.Query, ansCtx)
+			ans, err := s.llmFor(ctx).Synthesize(ctx, req.Query, b.String())
 			if err == nil {
 				answer = ans
 			} else {
@@ -680,55 +599,22 @@ func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse UUID string to Qdrant PointId
-	uid, err := uuid.Parse(chunkID)
-	if err != nil {
+	if _, err := uuid.Parse(chunkID); err != nil {
 		writeError(w, 400, "INVALID_REQUEST", "chunk_id must be a valid UUID")
 		return
 	}
-	pointID := pb.NewIDUUID(uid.String())
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	qc := s.qdrantFor(ctx)
-	pts, err := qc.GetPoints(ctx, qc.Collection(), []*pb.PointId{pointID})
+	resp, err := s.doGetChunk(ctx, chunkID)
 	if err != nil {
-		writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("qdrant get failed: %s", err))
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, 404, "NOT_FOUND", err.Error())
+		} else {
+			writeError(w, 502, "RETRIEVAL_ERROR", err.Error())
+		}
 		return
-	}
-	if len(pts) == 0 {
-		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("chunk with ID %s not found", chunkID))
-		return
-	}
-
-	payload := pts[0].GetPayload()
-	resp := map[string]interface{}{
-		"chunk_id":   chunkID,
-		"source_file": "",
-		"header":     "",
-		"text":       "",
-		"chunk_index": 0,
-		"file_last_updated": "",
-	}
-
-	if v, ok := payload["source_file"]; ok {
-		resp["source_file"] = v.GetStringValue()
-	}
-	if v, ok := payload["header"]; ok {
-		resp["header"] = v.GetStringValue()
-	}
-	if v, ok := payload["text"]; ok {
-		resp["text"] = v.GetStringValue()
-	}
-	if v, ok := payload["first_paragraph"]; ok {
-		resp["first_paragraph"] = v.GetStringValue()
-	}
-	if v, ok := payload["chunk_index"]; ok {
-		resp["chunk_index"] = int(v.GetIntegerValue())
-	}
-	if v, ok := payload["file_last_updated"]; ok {
-		resp["file_last_updated"] = v.GetStringValue()
 	}
 
 	writeJSON(w, 200, resp)
@@ -878,16 +764,9 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	// Use shared queryContext for RAG/auto/full modes (shared with MCP handler)
-	contextText, sources, modeUsed, err := s.queryContext(ctx, req.Query, req.Mode, req.TopK)
+	answer, sources, modeUsed, err := s.doAsk(ctx, req.Query, req.Mode, req.TopK)
 	if err != nil {
-		writeError(w, 502, "RETRIEVAL_ERROR", fmt.Sprintf("retrieval failed: %s", err))
-		return
-	}
-
-	answer, err := s.llmFor(ctx).Synthesize(ctx, req.Query, contextText)
-	if err != nil {
-		writeError(w, 502, "LLM_API_ERROR", fmt.Sprintf("LLM call failed: %s", err))
+		writeError(w, 502, "ASK_ERROR", err.Error())
 		return
 	}
 
@@ -915,12 +794,6 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Require write access
-	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
-		writeError(w, 403, "FORBIDDEN", "write access required")
-		return
-	}
-
 	var req draftRequest
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10 MB for draft
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -939,65 +812,26 @@ func (s *Server) handleDraft(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "INVALID_REQUEST", "target_path is required")
 		return
 	}
-	if req.Mode == "" {
-		req.Mode = "direct"
-	}
 
-	// Security: prevent path traversal — verify resolved path stays under vault root
-	cleanPath := filepath.Clean(req.TargetPath)
-	vaultPath := s.vaultPathFromContext(r.Context())
-	fullPath, err := safeVaultPath(vaultPath, cleanPath)
+	ctx := r.Context()
+
+	result, err := s.doDraft(ctx, req)
 	if err != nil {
-		writeError(w, 400, "INVALID_REQUEST", err.Error())
+		if strings.Contains(err.Error(), "write access required") {
+			writeError(w, 403, "FORBIDDEN", err.Error())
+		} else if strings.Contains(err.Error(), "git provider not configured") {
+			writeError(w, 503, "GIT_NOT_CONFIGURED", err.Error())
+		} else if strings.Contains(err.Error(), "PR creation failed") {
+			writeError(w, 502, "GIT_PROVIDER_ERROR", err.Error())
+		} else if strings.Contains(err.Error(), "delete failed") || strings.Contains(err.Error(), "mkdir failed") || strings.Contains(err.Error(), "write failed") {
+			writeError(w, 500, "INTERNAL", err.Error())
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", err.Error())
+		}
 		return
 	}
 
-	if req.Mode == "pr" {
-		if !s.cfg.HasGit() {
-			writeError(w, 503, "GIT_NOT_CONFIGURED", "PR mode requires git provider configuration")
-			return
-		}
-		// PR mode: use git provider REST API
-		prURL, branch, err := s.createPR(req.Title, req.Content, cleanPath, req.Description)
-		if err != nil {
-			writeError(w, 502, "GIT_PROVIDER_ERROR", fmt.Sprintf("PR creation failed: %s", err))
-			return
-		}
-		writeJSON(w, 200, map[string]any{
-			"mode":   "pr",
-			"pr_url": prURL,
-			"branch": branch,
-		})
-		return
-	}
-
-	// Direct mode: write to filesystem (fullPath from safeVaultPath used directly)
-	if req.Delete {
-		if err := os.Remove(fullPath); err != nil && !os.IsNotExist(err) {
-			writeError(w, 500, "INTERNAL", fmt.Sprintf("delete failed: %s", err))
-			return
-		}
-	} else if req.Content == "" {
-		writeError(w, 400, "INVALID_INPUT", "content required unless delete=true")
-		return
-	} else {
-		// Write
-		dir := filepath.Dir(fullPath)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			writeError(w, 500, "INTERNAL", fmt.Sprintf("mkdir failed: %s", err))
-			return
-		}
-		if err := os.WriteFile(fullPath, []byte(req.Content), 0644); err != nil {
-			writeError(w, 500, "INTERNAL", fmt.Sprintf("write failed: %s", err))
-			return
-		}
-	}
-
-	writeJSON(w, 200, map[string]any{
-		"mode":    "direct",
-		"path":    cleanPath,
-		"written": true,
-	})
+	writeJSON(w, 200, result)
 }
 
 // ── /audit ─────────────────────────────────────────────────────────────────────
