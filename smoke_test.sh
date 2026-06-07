@@ -370,7 +370,33 @@ fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+# ── /v1/vaults/{name}/clear ─────────────────────────────────────────────────
+echo "--- /v1/vaults/{name}/clear ---"
+
+# POST with no confirm -> 400
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{}' 2>&1)
+assert_field "vault clear without confirm" "error" "True" "$RESP"
+
+# POST with confirm=false -> 400
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": false}' 2>&1)
+assert_field "vault clear confirm=false" "error" "True" "$RESP"
+
+# POST with confirm=true -> 200
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": true}' 2>&1)
+assert_field "vault clear confirm=true" "status" "ok" "$RESP"
+assert_field "vault clear returns vault" "vault" "default" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/vaults/default/clear" 2>&1)
+assert_field "vault clear GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
+echo "=== Results: $PASS passed, $FAIL failed ===
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
