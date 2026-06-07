@@ -450,6 +450,18 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteSessionsByVault hard-deletes all sessions and their turns for a vault.
+func (s *Store) DeleteSessionsByVault(ctx context.Context, vault string) (int64, error) {
+	result, err := s.db.ExecContext(ctx,
+		`DELETE FROM sessions WHERE vault = ?`, vault,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("logstore: delete sessions by vault: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	return n, nil
+}
+
 // ── Hygiene ─────────────────────────────────────────────────────────────────
 
 // IntegrityCheck runs PRAGMA integrity_check and returns the result.
