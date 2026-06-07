@@ -424,7 +424,7 @@ func main() {
 			if idx == nil {
 				return fmt.Errorf("vault %q not found and auto-provision not available via driver", vault)
 			}
-			return idx.Ingest(ctx, content, source, tags)
+			return idx.Ingest(ctx, content, source, tags, nil)
 		},
 	)
 	drvCtxAPI, drvCancelAPI := context.WithCancel(context.Background())
