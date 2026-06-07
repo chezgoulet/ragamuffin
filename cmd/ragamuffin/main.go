@@ -16,6 +16,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
@@ -411,7 +412,23 @@ func main() {
 	}
 	ext.SetEmitter(emitter)
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext)
+	// ── API Ingest Driver ────────────────────────────────────────────────────
+	apiDriver := ingress.NewAPIIngestDriver(
+		"api-ingest",
+		logger,
+		func(ctx context.Context, content, source, vault string, tags []string) error {
+			idx := idxManager.Get(vault)
+			if idx == nil {
+				return fmt.Errorf("vault %q not found and auto-provision not available via driver", vault)
+			}
+			return idx.Ingest(ctx, content, source, tags)
+		},
+	)
+	drvCtxAPI, drvCancelAPI := context.WithCancel(context.Background())
+	driverCancelFuncs = append(driverCancelFuncs, drvCancelAPI)
+	go apiDriver.Run(drvCtxAPI)
+
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext, apiDriver)
 
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
@@ -467,6 +484,11 @@ func main() {
 		}
 
 		// 3. Stop all drivers (cancels watcher + fan-out goroutines)
+		for _, cancel := range driverCancelFuncs {
+			cancel()
+		}
+
+		// 3b. Stop API driver (context-based, like the file watcher drivers)
 		for _, cancel := range driverCancelFuncs {
 			cancel()
 		}
