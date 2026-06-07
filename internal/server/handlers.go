@@ -396,6 +396,206 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── /v1/batch/recall ──────────────────────────────────────────────────────────
+
+type batchRecallQuery struct {
+	Query          string         `json:"query"`
+	Vault          string         `json:"vault,omitempty"`
+	TopK           int            `json:"top_k"`
+	ScoreThreshold float64        `json:"score_threshold"`
+	Detail         string         `json:"detail"`
+	SourceFilter   string         `json:"source_filter,omitempty"`
+	Filters        *recallFilters `json:"filters,omitempty"`
+	TimeFilter     string         `json:"time_filter,omitempty"`
+}
+
+type batchRecallRequest struct {
+	Queries []batchRecallQuery `json:"queries"`
+}
+
+type batchRecallEntry struct {
+	QueryIndex int            `json:"query_index"`
+	Results    []recallResult `json:"results"`
+	TopScore   float32        `json:"top_score"`
+}
+
+type batchRecallResponse struct {
+	Results []batchRecallEntry `json:"results"`
+}
+
+func (s *Server) handleBatchRecall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	var req batchRecallRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024) // 10 MB limit
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 10 MB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
+		return
+	}
+
+	if len(req.Queries) == 0 {
+		writeError(w, 400, "INVALID_REQUEST", "queries array is required")
+		return
+	}
+
+	if len(req.Queries) > 100 {
+		writeError(w, 400, "INVALID_REQUEST", "maximum 100 queries per batch request")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second) // 5 min for large batches
+	defer cancel()
+
+	results := make([]batchRecallEntry, 0, len(req.Queries))
+
+	for i, q := range req.Queries {
+		if q.Query == "" {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("query[%d].query is required", i))
+			return
+		}
+
+		// Resolve vault
+		vaultName := q.Vault
+		if vaultName == "" {
+			vaultName = "default"
+		}
+
+		// Get the Qdrant client for this vault
+		qc := s.indexers.GetClient(vaultName)
+		if qc == nil {
+			// Fallback to default qdrant client
+			qc = s.qdrant
+		}
+
+		// Resolve top_k
+		topK := q.TopK
+		if topK <= 0 {
+			topK = 10
+		}
+		if topK > 100 {
+			topK = 100
+		}
+
+		// Resolve detail
+		if q.Detail == "" {
+			q.Detail = "l2"
+		}
+
+		// Get embedder (per-vault if available, fallback to default)
+		ec := s.indexers.GetEmbedder(vaultName)
+		if ec == nil {
+			ec = s.embedder
+		}
+
+		// Embed query
+		vector, err := ec.EmbedSingle(ctx, q.Query)
+		if err != nil {
+			writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("query[%d]: embedding failed: %s", i, err))
+			return
+		}
+
+		// Build filter (reuse recallFilter with a recallRequest wrapper)
+		rr := recallRequest{
+			Query:          q.Query,
+			TopK:           topK,
+			ScoreThreshold: q.ScoreThreshold,
+			SourceFilter:   q.SourceFilter,
+			Filters:        q.Filters,
+			Detail:         q.Detail,
+			TimeFilter:     q.TimeFilter,
+		}
+		filter := recallFilter(rr)
+
+		// Apply time filter
+		if isTemporalRecall(q.TimeFilter) {
+			dateTo := temporalRecallDate(q.TimeFilter)
+			if dateTo != "" {
+				conditions := []*pb.Condition{
+					{
+						ConditionOneOf: &pb.Condition_Field{
+							Field: &pb.FieldCondition{
+								Key: "file_last_updated",
+								Range: &pb.Range{
+									Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+								},
+							},
+						},
+					},
+				}
+				if filter != nil {
+					filter.Must = append(filter.Must, conditions...)
+				} else {
+					filter = &pb.Filter{Must: conditions}
+				}
+			}
+		}
+
+		// Search Qdrant
+		searchResults, err := qc.Search(ctx, vector, uint64(topK), float32(q.ScoreThreshold), q.SourceFilter, filter)
+		if err != nil {
+			writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("query[%d]: search failed: %s", i, err))
+			return
+		}
+
+		// Map results
+		out := make([]recallResult, 0, len(searchResults))
+		var topScore float32
+		for _, r := range searchResults {
+			payload := r.Payload
+			res := recallResult{
+				Score:   r.Score,
+				ChunkID: r.Id.GetUuid(),
+			}
+			if r.Score > topScore {
+				topScore = r.Score
+			}
+			if v, ok := payload["text"]; ok {
+				res.Text = v.GetStringValue()
+			}
+			if v, ok := payload["first_paragraph"]; ok {
+				res.FirstParagraph = v.GetStringValue()
+			}
+			if v, ok := payload["source_file"]; ok {
+				res.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["header"]; ok {
+				res.Header = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				res.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["file_last_updated"]; ok {
+				res.FileLastUpdated = v.GetStringValue()
+			}
+
+			// Apply detail level filtering
+			if q.Detail == "l1" {
+				res.FirstParagraph = ""
+			}
+			if q.Detail != "l2" {
+				res.Text = ""
+			}
+
+			out = append(out, res)
+		}
+
+		results = append(results, batchRecallEntry{
+			QueryIndex: i,
+			Results:    out,
+			TopScore:   topScore,
+		})
+	}
+
+	writeJSON(w, 200, batchRecallResponse{Results: results})
+}
+
 // ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────────
 
 func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {

@@ -368,6 +368,25 @@ else
   FAIL=$((FAIL + 1))
 fi
 
+# ── /v1/batch/recall ──────────────────────────────────────────────────────
+echo "--- /v1/batch/recall ---"
+
+# POST with queries
+RESP=$(curl -s -X POST "$BASE/v1/batch/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"queries":[{"query":"what is ragamuffin","top_k":3},{"query":"how does recall work","top_k":3}]}' 2>&1)
+assert_field "batch recall POST" "results" "True" "$RESP"
+
+# POST empty queries -> 400
+RESP=$(curl -s -X POST "$BASE/v1/batch/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"queries":[]}' 2>&1)
+assert_field "batch recall empty queries" "error" "True" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/batch/recall" 2>&1)
+assert_field "batch recall GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

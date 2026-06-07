@@ -173,7 +173,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
 		// Single-tenant routes (v0.1–v0.3 behavior)
-		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
+		mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withRateLimit("/recall", s.handleBatchRecall)))
+	mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
 		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
 		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
 		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
