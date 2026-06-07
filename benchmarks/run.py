@@ -236,53 +236,115 @@ def load_longmemeval():
 def load_locomo():
     """
     Yield (conversation_id, turns, questions) for each conversation
-    in the LoCoMo (Backboard) dataset. Excludes category 5 (adversarial).
+    in the LoCoMo (Backboard) dataset.
+
+    The dataset is a flat JSON array (locomo_dataset.json). Each entry has:
+      - sessions: dict of {session_N: [{speaker, message}, ...]}
+      - qa: list of {question, answer, evidence, category}
+
+    Categories 1-5 are question types (temporal, numerical, etc.) —
+    all valid, none skipped.
     """
     data_path = os.path.join(DATA_DIR, "Backboard-Locomo-Benchmark")
-    conv_path = os.path.join(data_path, "conversations")
+    dataset_file = os.path.join(data_path, "locomo_dataset.json")
 
-    if not os.path.isdir(conv_path):
-        # Try flat structure
-        conv_path = data_path
+    if not os.path.exists(dataset_file):
+        # Fallback: try conversations subdirectory format
+        conv_path = os.path.join(data_path, "conversations")
+        if not os.path.isdir(conv_path):
+            conv_path = data_path
 
-    conv_dirs = sorted([
-        d for d in os.listdir(conv_path)
-        if os.path.isdir(os.path.join(conv_path, d)) and not d.startswith(".")
-    ])
+        conv_dirs = sorted([
+            d for d in os.listdir(conv_path)
+            if os.path.isdir(os.path.join(conv_path, d)) and not d.startswith(".")
+        ])
 
-    for cd in conv_dirs:
-        # Check category — skip adversarial (cat 5)
-        cat_file = os.path.join(conv_path, cd, "category.json")
-        if os.path.exists(cat_file):
-            with open(cat_file) as fh:
-                cat_data = json.load(fh)
-            if isinstance(cat_data, dict) and cat_data.get("category") in (5, "5"):
-                continue
+        for cd in conv_dirs:
+            # Category skip only applies to old subdirectory format
+            cat_file = os.path.join(conv_path, cd, "category.json")
+            if os.path.exists(cat_file):
+                with open(cat_file) as fh:
+                    cat_data = json.load(fh)
+                if isinstance(cat_data, dict) and cat_data.get("category") in (5, "5"):
+                    continue
 
-        # Load turns
+            turns = []
+            questions = []
+
+            turn_file = os.path.join(conv_path, cd, "turns.json")
+            if os.path.exists(turn_file):
+                with open(turn_file) as fh:
+                    turns = json.load(fh)
+
+            qa_file = os.path.join(conv_path, cd, "qa.json")
+            if os.path.exists(qa_file):
+                with open(qa_file) as fh:
+                    questions = json.load(fh)
+
+            if not turns and not questions:
+                conv_file = os.path.join(conv_path, f"{cd}.json")
+                if os.path.exists(conv_file):
+                    with open(conv_file) as fh:
+                        data = json.load(fh)
+                    turns = data.get("turns", data.get("history", []))
+                    questions = data.get("questions", data.get("qa_pairs", []))
+
+            yield cd, turns, questions
+        return
+
+    with open(dataset_file) as fh:
+        dataset = json.load(fh)
+
+    if isinstance(dataset, dict):
+        dataset = dataset.get("data", dataset.get("conversations", [dataset]))
+
+    for entry in dataset:
+        conv_id = entry.get(
+            "conversation_id",
+            entry.get("id", entry.get("conv_id", "")),
+        )
+
+        # Flatten sessions into ordered turns
         turns = []
-        turn_file = os.path.join(conv_path, cd, "turns.json")
-        if os.path.exists(turn_file):
-            with open(turn_file) as fh:
-                turns = json.load(fh)
+        sessions = entry.get("sessions", entry.get("conversations", {}))
+        if isinstance(sessions, dict):
+            for sk in sorted(sessions.keys()):
+                session_turns = sessions[sk]
+                if isinstance(session_turns, list):
+                    for turn in session_turns:
+                        if isinstance(turn, dict):
+                            speaker = turn.get("speaker", turn.get("role", ""))
+                            message = turn.get("message", turn.get("content", turn.get("text", "")))
+                            turns.append({"role": speaker.lower(), "content": message})
+                        else:
+                            turns.append({"role": "user", "content": str(turn)})
+        elif isinstance(sessions, list):
+            for turn in sessions:
+                if isinstance(turn, dict):
+                    speaker = turn.get("speaker", turn.get("role", ""))
+                    message = turn.get("message", turn.get("content", turn.get("text", "")))
+                    turns.append({"role": speaker.lower(), "content": message})
+                else:
+                    turns.append({"role": "user", "content": str(turn)})
 
-        # Load QA pairs
+        # Load QA pairs — all categories valid
+        raw_qa = entry.get("qa", entry.get("questions", entry.get("qa_pairs", [])))
         questions = []
-        qa_file = os.path.join(conv_path, cd, "qa.json")
-        if os.path.exists(qa_file):
-            with open(qa_file) as fh:
-                questions = json.load(fh)
+        if isinstance(raw_qa, list):
+            for q_item in raw_qa:
+                if isinstance(q_item, dict):
+                    questions.append({
+                        "question": q_item.get("question", q_item.get("query", "")),
+                        "answer": q_item.get("answer", q_item.get("ground_truth", "")),
+                        "category": q_item.get("category", 0),
+                        "evidence": q_item.get("evidence", ""),
+                    })
+                else:
+                    questions.append({"question": str(q_item), "answer": "", "category": 0, "evidence": ""})
 
-        if not turns and not questions:
-            # Single file per conversation
-            conv_file = os.path.join(conv_path, f"{cd}.json")
-            if os.path.exists(conv_file):
-                with open(conv_file) as fh:
-                    data = json.load(fh)
-                turns = data.get("turns", data.get("history", data.get("conversation", [])))
-                questions = data.get("questions", data.get("qa_pairs", []))
-
-        yield cd, turns, questions
+        if not conv_id:
+            continue
+        yield conv_id, turns, questions
 
 
 # ── Ingest ──────────────────────────────────────────────────────────────────
