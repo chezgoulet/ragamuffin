@@ -136,6 +136,21 @@ RESP=$(curl -s -X POST "$BASE/recall" \
   -d '{"query":"test","detail":"l3"}' 2>&1)
 assert_field "/recall invalid detail" "error" "True" "$RESP"
 
+# ── /v1/auth/check (GET + POST) ──────────────────────────────────────────
+echo "--- /v1/auth/check ---"
+
+# GET /v1/auth/check
+RESP=$(curl -sf "$BASE/v1/auth/check" 2>&1)
+assert_field "auth/check GET" "authenticated" "True" "$RESP"
+
+# POST /v1/auth/check
+RESP=$(curl -sf -X POST "$BASE/v1/auth/check" 2>&1)
+assert_field "auth/check POST" "authenticated" "True" "$RESP"
+
+# PUT /v1/auth/check (should 405)
+RESP=$(curl -s -X PUT "$BASE/v1/auth/check" 2>&1)
+assert_field "auth/check PUT method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── /v1/recall answer mode ─────────────────────────────────────────────────
 echo "--- /recall answer mode ---"
 
