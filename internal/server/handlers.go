@@ -853,6 +853,52 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+// ── /v1/refresh ───────────────────────────────────────────────────────────────
+
+type refreshRequest struct {
+	Vault string `json:"vault"`
+}
+
+func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	var req refreshRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+
+	vaultName := req.Vault
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	ok := s.indexers.Reindex(vaultName)
+	if !ok {
+		if s.indexers.Get(vaultName) == nil {
+			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+			return
+		}
+		writeError(w, 409, "CONFLICT", fmt.Sprintf("vault %q is already indexing", vaultName))
+		return
+	}
+
+	writeJSON(w, 202, map[string]any{
+		"status":  "accepted",
+		"vault":   vaultName,
+		"message": "Re-index started. Monitor progress via /health.",
+	})
+}
+
 // ── /reindex ───────────────────────────────────────────────────────────────────
 
 func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
