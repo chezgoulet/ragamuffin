@@ -463,6 +463,26 @@ assert_field "batch recall empty queries" "error" "True" "$RESP"
 RESP=$(curl -s "$BASE/v1/batch/recall" 2>&1)
 assert_field "batch recall GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
 
+# ── /v1/refresh ──────────────────────────────────────────────────────────
+echo "--- /v1/refresh ---"
+
+# POST /v1/refresh
+RESP=$(curl -s -X POST "$BASE/v1/refresh" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"default"}' 2>&1)
+assert_field "v1/refresh POST" "status" "accepted" "$RESP"
+assert_field "v1/refresh vault" "vault" "default" "$RESP"
+
+# POST with non-existent vault -> 404
+RESP=$(curl -s -X POST "$BASE/v1/refresh" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"nonexistent-vault"}' 2>&1)
+assert_field "v1/refresh unknown vault" "code" "NOT_FOUND" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/refresh" 2>&1)
+assert_field "v1/refresh GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
 # ── /v1/vaults/{name}/clear ─────────────────────────────────────────────────
