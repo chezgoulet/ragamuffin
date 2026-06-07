@@ -136,6 +136,20 @@ RESP=$(curl -s -X POST "$BASE/recall" \
   -d '{"query":"test","detail":"l3"}' 2>&1)
 assert_field "/recall invalid detail" "error" "True" "$RESP"
 
+# ── /v1/recall answer mode ─────────────────────────────────────────────────
+echo "--- /recall answer mode ---"
+
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"ragamuffin","answer":true}' 2>&1)
+assert_field "recall answer=true has answer" "answer" "True" "$RESP"
+assert_field "recall answer=true has results" "results" "True" "$RESP"
+
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"nonexistentxyz","answer":true,"score_threshold":0.99}' 2>&1)
+assert_field "recall answer=true no chunks" "results" "True" "$RESP"
+
 # ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────
 echo "--- /v1/chunks ---"
 # Get a valid chunk_id first
