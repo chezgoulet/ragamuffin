@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
@@ -24,152 +26,9 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
-
-// vaultSetup holds the components created for a single vault during startup.
-type vaultSetup struct {
-	Qc           qdrant.FactStore
-	DoneCh       chan struct{}   // close to signal watcher shutdown
-	PrunerEventCh chan watcher.Event // fed events for the pruner
-	InitialDone  chan struct{}   // closed when initial indexing completes
-}
-
-// buildVault creates a Qdrant client, indexer, watcher (with fan-out), and
-// starts the indexer event processor for one vault. Returns the assembled
-// components or an error. The caller must defer cancelIdx() to stop the
-// indexer goroutine, and use setup.DoneCh for watcher shutdown.
-func buildVault(
-	ctx context.Context,
-	logger *slog.Logger,
-	cfg *config.Config,
-	name, vaultPath, collectionName string,
-	idxManager *indexer.Manager,
-	ec embedding.Embedder,
-	lm llm.Synthesizer,
-	emitter *events.Emitter,
-	idxCancelFuncs *[]context.CancelFunc,
-	watcherDoneChs *[]chan struct{},
-	prunerEventChs *[]chan watcher.Event,
-) (*vaultSetup, error) {
-	// ── Connect to Qdrant (with reconnection loop) ──────────────────────
-	chunkVectorSize := uint64(cfg.EmbeddingDims)
-	if cfg.ChunkVectorSize > 0 {
-		chunkVectorSize = cfg.ChunkVectorSize
-	}
-	qc, err := qdrant.NewReconnecting(ctx, cfg.QdrantURL, collectionName, chunkVectorSize, logger)
-	if err != nil {
-		return nil, fmt.Errorf("qdrant connect for vault %q: %w", name, err)
-	}
-
-	// ── Create indexer ─────────────────────────────────────────────────
-	l := logger.With("vault", name)
-	idx := indexer.New(vaultPath, qc, ec, l)
-	idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
-	idx.OnFileEvent(func(action, path string) {
-		switch action {
-		case "deleted":
-			emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
-		default:
-			emitter.Emit(events.TypeFileChanged, events.FileChangedData{
-				Path: path, Action: action,
-			})
-		}
-	})
-
-	if err := idxManager.Add(name, idx, qc); err != nil {
-		qc.Close()
-		return nil, fmt.Errorf("register vault %q: %w", name, err)
-	}
-
-	// ── Start watcher with fan-out ─────────────────────────────────────
-	interval, err := time.ParseDuration(cfg.WatchInterval)
-	if err != nil {
-		interval = 60 * time.Second
-	}
-	w := watcher.New(vaultPath, interval, l, cfg.WatcherMode)
-
-	rawEvents := make(chan watcher.Event, 10000)
-	idxEvents := make(chan watcher.Event, 10000)
-	prunevents := make(chan watcher.Event, 10000)
-	doneCh := make(chan struct{})
-	*watcherDoneChs = append(*watcherDoneChs, doneCh)
-	*prunerEventChs = append(*prunerEventChs, prunevents)
-
-	// Back-pressure semaphore: limits concurrent retry goroutines to cap (#435).
-	// Under sustained burst (e.g. 10k file git pull), the default case fires and
-	// spawns a goroutine. The semaphore prevents unbounded growth — when full,
-	// the event is dropped immediately with a warning instead of blocking or
-	// spawning another goroutine.
-	const fanoutSemCap = 1000
-	idxSem := make(chan struct{}, fanoutSemCap)
-	pruneSem := make(chan struct{}, fanoutSemCap)
-
-	go w.Watch(rawEvents, doneCh)
-	go func() {
-		for {
-			select {
-			case e, ok := <-rawEvents:
-				if !ok {
-					return
-				}
-				// Fan-out with back-pressure: try-send, then spawn retry.
-				// Each retry goroutine lives at most 30s and prevents silent drops (#411).
-				select {
-				case idxEvents <- e:
-				default:
-					select {
-					case idxSem <- struct{}{}:
-						go func(ev watcher.Event) {
-							defer func() { <-idxSem }()
-							select {
-							case idxEvents <- ev:
-							case <-time.After(30 * time.Second):
-								l.Warn("indexer event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
-							}
-						}(e)
-					default:
-						l.Warn("indexer event dropped — fan-out semaphore full", "path", e.Path, "action", e.Action, "cap", fanoutSemCap)
-					}
-				}
-				select {
-				case prunevents <- e:
-				default:
-					select {
-					case pruneSem <- struct{}{}:
-						go func(ev watcher.Event) {
-							defer func() { <-pruneSem }()
-							select {
-							case prunevents <- ev:
-							case <-time.After(30 * time.Second):
-								l.Warn("pruner event dropped after 30s back-pressure", "path", ev.Path, "action", ev.Action)
-							}
-						}(e)
-					default:
-						l.Warn("pruner event dropped — fan-out semaphore full", "path", e.Path, "action", e.Action, "cap", fanoutSemCap)
-					}
-				}
-			case <-doneCh:
-				return
-			}
-		}
-	}()
-	l.Info("watcher started", "interval", interval)
-
-	// ── Start indexer event processor ──────────────────────────────────
-	idxCtx, idxCancel := context.WithCancel(context.Background())
-	*idxCancelFuncs = append(*idxCancelFuncs, idxCancel)
-	initialDone := make(chan struct{})
-
-	go idx.ProcessEvents(idxCtx, idxEvents, initialDone)
-
-	return &vaultSetup{
-		Qc:            qc,
-		DoneCh:        doneCh,
-		PrunerEventCh: prunevents,
-		InitialDone:   initialDone,
-	}, nil
-}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
@@ -264,32 +123,84 @@ func main() {
 		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
 	}
 
-	// ── Build vault indexers ─────────────────────────────────────────────────
+	// ── Build vault indexers via FileWatcherDriver ───────────────────────────
 	idxManager := indexer.NewManager()
 	ctx := context.Background()
 
 	// Collections for shutdown tracking
 	var idxCancelFuncs []context.CancelFunc
-	var watcherDoneChs []chan struct{}
 	var prunerEventChs []chan watcher.Event
+	var driverCancelFuncs []context.CancelFunc
+	var drivers []ingress.IngressDriver // all IngressDriver instances (for fan-in + lifecycle)
+	var initialDoneChs []chan struct{}
+
+	// Shared driver config
+	chunkVectorSize := uint64(cfg.EmbeddingDims)
+	if cfg.ChunkVectorSize > 0 {
+		chunkVectorSize = cfg.ChunkVectorSize
+	}
+	watchInterval := 60 * time.Second
+	if parsed, err := time.ParseDuration(cfg.WatchInterval); err == nil {
+		watchInterval = parsed
+	}
 
 	if cfg.IsMultiTenant() {
 		logger.Info("configuring vault indexers", "count", len(cfg.Vaults))
-
-		var readyChans []chan struct{}
 
 		for name, vc := range cfg.Vaults {
 			collectionName := fmt.Sprintf("ragamuffin_%s", name)
 			vlog := logger.With("vault", name)
 
-			setup, err := buildVault(ctx, vlog, cfg, name, vc.Path, collectionName,
-				idxManager, ec, lm, emitter,
-				&idxCancelFuncs, &watcherDoneChs, &prunerEventChs)
+			drv, err := ingress.NewFileWatcherDriver(ctx, ingress.FileWatcherConfig{
+				Name:            name,
+				VaultPath:       vc.Path,
+				CollectionName:  collectionName,
+				QdrantURL:       cfg.QdrantURL,
+				ChunkVectorSize: chunkVectorSize,
+				ChunkMaxTokens:  cfg.ChunkMaxTokens,
+				WatcherMode:     cfg.WatcherMode,
+				WatchInterval:   watchInterval,
+				Logger:          vlog,
+			})
 			if err != nil {
-				logger.Error("failed to build vault", "vault", name, "error", err)
+				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
 				os.Exit(1)
 			}
-			defer setup.Qc.Close()
+			defer drv.Close()
+
+			// Create indexer (shared infrastructure, not driver-owned)
+			idx := indexer.New(vc.Path, drv.QdrantClient(), ec, vlog)
+			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+			idx.OnFileEvent(func(action, path string) {
+				switch action {
+				case "deleted":
+					emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
+				default:
+					emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+						Path: path, Action: action,
+					})
+				}
+			})
+			if err := idxManager.Add(name, idx, drv.QdrantClient()); err != nil {
+				logger.Error("failed to register vault", "vault", name, "error", err)
+				os.Exit(1)
+			}
+
+			// Wire pruner events
+			prunerEventChs = append(prunerEventChs, drv.PrunerEvents())
+
+			// Start indexer event processor
+			idxCtx, idxCancel := context.WithCancel(context.Background())
+			idxCancelFuncs = append(idxCancelFuncs, idxCancel)
+			initialDone := make(chan struct{})
+			initialDoneChs = append(initialDoneChs, initialDone)
+			go idx.ProcessEvents(idxCtx, drv.WatcherEvents(), initialDone)
+
+			// Start driver event loop (watcher + fan-out)
+			drvCtx, drvCancel := context.WithCancel(context.Background())
+			driverCancelFuncs = append(driverCancelFuncs, drvCancel)
+			go drv.Run(drvCtx)
+			drivers = append(drivers, drv)
 
 			// Per-vault LLM client (optional override)
 			if vc.HasLLM() {
@@ -312,28 +223,69 @@ func main() {
 			}
 
 			logger.Info("vault indexer started", "vault", name, "path", vc.Path, "collection", collectionName)
-			readyChans = append(readyChans, setup.InitialDone)
 		}
 
 		// Wait for all vaults to complete initial indexing
-		for _, ch := range readyChans {
+		for _, ch := range initialDoneChs {
 			<-ch
 		}
 		logger.Info("all vaults initial indexing complete")
 
 	} else {
-		// Single-tenant: one indexer, one Qdrant connection
-		setup, err := buildVault(ctx, logger, cfg, "default", cfg.VaultPath, cfg.QdrantCollection,
-			idxManager, ec, lm, emitter,
-			&idxCancelFuncs, &watcherDoneChs, &prunerEventChs)
+		// Single-tenant: one driver, one indexer
+		drv, err := ingress.NewFileWatcherDriver(ctx, ingress.FileWatcherConfig{
+			Name:            "default",
+			VaultPath:       cfg.VaultPath,
+			CollectionName:  cfg.QdrantCollection,
+			QdrantURL:       cfg.QdrantURL,
+			ChunkVectorSize: chunkVectorSize,
+			ChunkMaxTokens:  cfg.ChunkMaxTokens,
+			WatcherMode:     cfg.WatcherMode,
+			WatchInterval:   watchInterval,
+			Logger:          logger,
+		})
 		if err != nil {
-			logger.Error("failed to build vault", "error", err)
+			logger.Error("failed to create file watcher driver", "error", err)
 			os.Exit(1)
 		}
-		defer setup.Qc.Close()
+		defer drv.Close()
+
+		// Create indexer
+		idx := indexer.New(cfg.VaultPath, drv.QdrantClient(), ec, logger)
+		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
+		idx.OnFileEvent(func(action, path string) {
+			switch action {
+			case "deleted":
+				emitter.Emit(events.TypeFileDeleted, events.FileDeletedData{Path: path})
+			default:
+				emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+					Path: path, Action: action,
+				})
+			}
+		})
+		if err := idxManager.Add("default", idx, drv.QdrantClient()); err != nil {
+			logger.Error("failed to register vault", "error", err)
+			os.Exit(1)
+		}
+
+		// Wire pruner events
+		prunerEventChs = append(prunerEventChs, drv.PrunerEvents())
+
+		// Start indexer event processor
+		idxCtx, idxCancel := context.WithCancel(context.Background())
+		idxCancelFuncs = append(idxCancelFuncs, idxCancel)
+		initialDone := make(chan struct{})
+		initialDoneChs = append(initialDoneChs, initialDone)
+		go idx.ProcessEvents(idxCtx, drv.WatcherEvents(), initialDone)
+
+		// Start driver event loop (watcher + fan-out)
+		drvCtx, drvCancel := context.WithCancel(context.Background())
+		driverCancelFuncs = append(driverCancelFuncs, drvCancel)
+		go drv.Run(drvCtx)
+		drivers = append(drivers, drv)
 
 		// Wait for initial indexing to complete
-		<-setup.InitialDone
+		<-initialDone
 		logger.Info("initial indexing complete")
 
 	}
@@ -464,7 +416,56 @@ func main() {
 	}
 	ext.SetEmitter(emitter)
 
-	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext)
+	// ── API Ingest Driver ────────────────────────────────────────────────────
+	apiDriver := ingress.NewAPIIngestDriver(
+		"api-ingest",
+		logger,
+		func(ctx context.Context, content, source, vault string, tags []string) error {
+			idx := idxManager.Get(vault)
+			if idx == nil {
+				return fmt.Errorf("vault %q not found and auto-provision not available via driver", vault)
+			}
+			return idx.Ingest(ctx, content, source, tags)
+		},
+	)
+	drvCtxAPI, drvCancelAPI := context.WithCancel(context.Background())
+	driverCancelFuncs = append(driverCancelFuncs, drvCancelAPI)
+	go apiDriver.Run(drvCtxAPI)
+	drivers = append(drivers, apiDriver)
+
+	// ── Driver Event Fan-In ────────────────────────────────────────────────────
+	// Select across all IngressDriver Events() channels for observability.
+	// In v0.9, this is primarily a monitoring/logging fan-in that consumes
+	// events emitted by all drivers. Future iterations may feed these events
+	// into a shared indexer pipeline.
+	go func() {
+		cases := make([]reflect.SelectCase, len(drivers))
+		drvNames := make([]string, len(drivers))
+		for i, drv := range drivers {
+			cases[i] = reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(drv.Events()),
+			}
+			drvNames[i] = drv.Name()
+		}
+		for {
+			chosen, recv, ok := reflect.Select(cases)
+			if !ok {
+				continue // channel was closed — driver is done
+			}
+			evt, ok := recv.Interface().(ingress.IngestEvent)
+			if !ok {
+				continue
+			}
+			logger.Debug("ingress event",
+				"driver", drvNames[chosen],
+				"action", evt.Action,
+				"path", evt.Path,
+			)
+		}
+	}()
+
+	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext, apiDriver)
 
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
@@ -519,9 +520,9 @@ func main() {
 			cancel()
 		}
 
-		// 3. Close all watcher event channels (no new events)
-		for _, ch := range watcherDoneChs {
-			close(ch)
+		// 3. Stop all drivers (cancels watcher + fan-out goroutines)
+		for _, cancel := range driverCancelFuncs {
+			cancel()
 		}
 
 		// 4. Graceful HTTP server drain
