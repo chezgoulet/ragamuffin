@@ -1,46 +1,57 @@
 #!/usr/bin/env python3
 """
-Ragamuffin benchmark harness.
-Runs LongMemEval or LoCoMo against a local Ragamuffin instance.
+Ragamuffin benchmark harness v2 — resilient, /ask-based, checkpointed.
+
+Usage:
+    python3 benchmarks/run.py --benchmark longmemeval --config a --max-convs 5
+    python3 benchmarks/run.py --benchmark locomo --config b --resume
+    python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 0
+
+Configs:
+  a — Pure /ask (recall + synthesize)
+  b — /ask + facts (auto_extract on ingest)
+  c — Tiered /ask
+  d — /ask + facts + fact graph (auto_extract on ingest)
 """
 
 import argparse
 import json
 import os
+import re
 import sys
 import time
-import urllib.parse
 
 import requests
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
 RAGAMUFFIN_URL = os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000")
-GPT4O_MINI_KEY = os.environ.get("OPENAI_API_KEY", "")
-GPT4O_MINI_MODEL = "gpt-4o-mini"
-EVALUATOR_MAX_TOKENS = 512
+LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
+LITELLM_API_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BENCH_DIR, "data")
 
+CHECKPOINT_INTERVAL = 50  # save every N questions
+
 # ── API helpers ─────────────────────────────────────────────────────────────
 
 
-def api_post(path, json_body, description=None):
+def api_post(path, json_body, timeout=30):
     url = f"{RAGAMUFFIN_URL}{path}"
-    r = requests.post(url, json=json_body, timeout=30)
+    r = requests.post(url, json=json_body, timeout=timeout)
     if r.status_code >= 400:
-        print(f"  [WARN] POST {path} returned {r.status_code}: {r.text[:200]}", file=sys.stderr)
-    r.raise_for_status()
+        msg = r.text[:200]
+        raise requests.HTTPError(f"POST {path} {r.status_code}: {msg}", response=r)
     return r.json()
 
 
-def api_get(path, params=None):
+def api_get(path, params=None, timeout=30):
     url = f"{RAGAMUFFIN_URL}{path}"
-    r = requests.get(url, params=params, timeout=30)
+    r = requests.get(url, params=params, timeout=timeout)
     if r.status_code >= 400:
-        print(f"  [WARN] GET {path} returned {r.status_code}: {r.text[:200]}", file=sys.stderr)
-    r.raise_for_status()
+        msg = r.text[:200]
+        raise requests.HTTPError(f"GET {path} {r.status_code}: {msg}", response=r)
     return r.json()
 
 
@@ -53,24 +64,14 @@ def wait_for_indexing(vault="default", poll_sec=2, timeout_sec=300):
         if not idx:
             return
         time.sleep(poll_sec)
-    raise TimeoutError(f"Indexing did not complete within {timeout_sec}s")
+    print(f"  [WARN] Indexing may not have completed within {timeout_sec}s", file=sys.stderr)
 
 
-def recall_query(query, top_k=10, detail="l2"):
-    return api_post("/recall", {"query": query, "top_k": top_k, "detail": detail})
-
-
-def list_facts(prefix=""):
-    return api_get("/v1/facts", params={"prefix": prefix})
-
-
-def get_chunk(chunk_id):
-    return api_get(f"/v1/chunks/{chunk_id}")
-
-
-def get_fact_graph(fact_key, depth=2):
-    return api_get(f"/v1/facts/{urllib.parse.quote(fact_key, safe='')}/graph",
-                   params={"depth": depth})
+def ask_in_vault(vault, query, mode="rag", top_k=10, timeout=30):
+    """POST /vault/{vault}/ask and return the answer text."""
+    body = {"query": query, "mode": mode, "top_k": top_k}
+    result = api_post(f"/vault/{vault}/ask", body, timeout=timeout)
+    return result.get("answer", "")
 
 
 def create_session(agent_id, content, vault, auto_extract=False):
@@ -88,107 +89,32 @@ def append_turn(session_id, content, role="user", auto_extract=False):
     return api_post(f"/v1/sessions/{session_id}/turns", body)
 
 
-# ── Evaluator LLM ───────────────────────────────────────────────────────────
+# ── Retry wrapper ───────────────────────────────────────────────────────────
 
 
-def call_evaluator_llm(prompt):
-    """Call GPT-4o-mini with a prompt, return response text."""
-    if not GPT4O_MINI_KEY:
-        raise RuntimeError("OPENAI_API_KEY required for evaluator LLM")
-    r = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {GPT4O_MINI_KEY}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": GPT4O_MINI_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": EVALUATOR_MAX_TOKENS,
-            "temperature": 0.0,
-        },
-        timeout=30,
-    )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
-
-
-# ── Recall → Answer pipeline ────────────────────────────────────────────────
-
-
-def build_answer_prompt(question, context_chunks, facts=None, graph_info=None):
-    """Format retrieved context into a prompt for the evaluator LLM."""
-    lines = ["You are answering questions based on a conversation history."]
-    lines.append("")
-    lines.append("=== Retrieved Chunks ===")
-    for i, c in enumerate(context_chunks):
-        text = c.get("text", c.get("first_paragraph", ""))
-        lines.append(f"[{i+1}] {text}")
-    if facts:
-        lines.append("")
-        lines.append("=== Retrieved Facts ===")
-        for f in facts:
-            lines.append(f"- {f.get('key', '?')}: {f.get('value', '?')}")
-    if graph_info:
-        lines.append("")
-        lines.append("=== Fact Relationships ===")
-        for edge in graph_info.get("edges", []):
-            lines.append(f"  {edge['source']} --{edge['relationship']}--> {edge['target']}")
-    lines.append("")
-    lines.append(f"Question: {question}")
-    lines.append("")
-    lines.append("Answer concisely. If the information is not present, say 'I don't know'.")
-    return "\n".join(lines)
-
-
-def answer_from_context(question, config, vault=""):
+def answer_with_retry(question, vault, mode="rag", top_k=10, max_retries=5):
     """
-    Retrieves context using the given config, then calls evaluator LLM.
-    Returns (answer_text, context_summary).
+    Answer a single question via /vault/{vault}/ask with exponential backoff.
+    Never raises — returns "ANSWER_FAILED" after exhausting retries.
     """
-    config = config.lower()
-    context_chunks = []
-    facts = []
-    graph_info = None
-
-    if config in ("a", "c"):
-        # Pure recall or tiered recall
-        if config == "c":
-            result = recall_query(question, top_k=10, detail="l0")
-        else:
-            result = recall_query(question, top_k=10, detail="l2")
-
-        results_list = result.get("results", [])
-        for r_item in results_list:
-            if config == "c":
-                # Tiered: get only chunk_id then fetch full
-                cid = r_item.get("chunk_id", "")
-                if cid:
-                    chunk = get_chunk(cid)
-                    context_chunks.append(chunk)
+    for attempt in range(1, max_retries + 1):
+        try:
+            return ask_in_vault(question, vault, mode=mode, top_k=top_k)
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response else 0
+            if status == 429:
+                wait = 15 * (2 ** (attempt - 1))
+            elif status in (502, 503):
+                wait = 10 * attempt
             else:
-                context_chunks.append(r_item)
-
-    elif config in ("b", "d"):
-        # Recall + Facts
-        result = recall_query(question, top_k=10, detail="l2")
-        context_chunks = result.get("results", [])
-        # Get facts for this vault
-        facts_resp = list_facts(prefix=vault)
-        facts = facts_resp.get("entries", [])
-        if config == "d":
-            # Full stack: also get fact graphs for top facts
-            for f in facts[:3]:
-                fk = f.get("key", "")
-                if fk:
-                    try:
-                        graph_info = get_fact_graph(fk, depth=2)
-                    except requests.HTTPError:
-                        pass
-
-    prompt = build_answer_prompt(question, context_chunks, facts, graph_info)
-    answer = call_evaluator_llm(prompt)
-    return answer, {"chunks": len(context_chunks), "facts": len(facts), "graph": graph_info is not None}
+                wait = 5 * attempt
+            print(f"  [WARN] Q attempt {attempt}/{max_retries} ({status}): {e}", file=sys.stderr)
+        except (requests.Timeout, ConnectionError) as e:
+            wait = 5 * attempt
+            print(f"  [WARN] Q attempt {attempt}/{max_retries} (timeout): {e}", file=sys.stderr)
+        time.sleep(wait)
+    print(f"  [ERROR] Q failed after {max_retries} attempts, skipping", file=sys.stderr)
+    return "ANSWER_FAILED"
 
 
 # ── Data loaders ────────────────────────────────────────────────────────────
@@ -198,16 +124,23 @@ def load_longmemeval():
     """
     Yield (conversation_id, turns, questions) for each conversation
     in the LongMemEval "S" (shorter) setting.
+
+    500 individual JSON files in data/LongMemEval/data/S/. Each file:
+      - sessions: dict[session_id -> list[{role, content}]]
+      - question, answer, question_type, question_id, answer_session_ids
     """
-    data_path = os.path.join(DATA_DIR, "LongMemEval", "data")
-    s_path = os.path.join(data_path, "S")
-    if not os.path.isdir(s_path):
-        # Try alternative paths
-        for p in [os.path.join(data_path, "setting_S"),
-                  os.path.join(data_path, "short")]:
-            if os.path.isdir(p):
-                s_path = p
-                break
+    s_path = None
+    base = os.path.join(DATA_DIR, "LongMemEval", "data")
+    for candidate in [os.path.join(base, "S"),
+                      os.path.join(base, "setting_S"),
+                      os.path.join(base, "short")]:
+        if os.path.isdir(candidate):
+            s_path = candidate
+            break
+
+    if not s_path:
+        # Try data root
+        s_path = os.path.join(DATA_DIR, "LongMemEval")
 
     conv_files = sorted([
         os.path.join(s_path, f)
@@ -216,20 +149,43 @@ def load_longmemeval():
     ])
 
     if not conv_files:
-        # Flat JSON in data root
-        conv_files = sorted([
-            os.path.join(DATA_DIR, "LongMemEval", f)
-            for f in os.listdir(os.path.join(DATA_DIR, "LongMemEval"))
-            if f.endswith(".json") and not f.startswith(".")
-        ])
+        print(f"  [ERROR] No JSON files found in {s_path}", file=sys.stderr)
+        return
 
     for cf in conv_files:
         with open(cf) as fh:
             data = json.load(fh)
 
-        conv_id = data.get("conversation_id", os.path.splitext(os.path.basename(cf))[0])
-        turns = data.get("turns", data.get("history", data.get("conversation", [])))
-        questions = data.get("questions", data.get("qa_pairs", data.get("evaluation", [])))
+        conv_id = data.get("question_id", data.get("conversation_id",
+                          os.path.splitext(os.path.basename(cf))[0]))
+
+        # Flatten sessions dict into ordered turns
+        sessions = data.get("sessions", {})
+        turns = []
+        if isinstance(sessions, dict):
+            for sk in sorted(sessions.keys()):
+                session_turns = sessions[sk]
+                if isinstance(session_turns, list):
+                    for turn in session_turns:
+                        if isinstance(turn, dict):
+                            role = turn.get("role", turn.get("speaker", "user"))
+                            content = turn.get("content", turn.get("message", turn.get("text", "")))
+                        else:
+                            role = "user"
+                            content = str(turn)
+                        turns.append({"role": role.lower(), "content": content})
+
+        # One question per conversation
+        question_text = data.get("question", "")
+        answer_text = str(data.get("answer", ""))
+        questions = [{
+            "question": question_text,
+            "answer": answer_text,
+            "type": data.get("question_type", ""),
+        }]
+
+        if not turns or not question_text:
+            continue
         yield conv_id, turns, questions
 
 
@@ -238,12 +194,10 @@ def load_locomo():
     Yield (conversation_id, turns, questions) for each conversation
     in the LoCoMo (Backboard) dataset.
 
-    The dataset is a flat JSON array (locomo_dataset.json). Each entry has:
-      - sessions: dict of {session_N: [{speaker, message}, ...]}
+    Flat JSON array (locomo_dataset.json). Each entry has:
+      - conversation: dict with session_N keys
       - qa: list of {question, answer, evidence, category}
-
-    Categories 1-5 are question types (temporal, numerical, etc.) —
-    all valid, none skipped.
+      - sample_id
     """
     data_path = os.path.join(DATA_DIR, "Backboard-Locomo-Benchmark")
     dataset_file = os.path.join(data_path, "locomo_dataset.json")
@@ -260,7 +214,6 @@ def load_locomo():
         ])
 
         for cd in conv_dirs:
-            # Category skip only applies to old subdirectory format
             cat_file = os.path.join(conv_path, cd, "category.json")
             if os.path.exists(cat_file):
                 with open(cat_file) as fh:
@@ -269,13 +222,12 @@ def load_locomo():
                     continue
 
             turns = []
-            questions = []
-
             turn_file = os.path.join(conv_path, cd, "turns.json")
             if os.path.exists(turn_file):
                 with open(turn_file) as fh:
                     turns = json.load(fh)
 
+            questions = []
             qa_file = os.path.join(conv_path, cd, "qa.json")
             if os.path.exists(qa_file):
                 with open(qa_file) as fh:
@@ -299,33 +251,30 @@ def load_locomo():
         dataset = dataset.get("data", dataset.get("conversations", [dataset]))
 
     for entry in dataset:
-        conv_id = entry.get(
-            "conversation_id",
-            entry.get("id", entry.get("conv_id", "")),
-        )
+        conv_id = entry.get("sample_id", entry.get("conversation_id",
+                            entry.get("id", "")))
 
-        # Flatten sessions into ordered turns
+        # Flatten conversation sessions
         turns = []
-        sessions = entry.get("sessions", entry.get("conversations", {}))
-        if isinstance(sessions, dict):
-            for sk in sorted(sessions.keys()):
-                session_turns = sessions[sk]
+        conv = entry.get("conversation", entry.get("sessions", {}))
+        if isinstance(conv, dict):
+            for sk in sorted(conv.keys()):
+                session_turns = conv[sk]
                 if isinstance(session_turns, list):
                     for turn in session_turns:
                         if isinstance(turn, dict):
-                            speaker = turn.get("speaker", turn.get("role", ""))
+                            speaker = turn.get("speaker", turn.get("role", "")).lower()
                             message = turn.get("message", turn.get("content", turn.get("text", "")))
-                            turns.append({"role": speaker.lower(), "content": message})
+                            # Speaker mapping: speaker_a -> user, speaker_b -> assistant
+                            if speaker in ("speaker_a", "user", "human"):
+                                role = "user"
+                            elif speaker in ("speaker_b", "assistant", "ai", "bot"):
+                                role = "assistant"
+                            else:
+                                role = speaker
+                            turns.append({"role": role, "content": message})
                         else:
                             turns.append({"role": "user", "content": str(turn)})
-        elif isinstance(sessions, list):
-            for turn in sessions:
-                if isinstance(turn, dict):
-                    speaker = turn.get("speaker", turn.get("role", ""))
-                    message = turn.get("message", turn.get("content", turn.get("text", "")))
-                    turns.append({"role": speaker.lower(), "content": message})
-                else:
-                    turns.append({"role": "user", "content": str(turn)})
 
         # Load QA pairs — all categories valid
         raw_qa = entry.get("qa", entry.get("questions", entry.get("qa_pairs", [])))
@@ -335,14 +284,17 @@ def load_locomo():
                 if isinstance(q_item, dict):
                     questions.append({
                         "question": q_item.get("question", q_item.get("query", "")),
-                        "answer": q_item.get("answer", q_item.get("ground_truth", "")),
+                        "answer": str(q_item.get("answer", q_item.get("ground_truth", ""))),
                         "category": q_item.get("category", 0),
                         "evidence": q_item.get("evidence", ""),
                     })
                 else:
-                    questions.append({"question": str(q_item), "answer": "", "category": 0, "evidence": ""})
+                    questions.append({
+                        "question": str(q_item), "answer": "",
+                        "category": 0, "evidence": "",
+                    })
 
-        if not conv_id:
+        if not conv_id or not turns:
             continue
         yield conv_id, turns, questions
 
@@ -351,11 +303,10 @@ def load_locomo():
 
 
 def ingest_conversation(conv_id, turns, vault, auto_extract=False):
-    """Ingest a conversation into Ragamuffin. Returns session_id."""
+    """Ingest a conversation into Ragamuffin. Returns session_id or None."""
     if not turns:
         return None
 
-    # Build content from first turn
     first_turn = turns[0]
     if isinstance(first_turn, dict):
         content = first_turn.get("content", first_turn.get("text", ""))
@@ -368,8 +319,9 @@ def ingest_conversation(conv_id, turns, vault, auto_extract=False):
     session = create_session(f"bench-{conv_id}", full_content, vault,
                              auto_extract=auto_extract)
     session_id = session.get("session_id", session.get("id", ""))
+    if not session_id:
+        return None
 
-    # Append remaining turns
     for turn in turns[1:]:
         if isinstance(turn, dict):
             content = turn.get("content", turn.get("text", ""))
@@ -384,113 +336,223 @@ def ingest_conversation(conv_id, turns, vault, auto_extract=False):
     return session_id
 
 
-# ── Scoring ────────────────────────────────────────────────────────────────
+# ── Checkpoint ──────────────────────────────────────────────────────────────
 
 
-def score_longmemeval(answers, ground_truths):
-    """Use LongMemEval's evaluation protocol with GPT-4o-mini."""
-    correct = 0
-    total = 0
-    details = []
-    for qid, (answer, gt) in enumerate(zip(answers, ground_truths)):
-        total += 1
-        # Ask evaluator to judge correctness
-        eval_prompt = (
-            f"Question has ground truth: {gt}\n"
-            f"System answered: {answer}\n\n"
-            "Is this answer correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
+def save_checkpoint(path, results):
+    """Write incremental results to checkpoint file."""
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(results, fh, indent=2)
+    os.replace(tmp, path)
+
+
+def load_checkpoint(path):
+    """Load checkpoint. Returns (results dict, set of completed (conv_id, q_idx))."""
+    if not os.path.exists(path):
+        return None, set()
+    with open(path) as fh:
+        results = json.load(fh)
+    completed = set()
+    for conv in results.get("per_conversation", []):
+        cid = conv.get("conversation", "")
+        for i, d in enumerate(conv.get("details", [])):
+            if d.get("answer", "") or d.get("f1") is not None:
+                completed.add((cid, i))
+    return results, completed
+
+
+# ── Scoring ─────────────────────────────────────────────────────────────────
+
+
+def call_evaluator_llm(prompt):
+    """Call LiteLLM proxy chat/completions with the evaluator prompt."""
+    api_key = LITELLM_API_KEY or os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "No API key found for evaluator LLM. "
+            "Set LITELLM_MASTER_KEY or OPENAI_API_KEY."
         )
-        verdict = call_evaluator_llm(eval_prompt).strip().upper()
-        if "CORRECT" in verdict:
-            correct += 1
-            details.append((qid, True))
-        else:
-            details.append((qid, False))
-    return correct / total if total > 0 else 0.0, details
+
+    r = requests.post(
+        f"{LITELLM_URL}/v1/chat/completions",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 512,
+            "temperature": 0.0,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
 
 
-def score_locomo(answers, ground_truths):
-    """Token-level F1 with Porter stemming."""
-    # Simplified: use word-overlap F1 for each answer
-    import re
-    from collections import Counter
+def score_longmemeval(answer, ground_truth):
+    """Judge correctness via evaluator LLM. Returns 1.0 or 0.0."""
+    if answer == "ANSWER_FAILED":
+        return 0.0
+    prompt = (
+        f"Ground truth: {ground_truth}\n"
+        f"System answer: {answer}\n\n"
+        "Is this answer correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
+    )
+    try:
+        verdict = call_evaluator_llm(prompt).strip().upper()
+        return 1.0 if "CORRECT" in verdict else 0.0
+    except Exception as e:
+        print(f"  [WARN] LLM judge failed: {e}", file=sys.stderr)
+        return 0.0
 
-    def tokenize(text):
-        words = re.findall(r"[a-z0-9']+", text.lower())
-        # Porter stemmer approximation — just remove common suffixes
-        stemmed = []
-        for w in words:
-            for suffix in ["ing", "ed", "ly", "es", "s", "ion", "tion", "ment"]:
-                if w.endswith(suffix) and len(w) > len(suffix) + 1:
-                    w = w[:-len(suffix)]
-                    break
-            stemmed.append(w)
-        return stemmed
 
-    f1_scores = []
-    for ans, gt in zip(answers, ground_truths):
-        if isinstance(gt, dict):
-            gt = gt.get("answer", gt.get("ground_truth", ""))
-        a_tokens = tokenize(ans)
-        g_tokens = tokenize(gt)
-        if not a_tokens and not g_tokens:
-            f1_scores.append(1.0)
-            continue
-        a_counts = Counter(a_tokens)
-        g_counts = Counter(g_tokens)
-        overlap = sum((a_counts & g_counts).values())
-        precision = overlap / len(a_tokens) if a_tokens else 0.0
-        recall = overlap / len(g_tokens) if g_tokens else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        f1_scores.append(f1)
-    return sum(f1_scores) / len(f1_scores) if f1_scores else 0.0, f1_scores
+def tokenize(text):
+    """Lowercase, split on non-alpha, return list of tokens."""
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def token_f1(pred, ref):
+    """Token-level F1 with Porter stemming approximation."""
+    p_tokens = tokenize(pred)
+    r_tokens = tokenize(ref)
+
+    # Porter stemmer approximation: common suffixes
+    p_set = set()
+    r_set = set()
+    for t in p_tokens:
+        for suf in ["ing", "ed", "ly", "es", "s", "tion", "ment", "ness"]:
+            if t.endswith(suf) and len(t) > len(suf) + 2:
+                t = t[:-len(suf)]
+                break
+        p_set.add(t)
+    for t in r_tokens:
+        for suf in ["ing", "ed", "ly", "es", "s", "tion", "ment", "ness"]:
+            if t.endswith(suf) and len(t) > len(suf) + 2:
+                t = t[:-len(suf)]
+                break
+        r_set.add(t)
+
+    if not p_set and not r_set:
+        return 1.0
+    if not p_set or not r_set:
+        return 0.0
+
+    intersection = p_set & r_set
+    precision = len(intersection) / len(p_set)
+    recall = len(intersection) / len(r_set)
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def score_locomo(answer, ground_truth):
+    """Token-level F1 score. Returns float 0-1."""
+    if answer == "ANSWER_FAILED":
+        return 0.0
+    return token_f1(answer, ground_truth)
 
 
 # ── Main ────────────────────────────────────────────────────────────────────
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(description="Ragamuffin benchmark harness")
-    parser.add_argument("--benchmark", required=True, choices=["longmemeval", "locomo"],
-                        help="Benchmark to run")
-    parser.add_argument("--config", required=True, choices=["a", "b", "c", "d"],
-                        help="Configuration variant")
+    parser.add_argument("--benchmark", required=True,
+                        choices=["longmemeval", "locomo"],
+                        help="Benchmark dataset")
+    parser.add_argument("--config", required=True,
+                        choices=["a", "b", "c", "d"],
+                        help="Configuration preset")
+    parser.add_argument("--max-convs", type=int, default=0,
+                        help="Max conversations (0 = all)")
+    parser.add_argument("--skip-ingest", action="store_true",
+                        help="Skip ingestion, reuse existing vaults")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from checkpoint")
+    parser.add_argument("--output", default="",
+                        help="Output path (default: auto-generated)")
     parser.add_argument("--vault-prefix", default="bench-",
                         help="Prefix for vault names")
-    parser.add_argument("--skip-ingest", action="store_true",
-                        help="Skip ingestion (reuse existing data)")
-    parser.add_argument("--max-convs", type=int, default=0,
-                        help="Max conversations to process (0 = all)")
-    parser.add_argument("--output", default="",
-                        help="Path to write results JSON (optional)")
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    if not GPT4O_MINI_KEY:
-        print("ERROR: OPENAI_API_KEY is required", file=sys.stderr)
-        sys.exit(1)
 
-    # Load dataset
-    print(f"Loading {args.benchmark}...")
+def build_ask_mode(config):
+    """Map config letter to /ask mode parameter."""
+    if config in ("c", "d"):
+        return "tiered"
+    return "rag"
+
+
+def main():
+    args = parse_args()
+
     if args.benchmark == "longmemeval":
         conversations = list(load_longmemeval())
     else:
         conversations = list(load_locomo())
 
-    print(f"  Found {len(conversations)} conversations")
+    print(f"Loaded {args.benchmark}: {len(conversations)} conversations")
     if args.max_convs > 0:
         conversations = conversations[:args.max_convs]
-        print(f"  Limiting to {args.max_convs}")
+        print(f"  Limited to {args.max_convs}")
 
     auto_extract = args.config in ("b", "d")
+    ask_mode = build_ask_mode(args.config)
+
+    # Determine output path
+    out_path = args.output or f"results_{args.benchmark}_config{args.config.upper()}.json"
+    ckpt_path = out_path + ".checkpoint"
+
+    # Load checkpoint if resuming
+    completed_qs = set()
+    results = None
+    if args.resume:
+        results, completed_qs = load_checkpoint(ckpt_path)
+        if results:
+            print(f"Resumed: {len(completed_qs)} questions already completed")
+        else:
+            print("No checkpoint found, starting fresh")
+
+    if results is None:
+        results = {
+            "benchmark": args.benchmark,
+            "config": args.config,
+            "auto_extract": auto_extract,
+            "ask_mode": ask_mode,
+            "total_conversations": len(conversations),
+            "total_questions": 0,
+            "overall_score": 0.0,
+            "per_conversation": [],
+        }
 
     all_answers = []
     all_ground_truths = []
-    total_questions = 0
-    conv_results = []
+    question_count = 0
 
     for idx, (conv_id, turns, questions) in enumerate(conversations):
         vault = f"{args.vault_prefix}{conv_id}"
-        print(f"\n[{idx+1}/{len(conversations)}] Conversation {conv_id} ({len(turns)} turns, {len(questions)} questions)")
+
+        # Check if this conversation was already completed
+        conv_done = any(
+            c.get("conversation") == conv_id
+            for c in results.get("per_conversation", [])
+        ) if args.resume else False
+
+        if conv_done:
+            # Load existing answers/gts for re-scoring
+            for c in results["per_conversation"]:
+                if c.get("conversation") == conv_id:
+                    for d in c.get("details", []):
+                        all_answers.append(d.get("answer", "ANSWER_FAILED"))
+                        all_ground_truths.append(d.get("ground_truth", ""))
+                        question_count += 1
+            print(f"[{idx+1}/{len(conversations)}] {conv_id} — skipped (already completed)")
+            continue
+
+        print(f"\n[{idx+1}/{len(conversations)}] {conv_id} ({len(turns)} turns, {len(questions)} questions)")
 
         # Ingest
         if not args.skip_ingest:
@@ -498,7 +560,6 @@ def main():
             ingest_conversation(conv_id, turns, vault, auto_extract=auto_extract)
             wait_for_indexing(vault=vault)
             if auto_extract:
-                # Allow extraction pipeline to process
                 time.sleep(3)
         else:
             print(f"  Skipping ingest (vault '{vault}' must already exist)")
@@ -506,6 +567,8 @@ def main():
         # Answer questions
         conv_answers = []
         conv_gts = []
+        conv_details = []
+
         for q_idx, q_item in enumerate(questions):
             if isinstance(q_item, dict):
                 question = q_item.get("question", q_item.get("query", ""))
@@ -517,60 +580,106 @@ def main():
             if not question:
                 continue
 
+            # Check if this specific question was already answered
+            if (conv_id, q_idx) in completed_qs:
+                print(f"  [{q_idx+1}/{len(questions)}] Q — skipped (checkpointed)")
+                continue
+
             print(f"  [{q_idx+1}/{len(questions)}] Q: {question[:80]}...")
-            answer, ctx = answer_from_context(question, args.config, vault=vault)
+            answer = answer_with_retry(question, vault, mode=ask_mode)
+
             conv_answers.append(answer)
             conv_gts.append(ground_truth)
             all_answers.append(answer)
             all_ground_truths.append(ground_truth)
+            question_count += 1
 
-        total_questions += len(conv_answers)
+            # Score
+            if args.benchmark == "longmemeval":
+                score = score_longmemeval(answer, ground_truth)
+            else:
+                score = score_locomo(answer, ground_truth)
 
-        # Score this conversation
-        if args.benchmark == "longmemeval":
-            score, details = score_longmemeval(conv_answers, conv_gts)
+            conv_details.append({
+                "question": question,
+                "answer": answer,
+                "ground_truth": ground_truth,
+                "score": round(score, 4),
+            })
+            print(f"    Score: {score:.3f}")
+
+            # Checkpoint every N questions
+            if question_count % CHECKPOINT_INTERVAL == 0:
+                results["total_questions"] = question_count
+                conv_result = {
+                    "conversation": conv_id,
+                    "questions": len(conv_answers),
+                    "score": 0.0,  # updated below
+                    "details": conv_details,
+                }
+                results["per_conversation"].append(conv_result)
+                save_checkpoint(ckpt_path, results)
+                results["per_conversation"].pop()  # remove temp entry
+
+        # Compute per-conversation score
+        if conv_answers:
+            if args.benchmark == "longmemeval":
+                conv_score = sum(
+                    score_longmemeval(a, gt) for a, gt in zip(conv_answers, conv_gts)
+                ) / len(conv_answers)
+            else:
+                conv_score = sum(
+                    score_locomo(a, gt) for a, gt in zip(conv_answers, conv_gts)
+                ) / len(conv_answers)
         else:
-            score, details = score_locomo(conv_answers, conv_gts)
+            conv_score = 0.0
 
-        conv_results.append({
-            "conversation": conv_id,
+        conv_result = {
+            "conversation": conv_id if conv_id else f"conv-{idx}",
             "questions": len(conv_answers),
-            "score": round(score, 4),
-        })
-        print(f"  Score: {score:.3f} ({len(conv_answers)} questions)")
+            "score": round(conv_score, 4),
+            "details": conv_details,
+        }
+        results["per_conversation"].append(conv_result)
+        print(f"  Conversation score: {conv_score:.3f} ({len(conv_answers)} questions)")
 
-    # Overall results
-    if args.benchmark == "longmemeval":
-        overall_score, _ = score_longmemeval(all_answers, all_ground_truths)
+        # Checkpoint after each conversation
+        results["total_questions"] = question_count
+        save_checkpoint(ckpt_path, results)
+
+    # Final overall score
+    if all_answers:
+        if args.benchmark == "longmemeval":
+            overall = sum(
+                score_longmemeval(a, gt) for a, gt in zip(all_answers, all_ground_truths)
+            ) / len(all_answers)
+        else:
+            overall = sum(
+                score_locomo(a, gt) for a, gt in zip(all_answers, all_ground_truths)
+            ) / len(all_answers)
     else:
-        overall_score, _ = score_locomo(all_answers, all_ground_truths)
+        overall = 0.0
 
+    results["total_questions"] = len(all_answers)
+    results["overall_score"] = round(overall, 4)
+
+    # Print results
     print(f"\n{'='*50}")
-    print(f"Benchmark:      {args.benchmark}")
-    print(f"Configuration:  {args.config.upper()}")
-    print(f"Conversations:  {len(conversations)}")
-    print(f"Total questions: {total_questions}")
-    print(f"Overall score:  {overall_score:.4f}")
-    print(f"{'='*50}")
+    print(f"Benchmark:       {args.benchmark}")
+    print(f"Configuration:   {args.config.upper()}")
+    print(f"Ask mode:        {ask_mode}")
+    print(f"Auto-extract:    {auto_extract}")
+    print(f"Conversations:   {len(conversations)}")
+    print(f"Total questions: {len(all_answers)}")
+    print(f"Overall score:   {overall:.4f}")
+    print(f"{'='*50}\n")
+    print(json.dumps(results, indent=2))
 
-    # Write output
-    output = {
-        "benchmark": args.benchmark,
-        "config": args.config,
-        "auto_extract": auto_extract,
-        "conversations": len(conversations),
-        "total_questions": total_questions,
-        "overall_score": overall_score,
-        "per_conversation": conv_results,
-    }
-
-    print(json.dumps(output, indent=2))
-
-    out_path = args.output
-    if not out_path:
-        out_path = f"results_{args.benchmark}_config{args.config.upper()}.json"
-    with open(out_path, "w") as fh:
-        json.dump(output, fh, indent=2)
+    # Write final output
+    save_checkpoint(out_path, results)
+    # Remove checkpoint file on success
+    if os.path.exists(ckpt_path):
+        os.remove(ckpt_path)
     print(f"\nResults written to {out_path}")
 
 
