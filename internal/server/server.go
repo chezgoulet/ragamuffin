@@ -178,9 +178,30 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
-		// Single-tenant routes (v0.1–v0.3 behavior)
+		// Single-tenant routes — bare endpoints + /vault/{name} routes (#536)
+		vaultName := filepath.Base(s.cfg.VaultPath)
+
+		// /vault/{name} routes (same set as multi-tenant, validated against single vault name)
+		vaultChain := func(pattern string, handler http.HandlerFunc) {
+			mux.HandleFunc("/vault/{name}"+pattern, s.withRequestID(s.withQdrant(s.withVaultRateLimit(pattern, s.requireVaultName(vaultName, handler)))))
+		}
+		vaultChain("/recall", s.handleVaultRecall)
+		vaultChain("/ask", s.handleVaultAsk)
+		vaultChain("/draft", s.handleVaultDraft)
+		vaultChain("/audit", s.handleVaultAudit)
+		vaultChain("/v1/facts", s.handleVaultFacts)
+		vaultChain("/v1/facts/{key}/graph", s.handleFactGraph)
+		vaultChain("/v1/logs", s.handleVaultLogs)
+		vaultChain("/v1/snapshot", s.handleVaultSnapshot)
+		vaultChain("/reindex", s.handleReindex)
+		vaultChain("/v1/batch/recall", s.handleBatchRecall)
+		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraph))))
+		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
+		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
+
+		// Bare endpoints (keep existing v0.1–v0.3 behavior)
 		mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleBatchRecall))))
-	mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
+		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
 		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
 		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
 		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
@@ -593,6 +614,20 @@ func (s *Server) withVaultRateLimit(endpoint string, next http.HandlerFunc) http
 // Each vault handler validates the vault, then delegates to the
 // underlying single-vault handler. Per-vault resource separation
 // (separate indexer, watcher, etc.) comes in issue #98.
+
+// requireVaultName validates that the {name} path variable matches the single
+// configured vault in single-tenant mode. Returns 404 on mismatch (#536).
+func (s *Server) requireVaultName(expected string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actual := r.PathValue("name")
+		if actual != expected {
+			writeError(w, http.StatusNotFound, "VAULT_NOT_FOUND",
+				fmt.Sprintf("vault %q not found (single-tenant mode has vault %q)", actual, expected))
+			return
+		}
+		next(w, r)
+	}
+}
 
 func (s *Server) handleVaultRecall(w http.ResponseWriter, r *http.Request) {
 	s.handleRecall(w, r)

@@ -523,6 +523,33 @@ assert_field "vault clear returns vault" "vault" "default" "$RESP"
 RESP=$(curl -s "$BASE/v1/vaults/default/clear" 2>&1)
 assert_field "vault clear GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
 
+# ── Single-tenant /vault/{name} routes (#536) ───────────────────────────────────
+echo "--- single-tenant vault routes ---"
+# The vault name is derived from filepath.Base(RAGAMUFFIN_VAULT_PATH)
+RESP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/vault/default/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","mode":"recall"}' 2>&1)
+if [ "$RESP" = "200" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: vault/default/ask returns 200 in single-tenant mode"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: vault/default/ask returned $RESP (expected 200)"
+fi
+
+# Wrong vault name should 404
+WRONG_RESP=$(curl -s -X POST "$BASE/vault/wrong/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","mode":"recall"}' 2>&1)
+WRONG_CODE=$(echo "$WRONG_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('code','MISSING'))" 2>/dev/null)
+if [ "$WRONG_CODE" = "VAULT_NOT_FOUND" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: vault/wrong/ask returns VAULT_NOT_FOUND"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: vault/wrong/ask did not return VAULT_NOT_FOUND (got $WRONG_CODE)"
+fi
+
 # ── Session → Qdrant bridge (#523) ──────────────────────────────────────────────
 # Create session and append a turn, then verify it's searchable via /ask
 echo "--- session to qdrant bridge ---"
