@@ -358,7 +358,7 @@ func (s *Server) doStats(ctx context.Context) (*statsResult, error) {
 		Vault:        vaultName,
 		IndexedFiles: fileCount,
 		TotalChunks:  chunkCount,
-		TotalFacts:   totalFacts,
+		TotalFacts:   int(totalFacts),
 		LastIndexed:  lastIndexed.Format(time.RFC3339),
 		VaultAgeDays: vaultAgeDays,
 	}, nil
@@ -384,7 +384,6 @@ func (s *Server) doAudit(ctx context.Context, req auditRequest) (map[string]inte
 	}
 
 	vaultPath := s.vaultPathFromContext(ctx)
-	vaultName := vaultFromContext(ctx)
 	var qc = s.qdrantFor(ctx)
 
 	resp := map[string]interface{}{
