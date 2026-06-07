@@ -503,10 +503,7 @@ func TestLoad_MultiTenant(t *testing.T) {
 
 func TestLoad_InvalidVaultEntry(t *testing.T) {
 	tests := []string{
-		"badentry",                        // no colon
-		":/path",                           // empty name
-		"docs:",                            // empty path
-		"docs:/opt/docs,finance:",           // second entry empty path
+		":/path",  // empty name
 	}
 
 	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
@@ -519,6 +516,99 @@ func TestLoad_InvalidVaultEntry(t *testing.T) {
 			t.Errorf("expected error for vault entry %q", entry)
 		}
 		os.Unsetenv("RAGAMUFFIN_VAULTS")
+	}
+}
+
+func TestLoad_VaultPathDerivation(t *testing.T) {
+	// Without VaultsRoot, defaults to /opt/vault/<name>
+	os.Setenv("RAGAMUFFIN_VAULTS", "dev,test")
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	dev, ok := cfg.Vaults["dev"]
+	if !ok {
+		t.Fatal("expected vault 'dev'")
+	}
+	if dev.Path != "/opt/vault/dev" {
+		t.Errorf("dev path = %q, want /opt/vault/dev", dev.Path)
+	}
+
+	testV, ok := cfg.Vaults["test"]
+	if !ok {
+		t.Fatal("expected vault 'test'")
+	}
+	if testV.Path != "/opt/vault/test" {
+		t.Errorf("test path = %q, want /opt/vault/test", testV.Path)
+	}
+}
+
+func TestLoad_VaultPathDerivationWithRoot(t *testing.T) {
+	// With VaultsRoot, derives from <root>/<name>
+	root := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULTS_ROOT", root)
+	os.Setenv("RAGAMUFFIN_VAULTS", "dev,test")
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS_ROOT")
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	dev, ok := cfg.Vaults["dev"]
+	if !ok {
+		t.Fatal("expected vault 'dev'")
+	}
+	want := root + "/dev"
+	if dev.Path != want {
+		t.Errorf("dev path = %q, want %q", dev.Path, want)
+	}
+}
+
+func TestLoad_VaultPathMixed(t *testing.T) {
+	// Mixed: explicit path for one, derived for another
+	root := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULTS_ROOT", root)
+	os.Setenv("RAGAMUFFIN_VAULTS", fmt.Sprintf("dev:/custom/path,test"))
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS_ROOT")
+		os.Unsetenv("RAGAMUFFIN_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+
+	dev, ok := cfg.Vaults["dev"]
+	if !ok {
+		t.Fatal("expected vault 'dev'")
+	}
+	if dev.Path != "/custom/path" {
+		t.Errorf("dev path = %q, want /custom/path", dev.Path)
+	}
+
+	testV, ok := cfg.Vaults["test"]
+	if !ok {
+		t.Fatal("expected vault 'test'")
+	}
+	want := root + "/test"
+	if testV.Path != want {
+		t.Errorf("test path = %q, want %q", testV.Path, want)
 	}
 }
 

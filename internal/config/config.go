@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -453,11 +454,21 @@ func Load() (*Config, error) {
 				continue
 			}
 			parts := strings.SplitN(entry, ":", 2)
-			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-				return nil, fmt.Errorf("invalid vault entry %q in RAGAMUFFIN_VAULTS: expected name:path", entry)
-			}
 			name := strings.TrimSpace(parts[0])
-			path := strings.TrimSpace(parts[1])
+			if name == "" {
+				return nil, fmt.Errorf("invalid vault entry %q in RAGAMUFFIN_VAULTS: empty name", entry)
+			}
+			var path string
+			if len(parts) == 2 && parts[1] != "" {
+				path = strings.TrimSpace(parts[1])
+			} else {
+				// Auto-derive path from VaultsRoot or default to /opt/vault/<name> (#522)
+				root := cfg.VaultsRoot
+				if root == "" {
+					root = "/opt/vault"
+				}
+				path = filepath.Join(root, name)
+			}
 			if _, exists := vaults[name]; exists {
 				return nil, fmt.Errorf("duplicate vault name %q in RAGAMUFFIN_VAULTS", name)
 			}
