@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -86,14 +87,5 @@ func (d *APIIngestDriver) Run(ctx context.Context) error {
 
 // TagMetaKey returns a stable metadata key for the nth tag.
 func TagMetaKey(i int) string {
-	switch i {
-	case 0:
-		return "tag_0"
-	case 1:
-		return "tag_1"
-	case 2:
-		return "tag_2"
-	default:
-		return "tag_other"
-	}
+	return fmt.Sprintf("tag_%d", i)
 }
