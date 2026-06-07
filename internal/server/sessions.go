@@ -183,7 +183,7 @@ func (s *Server) handleBatchSessions(w http.ResponseWriter, r *http.Request) {
 			// Index the conversation as a single source (no LLM call — chunk + embed only)
 			source := fmt.Sprintf("sessions/batch/%s/%s", entry.AgentID, sessionID)
 			convContent := strings.Join(turnContents, "\n")
-			if err := idx.Ingest(ctx, convContent, source, []string{"session", "batch"}); err != nil {
+			if err := idx.Ingest(ctx, convContent, source, []string{"session", "batch"}, nil); err != nil {
 				s.logger.Warn("batch session: ingest failed", "session_id", sessionID, "error", err)
 			}
 		}

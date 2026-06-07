@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -292,7 +293,7 @@ func (s *Server) doStore(ctx context.Context, content, source, vaultName string,
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
-	if err := idx.Ingest(ctx, content, source, tags); err != nil {
+	if err := idx.Ingest(ctx, content, source, tags, nil); err != nil {
 		return nil, fmt.Errorf("ingest failed: %w", err)
 	}
 
@@ -622,7 +623,8 @@ func (s *Server) indexSessionTurn(ctx context.Context, sessionID, content, role 
 	}
 
 	source := fmt.Sprintf("session:%s/turn:%d", sessionID, turnID)
-	if err := idx.Ingest(ctx, fmt.Sprintf("%s: %s", role, content), source, []string{"session"}); err != nil {
+	meta := map[string]string{"turn_index": strconv.FormatInt(turnID, 10)}
+	if err := idx.Ingest(ctx, fmt.Sprintf("%s: %s", role, content), source, []string{"session"}, meta); err != nil {
 		s.log(ctx).Warn("session index: ingest failed", "session_id", sessionID, "turn", turnID, "error", err)
 	} else {
 		s.log(ctx).Debug("session index: turn indexed", "session_id", sessionID, "turn", turnID, "vault", vault)

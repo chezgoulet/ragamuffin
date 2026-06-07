@@ -120,7 +120,7 @@ def answer_with_retry(question, vault, mode="rag", top_k=10, max_retries=5):
 # ── Data loaders ────────────────────────────────────────────────────────────
 
 
-def load_longmemeval():
+def load_longmemeval(data_path=None):
     """
     Yield (conversation_id, turns, questions) for each conversation
     in the LongMemEval "S" (shorter) setting.
@@ -129,18 +129,20 @@ def load_longmemeval():
       - sessions: dict[session_id -> list[{role, content}]]
       - question, answer, question_type, question_id, answer_session_ids
     """
-    s_path = None
-    base = os.path.join(DATA_DIR, "LongMemEval", "data")
-    for candidate in [os.path.join(base, "S"),
-                      os.path.join(base, "setting_S"),
-                      os.path.join(base, "short")]:
-        if os.path.isdir(candidate):
-            s_path = candidate
-            break
-
-    if not s_path:
-        # Try data root
-        s_path = os.path.join(DATA_DIR, "LongMemEval")
+    if data_path is None:
+        s_path = None
+        base = os.path.join(DATA_DIR, "LongMemEval", "data")
+        for candidate in [os.path.join(base, "S"),
+                          os.path.join(base, "setting_S"),
+                          os.path.join(base, "short")]:
+            if os.path.isdir(candidate):
+                s_path = candidate
+                break
+        if not s_path:
+            # Try data root
+            s_path = os.path.join(DATA_DIR, "LongMemEval")
+    else:
+        s_path = data_path
 
     conv_files = sorted([
         os.path.join(s_path, f)
@@ -189,7 +191,7 @@ def load_longmemeval():
         yield conv_id, turns, questions
 
 
-def load_locomo():
+def load_locomo(data_path=None):
     """
     Yield (conversation_id, turns, questions) for each conversation
     in the LoCoMo (Backboard) dataset.
@@ -199,7 +201,8 @@ def load_locomo():
       - qa: list of {question, answer, evidence, category}
       - sample_id
     """
-    data_path = os.path.join(DATA_DIR, "Backboard-Locomo-Benchmark")
+    if data_path is None:
+        data_path = os.path.join(DATA_DIR, "Backboard-Locomo-Benchmark")
     dataset_file = os.path.join(data_path, "locomo_dataset.json")
 
     if not os.path.exists(dataset_file):
@@ -339,6 +342,37 @@ def ingest_conversation(conv_id, turns, vault, auto_extract=False):
                         auto_extract=auto_extract)
 
     return session_id
+
+
+def ingest_document(conv_id, turns, vault, auto_extract=False):
+    """
+    Ingest a conversation as a single document via /v1/documents.
+    Used for LoCoMo: 500-700 turns as one markdown doc, not turn-by-turn
+    via sessions. Avoids SQLite journal writes and inotify storms (#526).
+    """
+    lines = []
+    for turn in turns:
+        if isinstance(turn, dict):
+            role = turn.get("role", "user").capitalize()
+            content = turn.get("content", turn.get("text", ""))
+        else:
+            role = "User"
+            content = str(turn)
+        if content.strip():
+            lines.append(f"{role}: {content}")
+    full_text = "\n\n".join(lines)
+
+    source = f"locomo/{conv_id}.md"
+    body = {
+        "content": full_text,
+        "source": source,
+        "vault": vault,
+        "tags": ["locomo", conv_id],
+    }
+    if auto_extract:
+        body["auto_extract"] = True
+
+    return api_post("/v1/documents", body, timeout=120)
 
 
 # ── Checkpoint ──────────────────────────────────────────────────────────────
@@ -500,6 +534,8 @@ def parse_args():
                         help="Configuration preset")
     parser.add_argument("--max-convs", type=int, default=0,
                         help="Max conversations (0 = all)")
+    parser.add_argument("--conversation-limit", type=int, default=None,
+                        help="Alias for --max-convs")
     parser.add_argument("--skip-ingest", action="store_true",
                         help="Skip ingestion, reuse existing vaults")
     parser.add_argument("--resume", action="store_true",
@@ -508,6 +544,8 @@ def parse_args():
                         help="Output path (default: auto-generated)")
     parser.add_argument("--vault-prefix", default="bench-",
                         help="Prefix for vault names")
+    parser.add_argument("--path", default="",
+                        help="Path to data file or directory (overrides default data dir)")
     return parser.parse_args()
 
 
@@ -521,10 +559,16 @@ def build_ask_mode(config):
 def main():
     args = parse_args()
 
+    # --conversation-limit is an alias for --max-convs
+    if args.conversation_limit is not None and args.max_convs == 0:
+        args.max_convs = args.conversation_limit
+
+    data_path = args.path if args.path else None
+
     if args.benchmark == "longmemeval":
-        conversations = list(load_longmemeval())
+        conversations = list(load_longmemeval(data_path))
     else:
-        conversations = list(load_locomo())
+        conversations = list(load_locomo(data_path))
 
     print(f"Loaded {args.benchmark}: {len(conversations)} conversations")
     if args.max_convs > 0:
@@ -532,7 +576,12 @@ def main():
         print(f"  Limited to {args.max_convs}")
 
     auto_extract = args.config in ("b", "d")
-    ask_mode = build_ask_mode(args.config)
+    # LoCoMo uses full-context ask mode (load entire document into LLM context)
+    # LongMemEval uses the config-prescribed mode (rag/tiered)
+    if args.benchmark == "locomo":
+        ask_mode = "full"
+    else:
+        ask_mode = build_ask_mode(args.config)
 
     # Determine output path
     out_path = args.output or f"results_{args.benchmark}_config{args.config.upper()}.json"
@@ -590,10 +639,15 @@ def main():
 
         print(f"\n[{idx+1}/{len(conversations)}] {conv_id} ({len(turns)} turns, {len(questions)} questions)")
 
-        # Ingest
+        # Ingest — different strategies for LoCoMo vs LongMemEval
         if not args.skip_ingest:
             print(f"  Ingesting into vault '{vault}'...")
-            ingest_conversation(conv_id, turns, vault, auto_extract=auto_extract)
+            if args.benchmark == "locomo":
+                # LoCoMo: single document per conversation, full-context ask mode (#526)
+                ingest_document(conv_id, turns, vault, auto_extract=auto_extract)
+            else:
+                # LongMemEval: session-based ingest, RAG ask mode (unchanged)
+                ingest_conversation(conv_id, turns, vault, auto_extract=auto_extract)
             wait_for_indexing(vault=vault)
             if auto_extract:
                 time.sleep(3)

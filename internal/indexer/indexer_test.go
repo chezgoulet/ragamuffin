@@ -64,7 +64,7 @@ func TestSetChunkMaxTokens(t *testing.T) {
 
 func TestIngest_NilEmbedder(t *testing.T) {
 	idx := New("/vault", nil, nil, nil)
-	err := idx.Ingest(context.Background(), "some content", "source-1", nil)
+	err := idx.Ingest(context.Background(), "some content", "source-1", nil, nil)
 	if err == nil {
 		t.Error("expected error with nil embedder")
 	}
@@ -72,7 +72,7 @@ func TestIngest_NilEmbedder(t *testing.T) {
 
 func TestIngest_EmptyContent(t *testing.T) {
 	idx := New("/vault", nil, nil, nil)
-	err := idx.Ingest(context.Background(), "", "source-1", nil)
+	err := idx.Ingest(context.Background(), "", "source-1", nil, nil)
 	if err == nil {
 		t.Error("expected error with empty content")
 	}

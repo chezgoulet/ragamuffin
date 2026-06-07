@@ -296,7 +296,8 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 // the file watcher. Used for agent session persistence and direct memory storage.
 // source should be a unique identifier for the ingested content (e.g., "session/2025-06-17").
 // tags are optional metadata labels (e.g., ["session-log", "agent::dev"]).
-func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []string) error {
+// meta is an optional map of key-value pairs merged into the Qdrant payload (e.g., {"turn_index": "42"}).
+func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []string, meta map[string]string) error {
 	if idx.embedder == nil {
 		return fmt.Errorf("cannot ingest: embedding client not configured")
 	}
@@ -358,6 +359,11 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 			// Add tags if present
 			if len(tags) > 0 {
 				payload["tags"] = &pb.Value{Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: tagValues}}}
+			}
+
+			// Merge optional meta fields into payload (#525)
+			for k, v := range meta {
+				payload[k] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: v}}
 			}
 
 			points[j] = &pb.PointStruct{

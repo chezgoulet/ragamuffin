@@ -90,7 +90,7 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
-	if err := idx.Ingest(ctx, req.Content, req.Source, req.Tags); err != nil {
+	if err := idx.Ingest(ctx, req.Content, req.Source, req.Tags, nil); err != nil {
 		s.log(r.Context()).Error("ingest failed", "vault", vaultName, "source", req.Source, "error", err)
 		writeError(w, 502, "INGEST_FAILED", fmt.Sprintf("ingest failed: %s", err))
 		return

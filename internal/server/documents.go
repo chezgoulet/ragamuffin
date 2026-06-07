@@ -87,7 +87,7 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 		}
 	} else {
 		// Fallback: direct ingest without driver
-		if err := idx.Ingest(r.Context(), req.Content, req.Source, req.Tags); err != nil {
+		if err := idx.Ingest(r.Context(), req.Content, req.Source, req.Tags, nil); err != nil {
 			s.log(r.Context()).Error("document ingest failed", "vault", vaultName, "source", req.Source, "error", err)
 			writeError(w, 502, "INGEST_FAILED", fmt.Sprintf("ingest failed: %s", err))
 			return
