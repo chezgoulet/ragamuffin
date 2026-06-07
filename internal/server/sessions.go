@@ -1,14 +1,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 )
 
@@ -49,6 +53,155 @@ type turnResp struct {
 type listSessionsResponse struct {
 	Sessions []logstore.Session `json:"sessions"`
 	Count    int                `json:"count"`
+}
+
+// ── Batch Ingest Request / Response ────────────────────────────────────────────
+
+type batchSessionTurn struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type batchSessionEntry struct {
+	AgentID string             `json:"agent_id"`
+	Turns   []batchSessionTurn `json:"turns"`
+}
+
+type batchSessionRequest struct {
+	Vault    string               `json:"vault"`
+	Sessions []batchSessionEntry `json:"sessions"`
+}
+
+type batchSessionResponse struct {
+	Status      string `json:"status"`
+	SessionCount int    `json:"session_count"`
+	TurnCount   int    `json:"turn_count"`
+	ChunkCount  int    `json:"chunk_count"`
+}
+
+// ── POST /v1/sessions/batch ────────────────────────────────────────────────────
+
+func (s *Server) handleBatchSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+	if s.logStore == nil {
+		writeError(w, 503, "UNAVAILABLE", "session store not available")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 50*1024*1024) // 50 MB limit for batch
+
+	var req batchSessionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("invalid JSON body: %v", err))
+		return
+	}
+
+	if len(req.Sessions) == 0 {
+		writeError(w, 400, "INVALID_REQUEST", "sessions array is required")
+		return
+	}
+
+	// Resolve vault name
+	vaultName := req.Vault
+	if vaultName == "" {
+		if s.cfg.IsMultiTenant() {
+			writeError(w, 400, "INVALID_REQUEST", "vault is required in multi-tenant mode")
+			return
+		}
+		vaultName = "default"
+	}
+
+	// Get or provision the indexer
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		if !s.cfg.AutoProvisionVaults {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and auto-provisioning is disabled", vaultName))
+			return
+		}
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+			writeError(w, 403, "FORBIDDEN", "write access required to provision vaults")
+			return
+		}
+		idx = s.provisionVault(r.Context(), vaultName)
+		if idx == nil {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and could not be provisioned", vaultName))
+			return
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
+	defer cancel()
+
+	totalSessions := 0
+	totalTurns := 0
+	totalChunks := 0
+
+	for _, entry := range req.Sessions {
+		if entry.AgentID == "" {
+			writeError(w, 400, "INVALID_REQUEST", "agent_id is required for each session")
+			return
+		}
+		if len(entry.Turns) == 0 {
+			continue // skip empty sessions
+		}
+
+		sessionID := uuid.New().String()
+
+		// Resolve vault per session (default to the shared vault)
+		sessVault := vaultName
+
+		// Create the session
+		_, err := s.logStore.CreateSession(ctx, sessionID, sessVault, entry.AgentID, "")
+		if err != nil {
+			s.logger.Error("batch session: create failed", "agent_id", entry.AgentID, "error", err)
+			continue
+		}
+
+		// Append all turns
+		var turnContents []string
+		for _, turn := range entry.Turns {
+			role := turn.Role
+			if role == "" {
+				role = "user"
+			}
+			if turn.Content == "" {
+				continue
+			}
+
+			_, err := s.logStore.AppendTurn(ctx, sessionID, turn.Content, role)
+			if err != nil {
+				s.logger.Warn("batch session: turn append failed", "session_id", sessionID, "error", err)
+				continue
+			}
+			totalTurns++
+			turnContents = append(turnContents, role+": "+turn.Content)
+		}
+
+		if len(turnContents) > 0 {
+			// Index the conversation as a single source (no LLM call — chunk + embed only)
+			source := fmt.Sprintf("sessions/batch/%s/%s", entry.AgentID, sessionID)
+			convContent := strings.Join(turnContents, "\n")
+			if err := idx.Ingest(ctx, convContent, source, []string{"session", "batch"}); err != nil {
+				s.logger.Warn("batch session: ingest failed", "session_id", sessionID, "error", err)
+			}
+		}
+
+		totalSessions++
+	}
+
+	// Get updated chunk count
+	_, chunkCount, _, _, _, _ := idx.Stats()
+	totalChunks = chunkCount
+
+	writeJSON(w, 200, batchSessionResponse{
+		Status:       "ok",
+		SessionCount: totalSessions,
+		TurnCount:    totalTurns,
+		ChunkCount:   totalChunks,
+	})
 }
 
 // ── Router ─────────────────────────────────────────────────────────────────────
