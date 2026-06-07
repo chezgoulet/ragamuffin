@@ -26,7 +26,6 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
 	"github.com/chezgoulet/ragamuffin/internal/auth"
-	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
@@ -129,7 +128,7 @@ func main() {
 
 	// Collections for shutdown tracking
 	var idxCancelFuncs []context.CancelFunc
-	var prunerEventChs []chan watcher.Event
+	var prunerEventChs []<-chan watcher.Event
 	var driverCancelFuncs []context.CancelFunc
 	var drivers []ingress.IngressDriver // all IngressDriver instances (for fan-in + lifecycle)
 	var initialDoneChs []chan struct{}
