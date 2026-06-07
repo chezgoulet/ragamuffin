@@ -187,6 +187,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
 		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
 		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
+		mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
 	}
 
 	// Facts
