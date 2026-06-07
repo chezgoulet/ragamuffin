@@ -894,24 +894,6 @@ func (s *Server) withRateLimit(endpoint string, next http.HandlerFunc) http.Hand
 
 // ── Error helpers ──────────────────────────────────────────────────────────────
 
-type errResp struct {
-	Error   bool   `json:"error"`
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
-
-func writeError(w http.ResponseWriter, status int, code, message string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(errResp{Error: true, Code: code, Message: message})
-}
-
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
-}
-
 // ── /version ──────────────────────────────────────────────────────────────────
 
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
