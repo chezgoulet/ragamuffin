@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
-	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 )
 
