@@ -456,11 +456,13 @@ func (s *Server) doCreateSession(ctx context.Context, agentID, content, vault, s
 
 	turnCount := sess.TurnCount
 	if content != "" {
-		_, err := s.logStore.AppendTurn(ctx, sessionID, content, "user")
+		turn, err := s.logStore.AppendTurn(ctx, sessionID, content, "user")
 		if err != nil {
 			s.log(ctx).Warn("session create: initial turn append failed", "error", err)
 		} else {
 			turnCount = 1
+			// Async index initial turn into vault's Qdrant collection (#523)
+			go s.indexSessionTurn(s.shutdownCtx, sessionID, content, "user", turn.ID)
 		}
 	}
 
@@ -575,12 +577,56 @@ func (s *Server) doAppendTurn(ctx context.Context, sessionID, content, role stri
 		go s.extractor.Extract(s.shutdownCtx, sessionID, content, role)
 	}
 
+	// Async index turn into vault's Qdrant collection (#523)
+	go s.indexSessionTurn(s.shutdownCtx, sessionID, content, role, turn.ID)
+
 	return map[string]interface{}{
 		"turn_id":    turn.ID,
 		"session_id": turn.SessionID,
 		"role":       turn.Role,
 		"created_at": turn.CreatedAt,
 	}, nil
+}
+
+// indexSessionTurn asynchronously indexes a turn's content into the vault's
+// Qdrant collection so session conversations become searchable via /ask (#523).
+func (s *Server) indexSessionTurn(ctx context.Context, sessionID, content, role string, turnID int64) {
+	if s.logStore == nil || s.indexers == nil {
+		return
+	}
+
+	// Resolve the vault from the session
+	sess, _, err := s.logStore.GetSession(ctx, sessionID, 1)
+	if err != nil {
+		s.log(ctx).Debug("session index: session not found", "session_id", sessionID, "error", err)
+		return
+	}
+
+	vault := sess.Vault
+	if vault == "" {
+		vault = "default"
+	}
+
+	idx := s.indexers.Get(vault)
+	if idx == nil {
+		// Vault might not exist yet — attempt provision in multi-tenant mode
+		if !s.cfg.AutoProvisionVaults {
+			s.log(ctx).Debug("session index: vault not found", "vault", vault)
+			return
+		}
+		idx = s.provisionVault(ctx, vault)
+		if idx == nil {
+			s.log(ctx).Debug("session index: could not provision vault", "vault", vault)
+			return
+		}
+	}
+
+	source := fmt.Sprintf("session:%s/turn:%d", sessionID, turnID)
+	if err := idx.Ingest(ctx, fmt.Sprintf("%s: %s", role, content), source, []string{"session"}); err != nil {
+		s.log(ctx).Warn("session index: ingest failed", "session_id", sessionID, "turn", turnID, "error", err)
+	} else {
+		s.log(ctx).Debug("session index: turn indexed", "session_id", sessionID, "turn", turnID, "vault", vault)
+	}
 }
 
 // ── Facts helpers ──────────────────────────────────────────────────────────────

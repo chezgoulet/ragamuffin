@@ -523,6 +523,42 @@ assert_field "vault clear returns vault" "vault" "default" "$RESP"
 RESP=$(curl -s "$BASE/v1/vaults/default/clear" 2>&1)
 assert_field "vault clear GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
 
+# ── Session → Qdrant bridge (#523) ──────────────────────────────────────────────
+# Create session and append a turn, then verify it's searchable via /ask
+echo "--- session to qdrant bridge ---"
+RESP=$(curl -s -X POST "$BASE/v1/sessions" \
+  -H 'Content-Type: application/json' \
+  -d '{"agent_id":"smoke-test","content":"My name is Alice and I live in Montreal."}' 2>&1)
+SESS_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',''))")
+assert_field "session create" "id" "$SESS_ID" "$RESP"
+
+# Append a follow-up turn
+RESP=$(curl -s -X POST "$BASE/v1/sessions/$SESS_ID/turns" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"What is the weather like in Montreal?","role":"user"}' 2>&1)
+TURN_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('turn_id',0))")
+if [ "$TURN_ID" != "0" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: turn append returned turn_id=$TURN_ID"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: turn append missing turn_id"
+fi
+
+# Wait briefly for async indexing, then ask about the session content
+sleep 2
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"Where does Alice live?"}' 2>&1)
+ANSWER=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('answer',''))" 2>/dev/null)
+if echo "$ANSWER" | grep -qi "montreal"; then
+  PASS=$((PASS + 1))
+  echo "PASS: session turn found via /ask (contains Montreal)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: session turn not found via /ask (answer: $ANSWER)"
+fi
+
 echo "=== Results: $PASS passed, $FAIL failed ===
 if [ "$FAIL" -gt 0 ]; then
   exit 1
