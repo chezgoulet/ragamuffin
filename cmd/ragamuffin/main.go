@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"syscall"
 	"time"
 
@@ -130,6 +131,7 @@ func main() {
 	var idxCancelFuncs []context.CancelFunc
 	var prunerEventChs []chan watcher.Event
 	var driverCancelFuncs []context.CancelFunc
+	var drivers []ingress.IngressDriver // all IngressDriver instances (for fan-in + lifecycle)
 	var initialDoneChs []chan struct{}
 
 	// Shared driver config
@@ -198,6 +200,7 @@ func main() {
 			drvCtx, drvCancel := context.WithCancel(context.Background())
 			driverCancelFuncs = append(driverCancelFuncs, drvCancel)
 			go drv.Run(drvCtx)
+			drivers = append(drivers, drv)
 
 			// Per-vault LLM client (optional override)
 			if vc.HasLLM() {
@@ -279,6 +282,7 @@ func main() {
 		drvCtx, drvCancel := context.WithCancel(context.Background())
 		driverCancelFuncs = append(driverCancelFuncs, drvCancel)
 		go drv.Run(drvCtx)
+		drivers = append(drivers, drv)
 
 		// Wait for initial indexing to complete
 		<-initialDone
@@ -427,6 +431,39 @@ func main() {
 	drvCtxAPI, drvCancelAPI := context.WithCancel(context.Background())
 	driverCancelFuncs = append(driverCancelFuncs, drvCancelAPI)
 	go apiDriver.Run(drvCtxAPI)
+	drivers = append(drivers, apiDriver)
+
+	// ── Driver Event Fan-In ────────────────────────────────────────────────────
+	// Select across all IngressDriver Events() channels for observability.
+	// In v0.9, this is primarily a monitoring/logging fan-in that consumes
+	// events emitted by all drivers. Future iterations may feed these events
+	// into a shared indexer pipeline.
+	go func() {
+		cases := make([]reflect.SelectCase, len(drivers))
+		drvNames := make([]string, len(drivers))
+		for i, drv := range drivers {
+			cases[i] = reflect.SelectCase{
+				Dir:  reflect.SelectRecv,
+				Chan: reflect.ValueOf(drv.Events()),
+			}
+			drvNames[i] = drv.Name()
+		}
+		for {
+			chosen, recv, ok := reflect.Select(cases)
+			if !ok {
+				continue // channel was closed — driver is done
+			}
+			evt, ok := recv.Interface().(ingress.IngestEvent)
+			if !ok {
+				continue
+			}
+			logger.Debug("ingress event",
+				"driver", drvNames[chosen],
+				"action", evt.Action,
+				"path", evt.Path,
+			)
+		}
+	}()
 
 	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext, apiDriver)
 
@@ -484,11 +521,6 @@ func main() {
 		}
 
 		// 3. Stop all drivers (cancels watcher + fan-out goroutines)
-		for _, cancel := range driverCancelFuncs {
-			cancel()
-		}
-
-		// 3b. Stop API driver (context-based, like the file watcher drivers)
 		for _, cancel := range driverCancelFuncs {
 			cancel()
 		}
