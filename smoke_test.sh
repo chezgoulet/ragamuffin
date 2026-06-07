@@ -459,6 +459,12 @@ RESP=$(curl -s -X POST "$BASE/v1/batch/recall" \
   -d '{"queries":[]}' 2>&1)
 assert_field "batch recall empty queries" "error" "True" "$RESP"
 
+# POST with invalid detail -> 400
+RESP=$(curl -s -X POST "$BASE/v1/batch/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"queries":[{"query":"test","detail":"bad"}]}' 2>&1)
+assert_field "batch recall bad detail" "error" "True" "$RESP"
+
 # GET -> 405
 RESP=$(curl -s "$BASE/v1/batch/recall" 2>&1)
 assert_field "batch recall GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"

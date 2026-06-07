@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -450,6 +451,7 @@ type batchRecallEntry struct {
 	QueryIndex int            `json:"query_index"`
 	Results    []recallResult `json:"results"`
 	TopScore   float32        `json:"top_score"`
+	Error      string         `json:"error,omitempty"`
 }
 
 type batchRecallResponse struct {
@@ -483,148 +485,183 @@ func (s *Server) handleBatchRecall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second) // 5 min for large batches
-	defer cancel()
-
-	results := make([]batchRecallEntry, 0, len(req.Queries))
-
+	// Validate all queries upfront — fail-fast on bad input
 	for i, q := range req.Queries {
 		if q.Query == "" {
 			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("query[%d].query is required", i))
 			return
 		}
-
-		// Resolve vault
-		vaultName := q.Vault
-		if vaultName == "" {
-			vaultName = "default"
-		}
-
-		// Get the Qdrant client for this vault
-		qc := s.indexers.GetClient(vaultName)
-		if qc == nil {
-			// Fallback to default qdrant client
-			qc = s.qdrant
-		}
-
-		// Resolve top_k
-		topK := q.TopK
-		if topK <= 0 {
-			topK = 10
-		}
-		if topK > 100 {
-			topK = 100
-		}
-
-		// Resolve detail
-		if q.Detail == "" {
-			q.Detail = "l2"
-		}
-
-		// Get embedder (per-vault if available, fallback to default)
-		ec := s.indexers.GetEmbedder(vaultName)
-		if ec == nil {
-			ec = s.embedder
-		}
-
-		// Embed query
-		vector, err := ec.EmbedSingle(ctx, q.Query)
-		if err != nil {
-			writeError(w, 502, "EMBEDDING_API_ERROR", fmt.Sprintf("query[%d]: embedding failed: %s", i, err))
+		if q.Detail != "" && q.Detail != "l0" && q.Detail != "l1" && q.Detail != "l2" {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("query[%d].detail must be one of: l0, l1, l2", i))
 			return
 		}
+	}
 
-		// Build filter (reuse recallFilter with a recallRequest wrapper)
-		rr := recallRequest{
-			Query:          q.Query,
-			TopK:           topK,
-			ScoreThreshold: q.ScoreThreshold,
-			SourceFilter:   q.SourceFilter,
-			Filters:        q.Filters,
-			Detail:         q.Detail,
-			TimeFilter:     q.TimeFilter,
-		}
-		filter := recallFilter(rr)
+	ctx, cancel := context.WithTimeout(r.Context(), 300*time.Second) // 5 min overall
+	defer cancel()
 
-		// Apply time filter
-		if isTemporalRecall(q.TimeFilter) {
-			dateTo := temporalRecallDate(q.TimeFilter)
-			if dateTo != "" {
-				conditions := []*pb.Condition{
-					{
-						ConditionOneOf: &pb.Condition_Field{
-							Field: &pb.FieldCondition{
-								Key: "file_last_updated",
-								Range: &pb.Range{
-									Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+	// Pre-allocate results slice by index for ordered output
+	results := make([]batchRecallEntry, len(req.Queries))
+
+	// Semaphore limits concurrent queries (10 parallel max)
+	sem := make(chan struct{}, 10)
+	var wg sync.WaitGroup
+
+	for i, q := range req.Queries {
+		wg.Add(1)
+		i, q := i, q // capture for goroutine
+
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}        // acquire
+			defer func() { <-sem }() // release
+
+			// Per-query timeout: 30s alongside the 300s overall
+			qCtx, qCancel := context.WithTimeout(ctx, 30*time.Second)
+			defer qCancel()
+
+			// Resolve vault
+			vaultName := q.Vault
+			if vaultName == "" {
+				vaultName = "default"
+			}
+
+			// Get the Qdrant client — per-vault first, then context fallback
+			qc := s.indexers.GetClient(vaultName)
+			if qc == nil {
+				qc = s.qdrantFor(r.Context())
+			}
+
+			// Resolve top_k
+			topK := q.TopK
+			if topK <= 0 {
+				topK = 10
+			}
+			if topK > 100 {
+				topK = 100
+			}
+
+			// Resolve detail default
+			detail := q.Detail
+			if detail == "" {
+				detail = "l2"
+			}
+
+			// Get embedder — per-vault first, then context fallback
+			ec := s.indexers.GetEmbedder(vaultName)
+			if ec == nil {
+				ec = s.embeddingFor(r.Context())
+			}
+
+			// Embed query
+			vector, err := ec.EmbedSingle(qCtx, q.Query)
+			if err != nil {
+				results[i] = batchRecallEntry{
+					QueryIndex: i,
+					Error:      fmt.Sprintf("embedding failed: %s", err),
+				}
+				return
+			}
+
+			// Build filter (reuse recallFilter with a recallRequest wrapper)
+			rr := recallRequest{
+				Query:          q.Query,
+				TopK:           topK,
+				ScoreThreshold: q.ScoreThreshold,
+				SourceFilter:   q.SourceFilter,
+				Filters:        q.Filters,
+				Detail:         detail,
+				TimeFilter:     q.TimeFilter,
+			}
+			filter := recallFilter(rr)
+
+			// Apply time filter
+			if isTemporalRecall(q.TimeFilter) {
+				dateTo := temporalRecallDate(q.TimeFilter)
+				if dateTo != "" {
+					conditions := []*pb.Condition{
+						{
+							ConditionOneOf: &pb.Condition_Field{
+								Field: &pb.FieldCondition{
+									Key: "file_last_updated",
+									Range: &pb.Range{
+										Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+									},
 								},
 							},
 						},
-					},
+					}
+					if filter != nil {
+						filter.Must = append(filter.Must, conditions...)
+					} else {
+						filter = &pb.Filter{Must: conditions}
+					}
 				}
-				if filter != nil {
-					filter.Must = append(filter.Must, conditions...)
-				} else {
-					filter = &pb.Filter{Must: conditions}
+			}
+
+			// Search Qdrant
+			searchResults, err := qc.Search(qCtx, vector, uint64(topK), float32(q.ScoreThreshold), q.SourceFilter, filter)
+			if err != nil {
+				results[i] = batchRecallEntry{
+					QueryIndex: i,
+					Error:      fmt.Sprintf("search failed: %s", err),
 				}
-			}
-		}
-
-		// Search Qdrant
-		searchResults, err := qc.Search(ctx, vector, uint64(topK), float32(q.ScoreThreshold), q.SourceFilter, filter)
-		if err != nil {
-			writeError(w, 502, "QDRANT_UNREACHABLE", fmt.Sprintf("query[%d]: search failed: %s", i, err))
-			return
-		}
-
-		// Map results
-		out := make([]recallResult, 0, len(searchResults))
-		var topScore float32
-		for _, r := range searchResults {
-			payload := r.Payload
-			res := recallResult{
-				Score:   r.Score,
-				ChunkID: r.Id.GetUuid(),
-			}
-			if r.Score > topScore {
-				topScore = r.Score
-			}
-			if v, ok := payload["text"]; ok {
-				res.Text = v.GetStringValue()
-			}
-			if v, ok := payload["first_paragraph"]; ok {
-				res.FirstParagraph = v.GetStringValue()
-			}
-			if v, ok := payload["source_file"]; ok {
-				res.SourceFile = v.GetStringValue()
-			}
-			if v, ok := payload["header"]; ok {
-				res.Header = v.GetStringValue()
-			}
-			if v, ok := payload["chunk_index"]; ok {
-				res.ChunkIndex = int(v.GetIntegerValue())
-			}
-			if v, ok := payload["file_last_updated"]; ok {
-				res.FileLastUpdated = v.GetStringValue()
+				return
 			}
 
-			// Apply detail level filtering
-			if q.Detail == "l1" {
-				res.FirstParagraph = ""
-			}
-			if q.Detail != "l2" {
-				res.Text = ""
+			// Map results
+			out := make([]recallResult, 0, len(searchResults))
+			var topScore float32
+			for _, r := range searchResults {
+				payload := r.Payload
+				res := recallResult{
+					Score:   r.Score,
+					ChunkID: r.Id.GetUuid(),
+				}
+				if r.Score > topScore {
+					topScore = r.Score
+				}
+				if v, ok := payload["text"]; ok {
+					res.Text = v.GetStringValue()
+				}
+				if v, ok := payload["first_paragraph"]; ok {
+					res.FirstParagraph = v.GetStringValue()
+				}
+				if v, ok := payload["source_file"]; ok {
+					res.SourceFile = v.GetStringValue()
+				}
+				if v, ok := payload["header"]; ok {
+					res.Header = v.GetStringValue()
+				}
+				if v, ok := payload["chunk_index"]; ok {
+					res.ChunkIndex = int(v.GetIntegerValue())
+				}
+				if v, ok := payload["file_last_updated"]; ok {
+					res.FileLastUpdated = v.GetStringValue()
+				}
+
+				// Apply detail-level field filtering (same as single /recall)
+				switch detail {
+				case "l0":
+					res.Text = ""
+					res.FirstParagraph = ""
+				case "l1":
+					res.Text = ""
+				}
+				// l2: no change
+
+				out = append(out, res)
 			}
 
-			out = append(out, res)
-		}
-
-		results = append(results, batchRecallEntry{
-			QueryIndex: i,
-			Results:    out,
-			TopScore:   topScore,
-		})
+			results[i] = batchRecallEntry{
+				QueryIndex: i,
+				Results:    out,
+				TopScore:   topScore,
+			}
+		}()
 	}
+
+	wg.Wait()
 
 	writeJSON(w, 200, batchRecallResponse{Results: results})
 }
