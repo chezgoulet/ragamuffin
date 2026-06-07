@@ -32,7 +32,7 @@ LITELLM_API_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BENCH_DIR, "data")
 
-CHECKPOINT_INTERVAL = 50  # save every N questions
+PROGRESS_INTERVAL = 5   # update progress file every N questions
 
 # ── API helpers ─────────────────────────────────────────────────────────────
 
@@ -352,6 +352,25 @@ def save_checkpoint(path, results):
     os.replace(tmp, path)
 
 
+def total_questions_estimate(conversations, current_idx):
+    """Estimate total questions across remaining conversations."""
+    total = 0
+    for _, _, questions in conversations[current_idx:]:
+        total += len(questions)
+    return total
+
+
+def write_progress(path, progress):
+    """Write lightweight progress file for operator monitoring (#528)."""
+    tmp = path + ".tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(progress, fh, indent=2)
+        os.replace(tmp, path)
+    except OSError:
+        pass  # non-fatal
+
+
 def load_checkpoint(path):
     """Load checkpoint. Returns (results dict, set of completed (conv_id, q_idx))."""
     if not os.path.exists(path):
@@ -359,10 +378,18 @@ def load_checkpoint(path):
     with open(path) as fh:
         results = json.load(fh)
     completed = set()
+    # Scan completed conversations
     for conv in results.get("per_conversation", []):
         cid = conv.get("conversation", "")
         for i, d in enumerate(conv.get("details", [])):
             if d.get("answer", "") or d.get("f1") is not None:
+                completed.add((cid, i))
+    # Also scan in-progress conversation (#527)
+    in_progress = results.get("_in_progress")
+    if in_progress:
+        cid = in_progress.get("conversation", "")
+        for i, d in enumerate(in_progress.get("details", [])):
+            if d.get("answer", ""):
                 completed.add((cid, i))
     return results, completed
 
@@ -531,7 +558,11 @@ def main():
             "total_questions": 0,
             "overall_score": 0.0,
             "per_conversation": [],
+            "_started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
+
+    # Progress file path (#528)
+    progress_path = f"/tmp/benchmark_progress_{args.benchmark}_{args.config.upper()}.json"
 
     all_answers = []
     all_ground_truths = []
@@ -613,18 +644,32 @@ def main():
             })
             print(f"    Score: {score:.3f}")
 
-            # Checkpoint every N questions
-            if question_count % CHECKPOINT_INTERVAL == 0:
-                results["total_questions"] = question_count
-                conv_result = {
-                    "conversation": conv_id,
-                    "questions": len(conv_answers),
-                    "score": 0.0,  # updated below
-                    "details": conv_details,
+            # Checkpoint after every question (#527): save results immediately
+            # so nothing is lost if the process is killed between questions.
+            results["total_questions"] = question_count
+            results["_in_progress"] = {
+                "conversation": conv_id,
+                "details": conv_details,
+            }
+            save_checkpoint(ckpt_path, results)
+
+            # Progress file every N questions (#528)
+            if question_count % PROGRESS_INTERVAL == 0:
+                running_scores = [d["score"] for d in conv_details if d.get("score") is not None]
+                avg_score = sum(running_scores) / len(running_scores) if running_scores else 0.0
+                total_qs = sum(len(c.get("details", [])) for c in results.get("per_conversation", []))
+                total_qs += len(conv_details)
+                progress = {
+                    "benchmark": args.benchmark,
+                    "config": args.config.upper(),
+                    "started_at": results.get("_started_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
+                    "questions_completed": question_count,
+                    "questions_total": total_questions_estimate(conversations, idx),
+                    "avg_score": round(avg_score, 4),
+                    "current_question": question[:100],
+                    "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
-                results["per_conversation"].append(conv_result)
-                save_checkpoint(ckpt_path, results)
-                results["per_conversation"].pop()  # remove temp entry
+                write_progress(progress_path, progress)
 
         # Compute per-conversation score
         if conv_answers:
@@ -646,9 +691,10 @@ def main():
             "details": conv_details,
         }
         results["per_conversation"].append(conv_result)
+        results.pop("_in_progress", None)
         print(f"  Conversation score: {conv_score:.3f} ({len(conv_answers)} questions)")
 
-        # Checkpoint after each conversation
+        # Checkpoint after each conversation (clears _in_progress)
         results["total_questions"] = question_count
         save_checkpoint(ckpt_path, results)
 
