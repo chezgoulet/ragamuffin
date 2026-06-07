@@ -325,6 +325,24 @@ else
   red "pruner config" "HTTP error: $RC"
 fi
 
+# ── /v1/sessions/batch ─────────────────────────────────────────────────────
+echo "--- /v1/sessions/batch ---"
+RESP=$(curl -s -X POST "$BASE/v1/sessions/batch" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"default","sessions":[{"agent_id":"smoke-batch-q1","turns":[{"role":"user","content":"How long did I wait?"},{"role":"assistant","content":"14 months"}]},{"agent_id":"smoke-batch-q2","turns":[{"role":"user","content":"What about my appeal?"},{"role":"assistant","content":"Appeal took 6 months"}]}]}' 2>&1)
+assert_field "batch sessions POST returns status=ok" "status" "ok" "$RESP"
+assert_field "batch sessions session_count" "session_count" "2" "$RESP"
+
+# Empty sessions array -> 400
+RESP=$(curl -s -X POST "$BASE/v1/sessions/batch" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"default","sessions":[]}' 2>&1)
+assert_field "batch sessions empty array" "error" "True" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/sessions/batch" 2>&1)
+assert_field "batch sessions GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── Temporal reasoning tests (v0.8) ──────────────────────────────────────────────
 
 yellow "Temporal: POST fact with valid_from/valid_until"
