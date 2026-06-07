@@ -256,6 +256,7 @@ def load_locomo():
 
         # Flatten conversation sessions
         turns = []
+        speaker_order = []  # first unique speaker = user, second = assistant
         conv = entry.get("conversation", entry.get("sessions", {}))
         if isinstance(conv, dict):
             for sk in sorted(conv.keys()):
@@ -265,13 +266,17 @@ def load_locomo():
                         if isinstance(turn, dict):
                             speaker = turn.get("speaker", turn.get("role", "")).lower()
                             message = turn.get("message", turn.get("content", turn.get("text", "")))
-                            # Speaker mapping: speaker_a -> user, speaker_b -> assistant
-                            if speaker in ("speaker_a", "user", "human"):
-                                role = "user"
-                            elif speaker in ("speaker_b", "assistant", "ai", "bot"):
-                                role = "assistant"
+                            # Map character names to user/assistant roles.
+                            # First unique speaker = user, second = assistant.
+                            known_speakers = {"speaker_a": "user", "speaker_b": "assistant",
+                                             "user": "user", "human": "user",
+                                             "assistant": "assistant", "ai": "assistant", "bot": "assistant"}
+                            if speaker in known_speakers:
+                                role = known_speakers[speaker]
                             else:
-                                role = speaker
+                                if speaker not in speaker_order:
+                                    speaker_order.append(speaker)
+                                role = "user" if speaker_order.index(speaker) == 0 else "assistant"
                             turns.append({"role": role, "content": message})
                         else:
                             turns.append({"role": "user", "content": str(turn)})
@@ -381,7 +386,7 @@ def call_evaluator_llm(prompt):
             "Content-Type": "application/json",
         },
         json={
-            "model": "gpt-4o-mini",
+            "model": os.environ.get("EVALUATOR_MODEL", "gpt-4o"),
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": 512,
             "temperature": 0.0,
