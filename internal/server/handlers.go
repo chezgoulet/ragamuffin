@@ -171,6 +171,7 @@ type recallFilters struct {
 
 type recallRequest struct {
 	Query          string         `json:"query"`
+	Answer         bool           `json:"answer,omitempty"`
 	TopK           int            `json:"top_k"`
 	ScoreThreshold float64        `json:"score_threshold"`
 	SourceFilter   string         `json:"source_filter"`
@@ -390,10 +391,42 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		out = append(out, res)
 	}
 
-	writeJSON(w, 200, map[string]any{
+	// Synthesize answer if requested
+	var answer string
+	if req.Answer && len(out) > 0 {
+		// Build context from top results
+		var b strings.Builder
+		for i, r := range out {
+			if i >= 5 {
+				break // limit context to top 5 chunks
+			}
+			if r.Text != "" {
+				b.WriteString(r.Text)
+				b.WriteString("\n\n")
+			} else if r.FirstParagraph != "" {
+				b.WriteString(r.FirstParagraph)
+				b.WriteString("\n\n")
+			}
+		}
+		if b.Len() > 0 {
+			ansCtx := b.String()
+			ans, err := s.llmFor(ctx).Synthesize(ctx, req.Query, ansCtx)
+			if err == nil {
+				answer = ans
+			} else {
+				s.logger.Warn("answer synthesis failed", "error", err)
+			}
+		}
+	}
+
+	resp := map[string]any{
 		"results":   out,
 		"top_score": topScore,
-	})
+	}
+	if answer != "" {
+		resp["answer"] = answer
+	}
+	writeJSON(w, 200, resp)
 }
 
 // ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────────
