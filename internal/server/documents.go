@@ -11,10 +11,11 @@ import (
 // ── Request/Response types ────────────────────────────────────────────────────
 
 type documentsRequest struct {
-	Vault   string   `json:"vault"`
-	Content string   `json:"content"`
-	Source  string   `json:"source"`
-	Tags    []string `json:"tags,omitempty"`
+	Vault       string   `json:"vault"`
+	Content     string   `json:"content"`
+	Source      string   `json:"source"`
+	Tags        []string `json:"tags,omitempty"`
+	AutoExtract *bool    `json:"auto_extract,omitempty"`
 }
 
 type documentsResponse struct {
@@ -91,6 +92,11 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 502, "INGEST_FAILED", fmt.Sprintf("ingest failed: %s", err))
 			return
 		}
+	}
+
+	// Trigger fact extraction if auto_extract is requested (#529)
+	if req.AutoExtract != nil && *req.AutoExtract && s.extractor != nil && s.extractor.Enabled() {
+		go s.extractor.Extract(r.Context(), req.Source, req.Content, "system")
 	}
 
 	writeJSON(w, 200, documentsResponse{

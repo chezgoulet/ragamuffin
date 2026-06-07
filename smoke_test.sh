@@ -397,6 +397,12 @@ RESP=$(curl -s -X POST "$BASE/v1/documents" \
   -d '{"content":"Tagged doc","source":"tagged_doc.txt","vault":"default","tags":["smoke","test"]}' 2>&1)
 assert_field "documents with vault+tags" "status" "ok" "$RESP"
 
+# /v1/documents with auto_extract -> should ingest and extract facts
+RESP=$(curl -s -X POST "$BASE/v1/documents" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Fact extraction test: the sky is blue.","source":"fact_test.txt","auto_extract":true}' 2>&1)
+assert_field "documents with auto_extract" "status" "ok" "$RESP"
+
 # /v1/documents GET -> 405
 RESP=$(curl -s "$BASE/v1/documents" 2>&1)
 assert_field "documents GET returns 405" "code" "METHOD_NOT_ALLOWED" "$RESP"
