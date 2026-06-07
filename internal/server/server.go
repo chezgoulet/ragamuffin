@@ -24,6 +24,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/web"
@@ -58,6 +59,7 @@ type Server struct {
 	logStore    *logstore.Store
 	pruner      *pruner.Pruner
 	extractor   *extraction.Extractor
+	apiDriver   *ingress.APIIngestDriver
 	emitter     *events.Emitter // webhook + SSE event publisher
 	mcpHandler  *mcp.Handler
 	broker      *events.Broker  // SSE subscriber registry
@@ -74,7 +76,7 @@ type Server struct {
 }
 
 // New creates a new Server.
-func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger, ext *extraction.Extractor) *Server {
+func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger, ext *extraction.Extractor, apiDrv *ingress.APIIngestDriver) *Server {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	s := &Server{
 		cfg:           cfg,
@@ -89,6 +91,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		logStore:      logStore,
 		pruner:        pr,
 		extractor:      ext,
+		apiDriver:     apiDrv,
 		emitter:       emitter,
 		broker:        br,
 		logger:        logger,
@@ -108,6 +111,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/snapshot", cfg.RateLimitSnapshot)
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
+	rl.SetLimit("/v1/documents", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/chunks", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/pruner/auto-tune", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
@@ -199,6 +203,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 	mux.HandleFunc("/v1/ingest/conversation", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngestConversation)))
+	mux.HandleFunc("/v1/documents", s.withRequestID(s.withRateLimit("/v1/documents", s.handleDocuments)))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
@@ -457,7 +462,8 @@ func (s *Server) ensureFactIndexes() {
 	if s.facts == nil {
 		return
 	}
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	factsCollection := s.cfg.FactsCollection
 
 	// Detect Qdrant schema mismatch: vector size changed between runs.

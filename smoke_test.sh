@@ -340,6 +340,35 @@ else
   red "pruner config" "HTTP error: $RC"
 fi
 
+# ── /v1/documents ──────────────────────────────────────────────────────────
+echo "--- /v1/documents ---"
+RESP=$(curl -s -X POST "$BASE/v1/documents" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Smoke test document content","source":"smoke_test_doc.txt"}' 2>&1)
+assert_field "documents POST returns status=ok" "status" "ok" "$RESP"
+
+# /v1/documents missing content -> 400
+RESP=$(curl -s -X POST "$BASE/v1/documents" \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"no_content.txt"}' 2>&1)
+assert_field "documents missing content" "error" "True" "$RESP"
+
+# /v1/documents missing source -> 400
+RESP=$(curl -s -X POST "$BASE/v1/documents" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"no source"}' 2>&1)
+assert_field "documents missing source" "error" "True" "$RESP"
+
+# /v1/documents with vault + tags
+RESP=$(curl -s -X POST "$BASE/v1/documents" \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"Tagged doc","source":"tagged_doc.txt","vault":"default","tags":["smoke","test"]}' 2>&1)
+assert_field "documents with vault+tags" "status" "ok" "$RESP"
+
+# /v1/documents GET -> 405
+RESP=$(curl -s "$BASE/v1/documents" 2>&1)
+assert_field "documents GET returns 405" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── Temporal reasoning tests (v0.8) ──────────────────────────────────────────────
 
 yellow "Temporal: POST fact with valid_from/valid_until"
