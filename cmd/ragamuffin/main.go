@@ -26,6 +26,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 

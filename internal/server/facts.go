@@ -1029,7 +1029,8 @@ func (s *Server) migrateFacts() {
 	if s.facts == nil {
 		return
 	}
-	ctx := s.shutdownCtx
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	collection := s.cfg.FactsCollection
 
 	// Check migration sentinel — skip if already done (#412)
