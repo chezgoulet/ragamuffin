@@ -439,6 +439,21 @@ func TestIsMultiTenant(t *testing.T) {
 	}
 }
 
+func TestIsMultiTenant_VaultsRootAutoProvision(t *testing.T) {
+	// #524: VaultsRoot + AutoProvisionVaults should enable multi-tenant mode
+	// even without explicit Vaults entries.
+	cfg := &Config{VaultsRoot: "/data/vaults", AutoProvisionVaults: true}
+	if !cfg.IsMultiTenant() {
+		t.Error("IsMultiTenant() = false with VaultsRoot + AutoProvisionVaults")
+	}
+
+	// VaultsRoot alone should NOT enable multi-tenant
+	cfg2 := &Config{VaultsRoot: "/data/vaults"}
+	if cfg2.IsMultiTenant() {
+		t.Error("IsMultiTenant() = true with VaultsRoot alone (no AutoProvision)")
+	}
+}
+
 func TestLoad_MultiTenant(t *testing.T) {
 	dir1 := t.TempDir()
 	dir2 := t.TempDir()

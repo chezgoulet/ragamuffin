@@ -55,6 +55,10 @@ type Config struct {
 	// VaultsRoot restricts runtime vault creation paths (handleCreateVault).
 	// Only used in multi-tenant mode (#413).
 	VaultsRoot string
+	// MultiTenantMode is true when the server should operate in multi-tenant
+	// mode even without explicit RAGAMUFFIN_VAULTS entries. Triggered by
+	// setting RAGAMUFFIN_VAULTS_ROOT + RAGAMUFFIN_AUTO_PROVISION_VAULTS=true.
+	MultiTenantMode bool
 
 	// Required
 	QdrantURL       string
@@ -159,9 +163,12 @@ type Config struct {
 	LogLevel string
 }
 
-// IsMultiTenant returns true when multi-tenancy is active (RAGAMUFFIN_VAULTS set).
+// IsMultiTenant returns true when multi-tenancy is active.
+// Triggered by RAGAMUFFIN_VAULTS or by RAGAMUFFIN_VAULTS_ROOT +
+// RAGAMUFFIN_AUTO_PROVISION_VAULTS=true (#524).
 func (c *Config) IsMultiTenant() bool {
-	return len(c.Vaults) > 0
+	return len(c.Vaults) > 0 ||
+		(c.VaultsRoot != "" && c.AutoProvisionVaults)
 }
 
 // HasLLM returns true if an LLM is configured.
@@ -429,6 +436,12 @@ func Load() (*Config, error) {
 
 	// Parse vaults root for multi-tenant path validation
 	cfg.VaultsRoot = os.Getenv("RAGAMUFFIN_VAULTS_ROOT")
+
+	// If VaultsRoot + AutoProvision are set, enter multi-tenant mode
+	// even without explicit RAGAMUFFIN_VAULTS entries (#524).
+	if cfg.VaultsRoot != "" && cfg.AutoProvisionVaults {
+		cfg.MultiTenantMode = true
+	}
 
 	// Parse multi-tenancy if RAGAMUFFIN_VAULTS is set
 	vaultsRaw := os.Getenv("RAGAMUFFIN_VAULTS")
