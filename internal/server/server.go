@@ -31,6 +31,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
+	pb "github.com/qdrant/go-client/qdrant"
 )
 
 type ctxKey string
@@ -200,12 +201,16 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
 	mux.HandleFunc("/v1/review", s.withRequestID(s.withRateLimit("/v1/review", s.handleReview)))
 
+	// Vault operations — clear, create, list
+	mux.HandleFunc("/v1/vaults/", s.withRequestID(s.handleVaultClear))
+
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 	mux.HandleFunc("/v1/ingest/conversation", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngestConversation)))
 	mux.HandleFunc("/v1/documents", s.withRequestID(s.withRateLimit("/v1/documents", s.handleDocuments)))
 
 	// Agent session endpoints (v0.5+/#162)
+	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
 	mux.HandleFunc("/v1/sessions/", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessionByID)))
 
@@ -775,6 +780,95 @@ func (s *Server) handleCreateVault(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 201, map[string]interface{}{
 		"name": req.Name,
 		"path": req.Path,
+	})
+}
+
+// ── /v1/vaults/{name}/clear ───────────────────────────────────────────────────
+
+type vaultClearRequest struct {
+	Confirm bool `json:"confirm"`
+}
+
+type vaultClearResponse struct {
+	Status          string `json:"status"`
+	Vault           string `json:"vault"`
+	ChunksDeleted   int64  `json:"chunks_deleted"`
+	FactsDeleted    int64  `json:"facts_deleted"`
+	SessionsDeleted int64  `json:"sessions_deleted"`
+}
+
+func (s *Server) handleVaultClear(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	// Extract vault name from path: /v1/vaults/{name}/clear
+	path := strings.TrimPrefix(r.URL.Path, "/v1/vaults/")
+	parts := strings.SplitN(path, "/", 2)
+	vaultName := parts[0]
+	if vaultName == "" || len(parts) < 2 || parts[1] != "clear" {
+		writeError(w, 400, "INVALID_REQUEST", "expected /v1/vaults/{name}/clear")
+		return
+	}
+
+	var req vaultClearRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+	if !req.Confirm {
+		writeError(w, 400, "INVALID_REQUEST", "confirm must be true to clear vault")
+		return
+	}
+
+	// Get the indexer for this vault
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	// Get the Qdrant client for this vault
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 500, "INTERNAL", "vault has no database connection")
+		return
+	}
+
+	// 1. Delete all Qdrant points (chunks) for this vault
+	s.logger.Info("clearing vault chunks", "vault", vaultName)
+	chunksBefore, _ := qc.Count(r.Context())
+	collectionName := qc.Collection()
+	if err := qc.DeleteFiltered(r.Context(), collectionName, &pb.Filter{}); err != nil {
+		s.logger.Error("failed to delete vault chunks", "vault", vaultName, "error", err)
+		writeError(w, 500, "INTERNAL", "failed to clear vault chunks")
+		return
+	}
+	chunksDeleted := int64(chunksBefore)
+
+	// 2. Delete all facts for this vault from the per-vault facts collection
+	factsQc := s.indexers.GetFactClient(vaultName)
+	var factsCollection string
+	var factsDeleted int64
+	if factsQc != nil {
+		factsBefore, _ := factsQc.Count(r.Context())
+		factsCollection = factsQc.Collection()
+		if err := factsQc.DeleteFiltered(r.Context(), factsCollection, &pb.Filter{}); err != nil {
+			s.logger.Warn("failed to delete vault facts", "vault", vaultName, "error", err)
+		}
+		factsDeleted = int64(factsBefore)
+	}
+
+	// 3. Delete all sessions for this vault from logstore
+	sessionsDeleted, _ := s.logStore.DeleteSessionsByVault(r.Context(), vaultName)
+
+	writeJSON(w, 200, vaultClearResponse{
+		Status:          "ok",
+		Vault:           vaultName,
+		ChunksDeleted:   chunksDeleted,
+		FactsDeleted:    factsDeleted,
+		SessionsDeleted: sessionsDeleted,
 	})
 }
 

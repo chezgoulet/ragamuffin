@@ -151,6 +151,20 @@ assert_field "auth/check POST" "authenticated" "True" "$RESP"
 RESP=$(curl -s -X PUT "$BASE/v1/auth/check" 2>&1)
 assert_field "auth/check PUT method" "code" "METHOD_NOT_ALLOWED" "$RESP"
 
+# ── /v1/recall answer mode ─────────────────────────────────────────────────
+echo "--- /recall answer mode ---"
+
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"ragamuffin","answer":true}' 2>&1)
+assert_field "recall answer=true has answer" "answer" "True" "$RESP"
+assert_field "recall answer=true has results" "results" "True" "$RESP"
+
+RESP=$(curl -s -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"nonexistentxyz","answer":true,"score_threshold":0.99}' 2>&1)
+assert_field "recall answer=true no chunks" "results" "True" "$RESP"
+
 # ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────
 echo "--- /v1/chunks ---"
 # Get a valid chunk_id first
@@ -340,6 +354,24 @@ else
   red "pruner config" "HTTP error: $RC"
 fi
 
+# ── /v1/sessions/batch ─────────────────────────────────────────────────────
+echo "--- /v1/sessions/batch ---"
+RESP=$(curl -s -X POST "$BASE/v1/sessions/batch" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"default","sessions":[{"agent_id":"smoke-batch-q1","turns":[{"role":"user","content":"How long did I wait?"},{"role":"assistant","content":"14 months"}]},{"agent_id":"smoke-batch-q2","turns":[{"role":"user","content":"What about my appeal?"},{"role":"assistant","content":"Appeal took 6 months"}]}]}' 2>&1)
+assert_field "batch sessions POST returns status=ok" "status" "ok" "$RESP"
+assert_field "batch sessions session_count" "session_count" "2" "$RESP"
+
+# Empty sessions array -> 400
+RESP=$(curl -s -X POST "$BASE/v1/sessions/batch" \
+  -H 'Content-Type: application/json' \
+  -d '{"vault":"default","sessions":[]}' 2>&1)
+assert_field "batch sessions empty array" "error" "True" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/sessions/batch" 2>&1)
+assert_field "batch sessions GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
 # ── /v1/documents ──────────────────────────────────────────────────────────
 echo "--- /v1/documents ---"
 RESP=$(curl -s -X POST "$BASE/v1/documents" \
@@ -414,7 +446,33 @@ fi
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""
-echo "=== Results: $PASS passed, $FAIL failed ==="
+# ── /v1/vaults/{name}/clear ─────────────────────────────────────────────────
+echo "--- /v1/vaults/{name}/clear ---"
+
+# POST with no confirm -> 400
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{}' 2>&1)
+assert_field "vault clear without confirm" "error" "True" "$RESP"
+
+# POST with confirm=false -> 400
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": false}' 2>&1)
+assert_field "vault clear confirm=false" "error" "True" "$RESP"
+
+# POST with confirm=true -> 200
+RESP=$(curl -s -X POST "$BASE/v1/vaults/default/clear" \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm": true}' 2>&1)
+assert_field "vault clear confirm=true" "status" "ok" "$RESP"
+assert_field "vault clear returns vault" "vault" "default" "$RESP"
+
+# GET -> 405
+RESP=$(curl -s "$BASE/v1/vaults/default/clear" 2>&1)
+assert_field "vault clear GET method" "code" "METHOD_NOT_ALLOWED" "$RESP"
+
+echo "=== Results: $PASS passed, $FAIL failed ===
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
