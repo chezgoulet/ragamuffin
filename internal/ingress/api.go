@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -55,10 +56,12 @@ func (d *APIIngestDriver) Ingest(ctx context.Context, content, source, vault str
 	}
 
 	// Emit event for downstream consumers (fire-and-forget)
+	// Tag keys are vault-namespaced to prevent collision when events from
+	// different vaults are processed by the same downstream consumer.
 	meta := map[string]string{"vault": vault}
 	if len(tags) > 0 {
-		for i, t := range tags {
-			meta[TagMetaKey(i)] = t
+		for _, t := range tags {
+			meta[fmt.Sprintf("%s:%s", vault, t)] = t
 		}
 	}
 	select {
@@ -84,16 +87,4 @@ func (d *APIIngestDriver) Run(ctx context.Context) error {
 	return nil
 }
 
-// TagMetaKey returns a stable metadata key for the nth tag.
-func TagMetaKey(i int) string {
-	switch i {
-	case 0:
-		return "tag_0"
-	case 1:
-		return "tag_1"
-	case 2:
-		return "tag_2"
-	default:
-		return "tag_other"
-	}
-}
+
