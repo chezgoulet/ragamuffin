@@ -460,12 +460,29 @@ def call_evaluator_llm(prompt):
 
 def score_longmemeval(answer, ground_truth):
     """Judge correctness via evaluator LLM. Returns 1.0 or 0.0."""
-    if answer == "ANSWER_FAILED":
+    if answer == "ANSWER_FAILED" or not answer.strip():
         return 0.0
+    ex = '\n\nExamples:'
+    ex += '\nGround truth: $12\nSystem answer: The context was not provided.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: $12\nSystem answer: You spent $12 per mug.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: $12\nSystem answer: Based on the context, you purchased 5 mugs for $60, so $12 per mug.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: The provided context does not contain that information.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: When you first started, you led 4 engineers. Now you lead 5.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: 25\nSystem answer: 25 new postcards.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: 25\nSystem answer: Based on the context, you first mentioned 25 postcards, but later said 17. The most recent number is 17.\nJudgment: INCORRECT'
     prompt = (
+        "You are a strict grader. If the answer dodges the question, says it "
+        "cannot answer or no context provided, or fails to provide the "
+        "specific information asked for, it is INCORRECT — even if the ground "
+        "truth value appears somewhere in the answer text.\n\n"
+        "A correct answer may include conversational framing like 'Based on the context...' "
+        "or 'According to your statements...' as long as it ultimately provides "
+        "the specific requested value. The framing is fine; the value must be "
+        "correctly stated."
+        f"{ex}\n\n"
         f"Ground truth: {ground_truth}\n"
-        f"System answer: {answer}\n\n"
-        "Is this answer correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
+        f"System answer: {answer}\n"
+        "Is this correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
     )
     try:
         verdict = call_evaluator_llm(prompt).strip().upper()
