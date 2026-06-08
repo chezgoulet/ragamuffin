@@ -183,6 +183,14 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 			payload["expires_at_unix"] = qutil.Nv(float64(now.AddDate(0, 0, f.TTLDays).Unix()))
 		}
 
+		// Embed the fact value for semantic search — was previously zero-filled
+		vec, err := s.embedder.EmbedSingle(r.Context(), f.Value)
+		if err != nil {
+			s.log(r.Context()).Error("failed to embed conversation fact", "key", key, "error", err)
+			// Fall back to zero vector so the fact is at least stored with metadata
+			vec = make([]float32, s.cfg.FactsVectorSize)
+		}
+
 		point := &qdrant.PointStruct{
 			Id: &qdrant.PointId{
 				PointIdOptions: &qdrant.PointId_Uuid{
@@ -193,7 +201,7 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 			Vectors: &qdrant.Vectors{
 				VectorsOptions: &qdrant.Vectors_Vector{
 					Vector: &qdrant.Vector{
-						Data: make([]float32, s.cfg.FactsVectorSize),
+						Data: vec,
 					},
 				},
 			},
