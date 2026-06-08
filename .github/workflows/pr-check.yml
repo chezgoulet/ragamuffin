@@ -1,0 +1,52 @@
+# Workflow A — PR Check
+# Runs on every PR targeting `testing`. Gates merge with fast CI.
+# Target: <5 minutes
+
+name: PR Check
+
+on:
+  pull_request:
+    branches: [testing]
+
+env:
+  DOCKERHUB_REPO: chezgoulet
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Run tests
+        run: go test -timeout 60s ./...
+
+  docker-build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify image compiles
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: chezgoulet/ragamuffin:pr-check
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.pull_request.head.repo.updated_at || github.event.repository.updated_at }}
+
+  smoke-test:
+    needs: docker-build
+    runs-on: ubuntu-latest
+    if: false  # disabled — requires Qdrant in CI
+    steps:
+      - name: Run smoke test
+        run: |
+          # docker compose up, ingest 1 conversation, answer 2 questions
+          echo "smoke test placeholder"
