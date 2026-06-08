@@ -4,6 +4,7 @@ package chunker
 import (
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
@@ -46,21 +47,35 @@ func ChunkFile(content, sourcePath, ext string, modTime time.Time, opts Options)
 
 // extractFirstParagraph returns the first paragraph of text: up to the first
 // double-newline or 200 characters, whichever is shorter.
+// byte-slicing may cut through multi-byte UTF-8 characters, so the result is
+// sanitized to ensure valid UTF-8 for Qdrant gRPC.
 func extractFirstParagraph(text string) string {
 	// Find first double-newline
 	idx := strings.Index(text, "\n\n")
 	if idx == -1 {
 		// No double-newline; cap at 200 chars
 		if len(text) > 200 {
-			return text[:200]
+			return sanitizeUTF8(text[:200])
 		}
 		return text
 	}
 	// Found double-newline; cap at 200 chars
 	if idx > 200 {
-		return text[:200]
+		return sanitizeUTF8(text[:200])
 	}
 	return text[:idx]
+}
+
+// sanitizeUTF8 ensures a byte-sliced string is valid UTF-8 by dropping
+// any incomplete trailing rune. Qdrant gRPC rejects invalid UTF-8 payloads.
+func sanitizeUTF8(s string) string {
+	// Find the last valid rune boundary
+	for i := len(s); i > 0; i-- {
+		if utf8.ValidString(s[:i]) {
+			return s[:i]
+		}
+	}
+	return ""
 }
 
 func chunkMarkdown(content, sourcePath string, modTime time.Time) []Chunk {
