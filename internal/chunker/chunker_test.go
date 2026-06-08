@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
@@ -280,6 +281,25 @@ func TestExtractFirstParagraph(t *testing.T) {
 	}
 }
 
+func TestExtractFirstParagraph_UTF8Boundary(t *testing.T) {
+	// A 3-byte UTF-8 character (U+121B, ማ) spanning the 200-byte truncation point.
+	// 197 ASCII bytes + 3-byte char at byte 197-199 → truncation at 200 cuts mid-character.
+	prefix := strings.Repeat("a", 197)
+	multiByte := "ማ" // U+121B, 3 bytes in UTF-8: E1 88 9B
+	text := prefix + multiByte + " trailing text"
+
+	got := extractFirstParagraph(text)
+	if !utf8.ValidString(got) {
+		t.Errorf("extractFirstParagraph() produced invalid UTF-8: %q", got)
+	}
+	// Should truncate to valid UTF-8 by dropping the incomplete rune
+	expected := prefix // 197 a's, dropped the split multi-byte character
+	if got != expected {
+		t.Errorf("extractFirstParagraph() = %q (len=%d), want %q (len=%d)",
+			got, len(got), expected, len(expected))
+	}
+}
+
 func TestSplitSentences_NoPeriod(t *testing.T) {
 	text := "No punctuation here"
 	result := splitSentences(text)
@@ -288,5 +308,30 @@ func TestSplitSentences_NoPeriod(t *testing.T) {
 	}
 	if result[0] != text {
 		t.Errorf("got %q", result[0])
+	}
+}
+
+func TestSanitizeUTF8(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "valid_ascii", input: "hello", want: "hello"},
+		{name: "valid_utf8", input: "héllo", want: "héllo"},
+		{name: "truncated_2byte", input: "a\xc3", want: "a"},               // Ã cut after first byte
+		{name: "truncated_3byte", input: "a\xe1\x88", want: "a"},             // ማ cut after two bytes
+		{name: "truncated_4byte", input: "a\xf0\x9f\x98", want: "a"},         // 😀 cut after three bytes
+		{name: "mid_2byte", input: "ab\xc3world", want: "ab"},                // Ã cut mid-sequence
+		{name: "empty", input: "", want: ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeUTF8(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeUTF8(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
 	}
 }
