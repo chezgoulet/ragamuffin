@@ -346,7 +346,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 
 	// Background fact-to-chunk bridge: link this fact to related chunks
 	vaultName := vaultFromContext(r.Context())
-	if s.embedder != nil && fp.Value != "" {
+	if s.embedder != nil && fp.Value != "" && !s.QdrantReconnecting() && s.facts != nil {
 		go s.linkFactToChunks(fp.Key, fp.Value, vaultName)
 	}
 
@@ -1324,6 +1324,10 @@ func (s *Server) linkFactToChunks(key, value, vaultName string) {
 	}
 	if qc == nil {
 		qc = s.qdrant
+	}
+	if qc == nil {
+		s.logger.Warn("fact bridge: no Qdrant client available", "key", key)
+		return
 	}
 
 	// Search chunk collection with score threshold
