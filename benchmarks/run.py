@@ -460,12 +460,29 @@ def call_evaluator_llm(prompt):
 
 def score_longmemeval(answer, ground_truth):
     """Judge correctness via evaluator LLM. Returns 1.0 or 0.0."""
-    if answer == "ANSWER_FAILED":
+    if answer == "ANSWER_FAILED" or not answer.strip():
         return 0.0
+    ex = '\n\nExamples:'
+    ex += '\nGround truth: $12\nSystem answer: The context was not provided.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: $12\nSystem answer: You spent $12 per mug.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: $12\nSystem answer: Based on the context, you purchased 5 mugs for $60, so $12 per mug.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: The provided context does not contain that information.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: When you first started, you led 4 engineers. Now you lead 5.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: 25\nSystem answer: 25 new postcards.\nJudgment: CORRECT'
+    ex += '\n\nGround truth: 25\nSystem answer: Based on the context, you first mentioned 25 postcards, but later said 17. The most recent number is 17.\nJudgment: INCORRECT'
     prompt = (
+        "You are a strict grader. If the answer dodges the question, says it "
+        "cannot answer or no context provided, or fails to provide the "
+        "specific information asked for, it is INCORRECT — even if the ground "
+        "truth value appears somewhere in the answer text.\n\n"
+        "A correct answer may include conversational framing like 'Based on the context...' "
+        "or 'According to your statements...' as long as it ultimately provides "
+        "the specific requested value. The framing is fine; the value must be "
+        "correctly stated."
+        f"{ex}\n\n"
         f"Ground truth: {ground_truth}\n"
-        f"System answer: {answer}\n\n"
-        "Is this answer correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
+        f"System answer: {answer}\n"
+        "Is this correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
     )
     try:
         verdict = call_evaluator_llm(prompt).strip().upper()
@@ -542,11 +559,26 @@ def parse_args():
                         help="Resume from checkpoint")
     parser.add_argument("--output", default="",
                         help="Output path (default: auto-generated)")
-    parser.add_argument("--vault-prefix", default="bench-",
-                        help="Prefix for vault names")
+    parser.add_argument("--vault-prefix", default="",
+                        help="Prefix for vault names (default: benchmark name)")
+    parser.add_argument("--separate-vaults", action="store_true",
+                        help="One vault per conversation (default: one vault per benchmark)")
     parser.add_argument("--path", default="",
                         help="Path to data file or directory (overrides default data dir)")
     return parser.parse_args()
+
+
+def make_vault_name(args):
+    """Return a single vault name for the given benchmark/config combo.
+
+    By default all conversations in a benchmark share one vault so that
+    configs A-D can reuse the same ingested data (only the /ask parameters
+    change).  Override with --vault-prefix for per-conversation vaults.
+    """
+    if args.vault_prefix:
+        return args.vault_prefix
+    suffix = args.config.upper() if args.separate_vaults else "DATA"
+    return f"{args.benchmark}-{suffix}"
 
 
 def build_ask_mode(config):
@@ -618,7 +650,7 @@ def main():
     question_count = 0
 
     for idx, (conv_id, turns, questions) in enumerate(conversations):
-        vault = f"{args.vault_prefix}{conv_id}"
+        vault = f"{args.vault_prefix}{conv_id}" if args.separate_vaults else make_vault_name(args)
 
         # Check if this conversation was already completed
         conv_done = any(

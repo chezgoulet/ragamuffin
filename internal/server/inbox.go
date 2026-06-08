@@ -63,7 +63,7 @@ func (s *Server) inboxDir(vaultPath string) (string, error) {
 // validInboxID checks that the ID contains only safe characters and no path traversal sequences.
 // Inbox IDs are generated server-side as "20060102-150405-slug", so only alphanumeric,
 // hyphens, and underscores are permitted.
-var inboxIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+var inboxIDPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9_-]*[a-zA-Z0-9])?$`)
 
 func validInboxID(id string) bool {
 	return id != "" && len(id) <= 128 && inboxIDPattern.MatchString(id) && !strings.Contains(id, "..")
