@@ -470,6 +470,8 @@ def score_longmemeval(answer, ground_truth):
     ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: When you first started, you led 4 engineers. Now you lead 5.\nJudgment: CORRECT'
     ex += '\n\nGround truth: 25\nSystem answer: 25 new postcards.\nJudgment: CORRECT'
     ex += '\n\nGround truth: 25\nSystem answer: Based on the context, you first mentioned 25 postcards, but later said 17. The most recent number is 17.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: 2\nSystem answer: I cannot answer this question because the context was not provided. Please include the relevant information.\nJudgment: INCORRECT'
+    ex += '\n\nGround truth: 2\nSystem answer: I cannot answer this question because the provided context is empty. No information about doctor\'s appointments in March was included.\nJudgment: INCORRECT'
     prompt = (
         "You are a strict grader. If the answer dodges the question, says it "
         "cannot answer or no context provided, or fails to provide the "
