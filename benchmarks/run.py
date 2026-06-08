@@ -99,7 +99,7 @@ def answer_with_retry(question, vault, mode="rag", top_k=10, max_retries=5):
     """
     for attempt in range(1, max_retries + 1):
         try:
-            return ask_in_vault(question, vault, mode=mode, top_k=top_k)
+            return ask_in_vault(vault, question, mode=mode, top_k=top_k)
         except requests.HTTPError as e:
             status = e.response.status_code if e.response else 0
             if status == 429:
