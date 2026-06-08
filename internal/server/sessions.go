@@ -308,11 +308,19 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 
 	// Optionally append initial content as first turn
 	if req.Content != "" {
-		_, err := s.logStore.AppendTurn(r.Context(), sessionID, req.Content, "user")
+		turn, err := s.logStore.AppendTurn(r.Context(), sessionID, req.Content, "user")
 		if err != nil {
 			s.logger.Warn("session create: initial turn append failed", "error", err)
 		} else {
 			sess.TurnCount = 1
+			// Index the initial turn content
+			if idx := s.indexers.Get(vault); idx != nil {
+				source := fmt.Sprintf("sessions/%s/%s/turn-%d", req.AgentID, sessionID, turn.ID)
+				turnContent := "user: " + req.Content
+				if err := idx.Ingest(r.Context(), turnContent, source, []string{"session"}, nil); err != nil {
+					s.logger.Warn("session create: ingest failed", "session_id", sessionID, "error", err)
+				}
+			}
 		}
 	}
 
@@ -461,6 +469,18 @@ func (s *Server) handleTurnAppend(w http.ResponseWriter, r *http.Request, sessio
 		s.logger.Error("turn append failed", "error", err)
 		writeError(w, 500, "INTERNAL", "failed to append turn")
 		return
+	}
+
+	// Index the turn content into Qdrant
+	sess, _, err := s.logStore.GetSession(r.Context(), sessionID, 1)
+	if err == nil {
+		if idx := s.indexers.Get(sess.Vault); idx != nil {
+			source := fmt.Sprintf("sessions/%s/%s/turn-%d", sess.AgentID, sessionID, turn.ID)
+			turnContent := role + ": " + req.Content
+			if err := idx.Ingest(r.Context(), turnContent, source, []string{"session"}, nil); err != nil {
+				s.logger.Warn("turn append: ingest failed", "session_id", sessionID, "error", err)
+			}
+		}
 	}
 
 	// Trigger automatic extraction if configured

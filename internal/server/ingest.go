@@ -117,25 +117,27 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		return nil
 	}
 
-	// Determine vault path: sibling of existing vaults' parent directory
-	var basePath string
-	if s.cfg.IsMultiTenant() {
-		// Use the first configured vault's parent as base
-		for _, vc := range s.cfg.Vaults {
-			basePath = filepath.Dir(vc.Path)
-			break
+	// Determine vault path
+	var vaultPath string
+	if s.cfg.VaultsRoot != "" {
+		// Use VaultsRoot directly (same convention as explicit vault paths at config.go:466)
+		vaultPath = filepath.Join(s.cfg.VaultsRoot, name)
+	} else {
+		// Derive basePath from existing vaults: sibling of vaults' parent directory
+		var basePath string
+		if s.cfg.IsMultiTenant() {
+			for _, vc := range s.cfg.Vaults {
+				basePath = filepath.Dir(vc.Path)
+				break
+			}
+		} else if s.cfg.VaultPath != "" {
+			basePath = filepath.Dir(s.cfg.VaultPath)
 		}
-	} else if s.cfg.VaultPath != "" {
-		basePath = filepath.Dir(s.cfg.VaultPath)
-	}
-	if basePath == "" {
-		if s.cfg.VaultsRoot != "" {
-			basePath = s.cfg.VaultsRoot
-		} else {
+		if basePath == "" {
 			basePath = "."
 		}
+		vaultPath = filepath.Join(basePath, "agent-vaults", name)
 	}
-	vaultPath := filepath.Join(basePath, "agent-vaults", name)
 
 	// Create directory
 	if err := os.MkdirAll(vaultPath, 0755); err != nil {
