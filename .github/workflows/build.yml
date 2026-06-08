@@ -89,7 +89,12 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          CGO_ENABLED=0 go build -ldflags="-s -w" \
+          CGO_ENABLED=0 go build \
+            -ldflags="-s -w \
+              -X 'github.com/chezgoulet/ragamuffin/internal/server.Version=${{ github.ref_name }}' \
+              -X 'github.com/chezgoulet/ragamuffin/internal/server.Commit=${{ github.sha }}' \
+              -X 'github.com/chezgoulet/ragamuffin/internal/server.BuildDate=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}' \
+              -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=$(go version | cut -d' ' -f3)'" \
             -o ragamuffin-${{ matrix.goos }}-${{ matrix.goarch }} \
             ./cmd/ragamuffin
 
