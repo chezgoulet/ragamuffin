@@ -1,24 +1,104 @@
 openapi: "3.0.3"
 info:
-  title: Ragamuffin Memory Provider API
-  version: "0.5.0"
+  title: Ragamuffin Memory & Knowledge API
+  version: "0.8.11"
   description: |
-    HTTP contract for agent harness memory adapters. Harness plugin adapters
-    (OpenClaw, Hermes, etc.) call these endpoints to provide persistent,
-    isolated, cross-session agent memory backed by Qdrant.
+    Full REST API for Ragamuffin — a vector-backed knowledge server and
+    agent memory backend. Provides semantic search, synthesized answers,
+    fact lifecycle management, session tracking, document ingestion with
+    automatic extraction, and background pruner health scans.
 
-    Two reference implementations exist:
-    - OpenClaw: plugins/memory-ragamuffin-openclaw/ (Node.js)
-    - Hermes:   plugins/memory-ragamuffin-hermes/   (Python)
+    Two modes:
+    - **Single-tenant**: Routes under `/` (e.g., `/recall`, `/v1/facts`)
+    - **Multi-tenant**: Routes prefixed with `/vault/{name}/` (e.g.,
+      `/vault/docs/recall`, `/vault/docs/v1/facts`)
 
 servers:
   - url: http://ragamuffin:8000
     description: Default Ragamuffin endpoint
 
 paths:
-  /v1/vaults:
+  # ── Health & Discovery ──────────────────────────────────────────────────
+
+  /health:
+    get:
+      summary: Health check
+      description: |
+        Returns server health and Qdrant connectivity status. Used by
+        orchestrators and load balancers for readiness probes.
+      operationId: healthCheck
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        "502":
+          $ref: '#/components/responses/QdrantUnavailable'
+
+  /stats:
+    get:
+      summary: Server statistics
+      description: |
+        Returns indexed file count, total chunk count, and vault details.
+      operationId: serverStats
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: Statistics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatsResponse'
+
+  /version:
+    get:
+      summary: Build version
+      description: |
+        Returns version, commit hash, build date, and Go version.
+        Requires ldflags at build time.
+      operationId: serverVersion
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: Build metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VersionResponse'
+
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      description: |
+        Prometheus-format metrics endpoint for monitoring and alerting.
+      operationId: metrics
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: Prometheus metrics text
+
+  # ── Vaults ──────────────────────────────────────────────────────────────
+
+  /vaults:
+    get:
+      summary: List vaults
+      description: |
+        Returns all configured vaults with their file counts, chunk counts,
+        and watcher state.
+      operationId: listVaults
+      tags: [Vaults]
+      responses:
+        "200":
+          description: Vault list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VaultListResponse'
     post:
-      summary: Create or confirm an agent vault
+      summary: Create or confirm a vault
       description: |
         Idempotent vault provisioning. Creates the corresponding Qdrant
         collection if it doesn't exist. Safe to call on every agent startup.
@@ -48,13 +128,13 @@ paths:
         "502":
           $ref: '#/components/responses/QdrantUnavailable'
 
-  /v1/vaults/{name}/health:
-    get:
-      summary: Check vault readiness
+  /v1/vaults/{name}/clear:
+    post:
+      summary: Clear vault data
       description: |
-        Verify vault exists and Qdrant is reachable. Used during agent init
-        to gate readiness before accepting turns.
-      operationId: checkVaultHealth
+        Resets a vault's Qdrant collection data. Requires admin access
+        when auth is enabled.
+      operationId: clearVault
       tags: [Vaults]
       parameters:
         - name: name
@@ -62,61 +142,33 @@ paths:
           required: true
           schema:
             type: string
-            pattern: '^agent::[a-zA-Z0-9_-]+$'
-          description: Vault name (e.g., agent::dev)
+          description: Vault name
       responses:
         "200":
-          description: Vault health status
+          description: Vault cleared
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/VaultHealthResponse'
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: cleared
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "502":
           $ref: '#/components/responses/QdrantUnavailable'
 
-  /v1/ingest:
-    post:
-      summary: Index content into a vault
-      description: |
-        Persist session turns, summaries, or any text content into an
-        agent's vault. Called by the harness after each completed turn
-        and at session end.
-      operationId: ingestContent
-      tags: [Memory]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/IngestRequest'
-      responses:
-        "200":
-          description: All documents indexed successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IngestResponse'
-        "207":
-          description: Partial success (some documents failed)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/IngestPartialResponse'
-        "400":
-          $ref: '#/components/responses/InvalidInput'
-        "404":
-          $ref: '#/components/responses/VaultNotFound'
-        "502":
-          $ref: '#/components/responses/QdrantUnavailable'
+  # ── Semantic Search ─────────────────────────────────────────────────────
 
-  /v1/recall:
+  /recall:
     post:
-      summary: Semantic search against a vault
+      summary: Semantic search
       description: |
-        Vault-targeted semantic search. Used by the harness during prefetch
-        for turn context and for cross-agent recall.
-      operationId: recallMemory
-      tags: [Memory]
+        Natural-language semantic search across the default vault. Returns
+        ranked chunks with source paths and scores.
+      operationId: recall
+      tags: [Search]
       requestBody:
         required: true
         content:
@@ -132,13 +184,1178 @@ paths:
                 $ref: '#/components/schemas/RecallResponse'
         "400":
           $ref: '#/components/responses/InvalidInput'
+
+  /v1/batch/recall:
+    post:
+      summary: Batch recall
+      description: |
+        Execute multiple recall queries in a single request. Each query
+        is processed in parallel with error isolation — one failing query
+        does not affect others.
+      operationId: batchRecall
+      tags: [Search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [queries]
+              properties:
+                queries:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    $ref: '#/components/schemas/RecallRequest'
+      responses:
+        "200":
+          description: Batch results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        query_index:
+                          type: integer
+                        results:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/RecallResult'
+                        error:
+                          type: string
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  # ── Synthesized Answers ─────────────────────────────────────────────────
+
+  /ask:
+    post:
+      summary: Synthesized answer
+      description: |
+        Answer a question by combining RAG results with an LLM. Supports
+        three modes: `rag` (RAG-only), `auto` (RAG with full-source fallback
+        on low confidence), and `full` (load entire matching documents).
+        Requires LLM to be configured.
+      operationId: ask
+      tags: [Search]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AskRequest'
+      responses:
+        "200":
+          description: Synthesized answer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AskResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+        "503":
+          $ref: '#/components/responses/LLMNotConfigured'
+
+  # ── Write Back ──────────────────────────────────────────────────────────
+
+  /draft:
+    post:
+      summary: Write to vault
+      description: |
+        Write content to the vault filesystem. Supports direct write mode
+        and PR mode (requires git config). Set `delete: true` to remove a file.
+      operationId: draft
+      tags: [Write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DraftRequest'
+      responses:
+        "200":
+          description: Write successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DraftResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  # ── Fact CRUD ───────────────────────────────────────────────────────────
+
+  /v1/facts:
+    get:
+      summary: List facts
+      description: |
+        Retrieve facts by exact key, prefix search, tag filter, or pagination.
+        Supports versioned facts with optimistic concurrency control.
+      operationId: listFacts
+      tags: [Facts]
+      parameters:
+        - name: key
+          in: query
+          schema:
+            type: string
+          description: Exact fact key
+        - name: prefix
+          in: query
+          schema:
+            type: string
+          description: Key prefix search
+        - name: tag
+          in: query
+          schema:
+            type: string
+          description: Filter by tag
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+          description: Max results
+        - name: before
+          in: query
+          schema:
+            type: string
+          description: Pagination cursor
+        - name: time_filter
+          in: query
+          schema:
+            type: string
+            default: active
+          description: "active, active_at:<RFC3339>, or all"
+      responses:
+        "200":
+          description: Fact list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  facts:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Fact'
+                  next_token:
+                    type: string
+    post:
+      summary: Upsert a fact
+      operationId: upsertFact
+      tags: [Facts]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertFactRequest'
+      responses:
+        "200":
+          description: Fact created or updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+    put:
+      summary: Full replace
+      operationId: replaceFact
+      tags: [Facts]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpsertFactRequest'
+      responses:
+        "200":
+          description: Fact replaced
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+    patch:
+      summary: Partial update
+      operationId: patchFact
+      tags: [Facts]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                value:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                confidence:
+                  type: number
+                valid_from:
+                  type: string
+                valid_until:
+                  type: string
+      responses:
+        "200":
+          description: Fact patched
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Fact'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+    delete:
+      summary: Delete a fact
+      operationId: deleteFact
+      tags: [Facts]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Fact deleted
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  /v1/facts/{key}/graph:
+    get:
+      summary: Fact dependency graph
+      description: |
+        Returns the supersedes/superseded_by chain for a fact. Shows
+        the full version history and relationships.
+      operationId: factGraph
+      tags: [Facts]
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+          description: URL-encoded fact key
+      responses:
+        "200":
+          description: Fact graph
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FactGraphResponse'
         "404":
-          $ref: '#/components/responses/VaultNotFound'
-        "502":
-          $ref: '#/components/responses/QdrantUnavailable'
+          $ref: '#/components/responses/NotFound'
+
+  # ── Structured Logging ──────────────────────────────────────────────────
+
+  /v1/logs:
+    get:
+      summary: Query logs
+      operationId: queryLogs
+      tags: [Logs]
+      parameters:
+        - name: agent
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: tag
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: before
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/LogEntry'
+                  next_token:
+                    type: string
+    post:
+      summary: Append log entry
+      operationId: appendLog
+      tags: [Logs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogEntry'
+      responses:
+        "201":
+          description: Entry created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogEntry'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  # ── Sessions ────────────────────────────────────────────────────────────
+
+  /v1/sessions:
+    post:
+      summary: Create session
+      description: |
+        Create a new conversation session. When auto_extract is true,
+        all turns in the session will be automatically scanned for
+        fact extraction.
+      operationId: createSession
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  /v1/sessions/batch:
+    post:
+      summary: Batch session ingestion
+      description: |
+        Ingest multiple sessions in a single request for bulk processing.
+      operationId: batchSessions
+      tags: [Sessions]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                sessions:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        "200":
+          description: Sessions created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count:
+                    type: integer
+
+  /v1/sessions/{id}:
+    get:
+      summary: Get session
+      operationId: getSession
+      tags: [Sessions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionResponse'
+        "404":
+          $ref: '#/components/responses/NotFound'
+    post:
+      summary: Append turn
+      description: |
+        Append a conversation turn to an existing session. Content is
+        automatically ingested into the vault for semantic recall.
+      operationId: appendTurn
+      tags: [Sessions]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                role:
+                  type: string
+                  enum: [user, assistant]
+                auto_extract:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Turn appended
+
+  # ── Documents ───────────────────────────────────────────────────────────
+
+  /v1/documents:
+    post:
+      summary: Ingest document
+      description: |
+        Ingest a document for chunking, embedding, and indexing. When
+        auto_extract is enabled, the document content is also scanned
+        for structured fact extraction.
+      operationId: ingestDocument
+      tags: [Documents]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content:
+                  type: string
+                source:
+                  type: string
+                vault:
+                  type: string
+                auto_extract:
+                  type: boolean
+                  default: false
+                metadata:
+                  type: object
+      responses:
+        "200":
+          description: Document indexed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  chunks:
+                    type: integer
+                  facts_extracted:
+                    type: integer
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  # ── Ingest ──────────────────────────────────────────────────────────────
+
+  /v1/ingest:
+    post:
+      summary: Ingestion (generic)
+      description: |
+        Index content into a vault. Supports auto_extract for automatic
+        fact extraction. Max body size: 10 MB.
+      operationId: ingestContent
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [vault, content]
+              properties:
+                vault:
+                  type: string
+                content:
+                  type: string
+                source:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                auto_extract:
+                  type: boolean
+                  default: false
+                metadata:
+                  type: object
+      responses:
+        "200":
+          description: Ingested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  indexed:
+                    type: integer
+                  vault:
+                    type: string
+        "207":
+          description: Partial success
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  indexed:
+                    type: integer
+                  vault:
+                    type: string
+                  errors:
+                    type: array
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  /v1/ingest/conversation:
+    post:
+      summary: Ingest conversation
+      description: |
+        Ingest a structured conversation (messages array) for embedding
+        and fact extraction.
+      operationId: ingestConversation
+      tags: [Memory]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messages]
+              properties:
+                messages:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [role, content]
+                    properties:
+                      role:
+                        type: string
+                        enum: [user, assistant, system]
+                      content:
+                        type: string
+                vault:
+                  type: string
+                auto_extract:
+                  type: boolean
+                  default: false
+      responses:
+        "200":
+          description: Conversation ingested
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  vault:
+                    type: string
+                  facts_extracted:
+                    type: integer
+
+  # ── Extraction ──────────────────────────────────────────────────────────
+
+  /v1/extraction/stats:
+    get:
+      summary: Extraction statistics
+      description: |
+        Returns extraction pipeline statistics including counts per vault
+        and configuration status.
+      operationId: extractionStats
+      tags: [Extraction]
+      responses:
+        "200":
+          description: Extraction stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:
+                    type: boolean
+                  total_facts:
+                    type: integer
+                  per_vault:
+                    type: object
+
+  # ── Chunks ──────────────────────────────────────────────────────────────
+
+  /v1/chunks/{chunk_id}:
+    get:
+      summary: Get chunk by ID
+      description: |
+        Retrieve a single indexed chunk by its Qdrant point ID. Returns
+        full payload including text, metadata, and source info.
+      operationId: getChunk
+      tags: [Search]
+      parameters:
+        - name: chunk_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Chunk details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Chunk'
+        "404":
+          $ref: '#/components/responses/NotFound'
+
+  # ── Review Queue ────────────────────────────────────────────────────────
+
+  /v1/review:
+    get:
+      summary: List flagged facts
+      description: |
+        View facts flagged by the pruner (stale, conflict, low-confidence,
+        source-stale). Supports pagination and filtering by reason type.
+      operationId: listReview
+      tags: [Review]
+      parameters:
+        - name: reason
+          in: query
+          schema:
+            type: string
+            enum: [stale, conflict, low_confidence, source_stale]
+        - name: key
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: before
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Review list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  flagged:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FlaggedFact'
+                  next_token:
+                    type: string
+    post:
+      summary: Resolve a flagged fact
+      operationId: resolveReview
+      tags: [Review]
+      parameters:
+        - name: key
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: action
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [confirm, supersede, reject, reclassify]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                new_key:
+                  type: string
+                new_value:
+                  type: string
+      responses:
+        "200":
+          description: Action applied
+
+  /v1/review/stats:
+    get:
+      summary: Review queue statistics
+      description: |
+        Returns aggregate counts of flagged facts by reason type.
+      operationId: reviewStats
+      tags: [Review]
+      responses:
+        "200":
+          description: Review statistics
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stale:
+                    type: integer
+                  conflict:
+                    type: integer
+                  low_confidence:
+                    type: integer
+                  source_stale:
+                    type: integer
+
+  # ── Pruner ──────────────────────────────────────────────────────────────
+
+  /v1/pruner/auto-tune:
+    get:
+      summary: Auto-tune thresholds
+      description: |
+        Analyzes review resolution history and recommends optimal pruner
+        thresholds. Dry-run by default; set dry_run=false to apply in-memory.
+        Requires admin access when auth is enabled.
+      operationId: prunerAutoTune
+      tags: [Pruner]
+      parameters:
+        - name: dry_run
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        "200":
+          description: Threshold recommendations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoTuneResponse'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: Pruner not enabled
+
+  /v1/pruner/config:
+    get:
+      summary: Pruner configuration
+      description: |
+        Returns current pruner configuration values (thresholds, sample sizes).
+      operationId: prunerConfig
+      tags: [Pruner]
+      responses:
+        "200":
+          description: Current pruner config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PrunerConfigResponse'
+        "503":
+          description: Pruner not enabled
+
+  # ── Audit ───────────────────────────────────────────────────────────────
+
+  /audit:
+    post:
+      summary: Vault health audit
+      description: |
+        Run health checks against the vault: stale files, semantic conflicts
+        (requires LLM), gaps, and duplicates.
+      operationId: auditVault
+      tags: [Maintenance]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                checks:
+                  type: array
+                  items:
+                    type: string
+                    enum: [stale, semantic_conflict, gap, duplicate]
+      responses:
+        "200":
+          description: Audit results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stale_files:
+                    type: array
+                  conflicts:
+                    type: array
+                  gaps:
+                    type: array
+                  duplicates:
+                    type: array
+
+  # ── Reindex & Refresh ───────────────────────────────────────────────────
+
+  /reindex:
+    post:
+      summary: Reindex vault
+      description: |
+        Force full re-index of a vault's file system. Scans all files
+        and updates the Qdrant index.
+      operationId: reindex
+      tags: [Maintenance]
+      responses:
+        "200":
+          description: Reindex started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: reindexing
+        "503":
+          description: Already reindexing
+
+  /v1/refresh:
+    post:
+      summary: Refresh index
+      description: |
+        Trigger a file-system watcher refresh. Useful for ZFS-native
+        deployments where inotify is unavailable.
+      operationId: refresh
+      tags: [Maintenance]
+      responses:
+        "200":
+          description: Refresh triggered
+
+  # ── Auth ────────────────────────────────────────────────────────────────
+
+  /v1/auth/check:
+    get:
+      summary: Authentication check
+      description: |
+        Returns current auth mode, enforcement status, and token validation
+        info. Useful for debugging auth configuration.
+      operationId: authCheck
+      tags: [Auth]
+      responses:
+        "200":
+          description: Auth status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthCheckResponse'
+
+  # ── Inbox ───────────────────────────────────────────────────────────────
+
+  /inbox:
+    get:
+      summary: List inbox entries
+      description: |
+        List pending or resolved inbox entries for the default vault.
+      operationId: listInbox
+      tags: [Inbox]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 10
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending, resolved]
+      responses:
+        "200":
+          description: Inbox entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+    put:
+      summary: Upsert inbox entry
+      description: |
+        Create or update an inbox entry. The id parameter is validated
+        against path traversal patterns.
+      operationId: upsertInbox
+      tags: [Inbox]
+      responses:
+        "200":
+          description: Entry saved
+
+  /inbox/{id}:
+    get:
+      summary: Get inbox entry
+      operationId: getInbox
+      tags: [Inbox]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+      responses:
+        "200":
+          description: Inbox entry
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+        "404":
+          $ref: '#/components/responses/NotFound'
+    put:
+      summary: Upsert inbox entry by ID
+      operationId: upsertInboxByID
+      tags: [Inbox]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+      responses:
+        "200":
+          description: Entry saved
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+    delete:
+      summary: Delete inbox entry
+      operationId: deleteInbox
+      tags: [Inbox]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^[a-zA-Z0-9][a-zA-Z0-9_-]*$'
+      responses:
+        "200":
+          description: Entry deleted
+        "400":
+          $ref: '#/components/responses/InvalidInput'
+
+  # ── Snapshot ────────────────────────────────────────────────────────────
+
+  /v1/snapshot:
+    get:
+      summary: Download vault snapshot
+      description: |
+        Downloads the entire vault as a gzipped tarball.
+      operationId: snapshot
+      tags: [Maintenance]
+      responses:
+        "200":
+          description: Gzipped tarball
+          content:
+            application/gzip:
+              schema:
+                type: string
+                format: binary
+
+  # ── Events ──────────────────────────────────────────────────────────────
+
+  /events:
+    get:
+      summary: SSE event stream
+      description: |
+        Real-time Server-Sent Events stream for fact lifecycle and broker
+        notifications. Auto-reconnect compatible.
+      operationId: events
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # ── Graph ───────────────────────────────────────────────────────────────
+
+  /graph:
+    get:
+      summary: Knowledge graph
+      description: |
+        Entity-relationship graph with BFS traversal up to depth 5.
+      operationId: graph
+      tags: [Search]
+      parameters:
+        - name: depth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+            default: 1
+      responses:
+        "200":
+          description: Graph data
+
+  # ── MCP ─────────────────────────────────────────────────────────────────
+
+  /mcp:
+    ...
+
+  # ── Static UI ───────────────────────────────────────────────────────────
+
+  /:
+    get:
+      summary: Web UI
+      description: |
+        Serves the embedded web dashboard. Returns JSON 404 for
+        non-browser requests (Accept: application/json).
+      operationId: webUI
+      tags: [Infrastructure]
+      responses:
+        "200":
+          description: HTML dashboard
+
+  # ═══════════════════════════════════════════════════════════════════════
+  # VAULT-PREFIXED ROUTES
+  # Apply to any route under /vault/{name}/
+  # ═══════════════════════════════════════════════════════════════════════
+
+  /vault/{name}/recall:
+    $ref: '#/paths/~1recall'
+
+  /vault/{name}/ask:
+    $ref: '#/paths/~1ask'
+
+  /vault/{name}/draft:
+    $ref: '#/paths/~1draft'
+
+  /vault/{name}/audit:
+    $ref: '#/paths/~1audit'
+
+  /vault/{name}/reindex:
+    $ref: '#/paths/~1reindex'
+
+  /vault/{name}/v1/facts:
+    $ref: '#/paths/~1v1~1facts'
+
+  /vault/{name}/v1/facts/{key}/graph:
+    $ref: '#/paths/~1v1~1facts~1{key}~1graph'
+
+  /vault/{name}/v1/logs:
+    $ref: '#/paths/~1v1~1logs'
+
+  /vault/{name}/v1/snapshot:
+    $ref: '#/paths/~1v1~1snapshot'
+
+  /vault/{name}/v1/batch/recall:
+    $ref: '#/paths/~1v1~1batch~1recall'
+
+  /vault/{name}/graph:
+    $ref: '#/paths/~1graph'
+
+  /vault/{name}/inbox:
+    $ref: '#/paths/~1inbox'
+
+  /vault/{name}/inbox/{id}:
+    $ref: '#/paths/~1inbox~1{id}'
 
 components:
   schemas:
+    # ── Health ──────────────────────────────────────────────────────────
+
+    HealthResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: ok
+        qdrant:
+          type: string
+          example: connected
+        version:
+          type: string
+
+    StatsResponse:
+      type: object
+      properties:
+        files:
+          type: integer
+        chunks:
+          type: integer
+        vaults:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              files:
+                type: integer
+              chunks:
+                type: integer
+
+    VersionResponse:
+      type: object
+      properties:
+        version:
+          type: string
+        commit:
+          type: string
+        date:
+          type: string
+        go_version:
+          type: string
+
+    # ── Vaults ──────────────────────────────────────────────────────────
+
+    VaultListResponse:
+      type: array
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          path:
+            type: string
+          indexed_files:
+            type: integer
+          total_chunks:
+            type: integer
+          watcher:
+            type: string
+
     CreateVaultRequest:
       type: object
       required: [name]
@@ -151,7 +1368,6 @@ components:
         label:
           type: string
           maxLength: 512
-          description: "Human-readable label"
 
     VaultResponse:
       type: object
@@ -162,102 +1378,42 @@ components:
           type: string
         created:
           type: boolean
-          description: "true if vault was just created, false if it already existed"
         collection:
           type: string
-          description: "Qdrant collection name backing this vault"
 
-    VaultHealthResponse:
-      type: object
-      properties:
-        name:
-          type: string
-        exists:
-          type: boolean
-        collection:
-          type: string
-        indexed:
-          type: integer
-          description: "Number of points (documents) in the collection"
-
-    Document:
-      type: object
-      required: [id, text]
-      properties:
-        id:
-          type: string
-          maxLength: 512
-          description: "Unique identifier (session_id + turn_number, or UUID)"
-        text:
-          type: string
-          maxLength: 65536
-          description: "Content text to embed and index"
-        metadata:
-          type: object
-          description: "Arbitrary metadata attached to the Qdrant point"
-          additionalProperties: true
-
-    IngestRequest:
-      type: object
-      required: [vault, documents]
-      properties:
-        vault:
-          type: string
-          description: "Target vault name"
-        documents:
-          type: array
-          minItems: 1
-          maxItems: 100
-          items:
-            $ref: '#/components/schemas/Document'
-
-    IngestResponse:
-      type: object
-      properties:
-        indexed:
-          type: integer
-          description: "Number of documents successfully indexed"
-        vault:
-          type: string
-
-    IngestPartialResponse:
-      allOf:
-        - $ref: '#/components/schemas/IngestResponse'
-        - type: object
-          properties:
-            errors:
-              type: array
-              items:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  error:
-                    type: string
-                    enum: [duplicate_id, text_too_long, embedding_failed]
+    # ── Search ──────────────────────────────────────────────────────────
 
     RecallRequest:
       type: object
-      required: [vault, query]
+      required: [query]
       properties:
-        vault:
-          type: string
-          description: "Vault to search"
         query:
           type: string
           minLength: 1
           maxLength: 2048
-          description: "Natural-language search query"
-        limit:
+        top_k:
           type: integer
           minimum: 1
           maximum: 100
           default: 10
-        min_score:
+        score_threshold:
           type: number
           minimum: 0.0
           maximum: 1.0
           default: 0.0
+        source_filter:
+          type: string
+        mode:
+          type: string
+          enum: [rag, auto, full]
+          default: auto
+          description: >
+            `rag` — RAG-only, `auto` — RAG with full-source fallback,
+            `full` — load entire matching source files
+        time_filter:
+          type: string
+          default: active
+          description: "active, active_at:<RFC3339>, or all"
 
     RecallResult:
       type: object
@@ -267,6 +1423,8 @@ components:
         score:
           type: number
           format: float
+        source_file:
+          type: string
         metadata:
           type: object
           additionalProperties: true
@@ -278,10 +1436,288 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RecallResult'
-        vault:
+        top_score:
+          type: number
+        mode_used:
           type: string
+          enum: [rag, auto, full]
+
+    # ── Ask ─────────────────────────────────────────────────────────────
+
+    AskRequest:
+      type: object
+      required: [query]
+      properties:
         query:
           type: string
+          minLength: 1
+          maxLength: 2048
+        mode:
+          type: string
+          enum: [rag, auto, full]
+          default: auto
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 8
+        time_filter:
+          type: string
+          default: active
+          description: "active, active_at:<RFC3339>, or all"
+
+    AskResponse:
+      type: object
+      properties:
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            type: string
+        mode_used:
+          type: string
+
+    # ── Draft ───────────────────────────────────────────────────────────
+
+    DraftRequest:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        content:
+          type: string
+        target_path:
+          type: string
+        mode:
+          type: string
+          enum: [direct, pr]
+          default: direct
+        delete:
+          type: boolean
+
+    DraftResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: written
+        path:
+          type: string
+
+    # ── Facts ───────────────────────────────────────────────────────────
+
+    Fact:
+      type: object
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        version:
+          type: integer
+        status:
+          type: string
+          enum: [active, superseded, rejected, needs_review]
+        confidence:
+          type: number
+        valid_from:
+          type: string
+        valid_until:
+          type: string
+        expires_at:
+          type: string
+
+    UpsertFactRequest:
+      type: object
+      required: [key, value]
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        version:
+          type: integer
+          description: "Set for optimistic concurrency control"
+        confidence:
+          type: number
+        valid_from:
+          type: string
+        valid_until:
+          type: string
+
+    FactGraphResponse:
+      type: object
+      properties:
+        key:
+          type: string
+        supersedes:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
+        superseded_by:
+          type: array
+          items:
+            $ref: '#/components/schemas/Fact'
+
+    # ── Logs ────────────────────────────────────────────────────────────
+
+    LogEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        type:
+          type: string
+        body:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        timestamp:
+          type: string
+          format: date-time
+
+    # ── Sessions ────────────────────────────────────────────────────────
+
+    CreateSessionRequest:
+      type: object
+      required: [agent]
+      properties:
+        agent:
+          type: string
+        label:
+          type: string
+        auto_extract:
+          type: boolean
+          default: false
+
+    SessionResponse:
+      type: object
+      properties:
+        id:
+          type: string
+        agent:
+          type: string
+        label:
+          type: string
+        created_at:
+          type: string
+        turn_count:
+          type: integer
+
+    # ── Chunks ──────────────────────────────────────────────────────────
+
+    Chunk:
+      type: object
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        source_file:
+          type: string
+        score:
+          type: number
+        metadata:
+          type: object
+
+    # ── Review ──────────────────────────────────────────────────────────
+
+    FlaggedFact:
+      type: object
+      properties:
+        key:
+          type: string
+        reason:
+          type: string
+          enum: [stale, conflict, low_confidence, source_stale]
+        status:
+          type: string
+        flagged_at:
+          type: string
+        details:
+          type: object
+
+    AutoTuneResponse:
+      type: object
+      properties:
+        dry_run:
+          type: boolean
+        recommendations:
+          type: array
+          items:
+            type: object
+            properties:
+              reason_type:
+                type: string
+                enum: [low_confidence, conflict]
+              current:
+                type: number
+              recommended:
+                type: number
+              accept_rate:
+                type: number
+              sample_size:
+                type: integer
+              rationale:
+                type: string
+              applied:
+                type: boolean
+        sample_count:
+          type: integer
+
+    PrunerConfigResponse:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        stale_days:
+          type: integer
+        conflict_sample_size:
+          type: integer
+        conflict_threshold:
+          type: number
+        low_confidence_threshold:
+          type: number
+        importance_threshold:
+          type: number
+
+    # ── Auth ────────────────────────────────────────────────────────────
+
+    AuthCheckResponse:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [none, api_key, jwt, oidc]
+        enforced:
+          type: boolean
+        authenticated:
+          type: boolean
+        claims:
+          type: object
+          properties:
+            sub:
+              type: string
+            roles:
+              type: array
+              items:
+                type: string
+
+    # ── Error ───────────────────────────────────────────────────────────
 
     ApiError:
       type: object
@@ -314,7 +1750,27 @@ components:
           example:
             error: true
             code: VAULT_NOT_FOUND
-            message: "Vault 'agent::dev' not found — call POST /v1/vaults first"
+            message: "Vault 'agent::dev' not found"
+    Forbidden:
+      description: Insufficient permissions
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: FORBIDDEN
+            message: "admin access required"
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: NOT_FOUND
+            message: "Resource not found"
     QdrantUnavailable:
       description: Qdrant is not reachable
       content:
@@ -325,3 +1781,13 @@ components:
             error: true
             code: QDRANT_UNAVAILABLE
             message: "Qdrant is not reachable at localhost:6334"
+    LLMNotConfigured:
+      description: LLM is not configured
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example:
+            error: true
+            code: LLM_NOT_CONFIGURED
+            message: "LLM not configured — set RAGAMUFFIN_LLM_* env vars"
