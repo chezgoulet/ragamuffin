@@ -276,6 +276,24 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 		vault = fmt.Sprintf("agent::%s", req.AgentID)
 	}
 
+	// Ensure vault is provisioned (auto-provision if not found)
+	idx := s.indexers.Get(vault)
+	if idx == nil {
+		if !s.cfg.AutoProvisionVaults {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and auto-provisioning is disabled", vault))
+			return
+		}
+		if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+			writeError(w, 403, "FORBIDDEN", "write access required to provision vaults")
+			return
+		}
+		idx = s.provisionVault(r.Context(), vault)
+		if idx == nil {
+			writeError(w, 400, "INVALID_REQUEST", fmt.Sprintf("vault %q not found and could not be provisioned", vault))
+			return
+		}
+	}
+
 	sess, err := s.logStore.CreateSession(r.Context(), sessionID, vault, req.AgentID, req.Source)
 	if err != nil {
 		s.logger.Error("session create failed", "error", err)
