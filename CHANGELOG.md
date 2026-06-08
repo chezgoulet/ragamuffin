@@ -1,5 +1,133 @@
 # Changelog
 
+## v0.8.11 (2026-06-19) — Sprint
+
+### Bug Fixes
+- **path traversal in inbox handlers**: Added `validInboxID()` regex validation (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) to inbox handlers. `parseInboxFile()` returns empty on invalid IDs; handlers return 400 `INVALID_ID`. Rejects `../etc/passwd`, URL-encoded traversal, null bytes, and leading slashes. (#557)
+- **conversation facts zero vectors**: `conversation.go` now calls `s.embedder.EmbedSingle()` instead of `make([]float32, FactsVectorSize)` before creating Qdrant points. Embedding failures fall back to zero vector with metadata preserved. (#558)
+- **confidence scale mismatch**: Normalized LLM integer 1-10 confidence to float64 0.0-1.0 at storage layer (divide by 10, cap at 0.85 max, clamp at 0.0 min). Pruner's low-confidence threshold now correctly triggers. (#559)
+- **context leak in documents.go extraction goroutine**: Changed `r.Context()` to `s.shutdownCtx` in the document extraction goroutine, matching the proven pattern from sessions.go. Prevents extraction from being cancelled when the HTTP handler returns. (#560)
+- **provisionVault path nesting**: Fixed double path nesting by using `VaultsRoot/<name>` directly instead of `VaultsRoot/<name>/<name>`. (#570)
+- **missing idx.Ingest on turn append**: `handleSessionCreate` and `handleTurnAppend` now call `idx.Ingest` after appending turns, ensuring session content is indexed in Qdrant. (#569)
+- **stats nil Qdrant guard**: `/stats` handler now guards against nil Qdrant client to prevent panic during startup. (#552)
+- **linkFactToChunks nil guard**: Protected goroutine against nil Qdrant client panic. (#567)
+- **fallback to factsQc**: When no pre-configured vaults exist, fall back to the shared facts Qdrant client. (#556)
+- **provisionVault basePath**: Fallback to `VaultsRoot` when vault base path is empty. (#548)
+- **auto-provision vault on session create**: Sessions now auto-provision the vault if it doesn't exist. (#547)
+- **multi-tenant zero-vault crash**: Fixed nil pointer during log store init when Vaults set is empty. (#542)
+- **handleHealth nil qdrant guard**: Health check handler guards against nil Qdrant during startup. (#543)
+
+### Features
+- **Rolling Docker tag**: `:rolling` tag published on every merge to main. (#554)
+
+## v0.8.3 (2026-06-15)
+
+### Bug Fixes
+- **Startup context timeout**: Added 30s timeout to `ensureFactIndexes` and `migrateFacts` to prevent startup hangs. (#480)
+- **8 review findings**: Fixed code review findings from v0.8 code review. (#477)
+
+### Features
+- **Benchmark harness**: LongMemEval + LoCoMo for 4 config variants. Benchmark harness v2. (#479)
+
+### Documentation
+- **SPEC.md audit**: Complete event types, PUT/PATCH valid_from/valid_until fields documented. (#478)
+
+## v0.8.2 (2026-06-12)
+
+### Bug Fixes
+- **8 review findings**: Fixed issues identified in v0.8 code review. (#477)
+
+## v0.8.1 (2026-06-10)
+
+### Bug Fixes
+- **Startup context timeout**: Added 30s timeout to `ensureFactIndexes` and `migrateFacts` to prevent startup hangs. (#480)
+
+### Features
+- **Benchmark harness**: LongMemEval + LoCoMo benchmark for 4 config variants. (#479)
+
+### Documentation
+- **SPEC.md audit**: Complete event types and PUT/PATCH valid_from/valid_until fields. (#478)
+
+## v0.8.0 (2026-06-08)
+
+### Features
+- **Temporal reasoning**: `valid_from`/`valid_until` fields on facts, `time_filter` parameter on `/recall` and `/facts` supporting `active`, `active_at:<RFC3339>`, or `all`. Pruner expired scan for time-bounded facts. (#463)
+- **Automatic memory extraction**: LLM-powered fact extraction from conversation turns. Opt-in via `auto_extract: true` on sessions and documents. Async execution with configurable cooldown and dedup. (#464)
+- **Auto-extract on `/v1/documents`**: Documents can now trigger fact extraction with `auto_extract: true`. (#502)
+- **Auto-index session turns**: Sessions treated as per-turn memories, indexed into vault Qdrant collection for cross-session recall. (#569)
+- **VaultsRoot + AutoProvisionVaults**: Multi-tenant mode auto-triggers when VaultsRoot is set. Vaults auto-provision on first write. (#548)
+- **OIDC-Native Authentication with Authentik**: Full OIDC integration for Authentik identity provider. (#508)
+- **`POST /v1/sessions/batch`**: Bulk session ingestion for batch processing. (#504)
+- **`POST /v1/vaults/{name}/clear`**: Reset a vault's Qdrant collection data. (#505)
+- **`POST /v1/refresh`**: Manual re-index trigger for the ZFS-native watcher. (#510)
+- **Tiered recall via `mode` parameter**: Auto-classify queries as RAG (`rag`), auto-detect (`auto`), or full-document (`full`). Mode selection returned in `mode_used` field. (#507)
+- **`POST /v1/batch/recall`**: Batch recall for multiple queries in a single request. (#498)
+- **MCP-to-REST adapter layer**: Refactored MCP gateway to a reusable adapter pattern separating MCP handshake from REST dispatch. (#492)
+- **Ingress driver architecture**: `IngressDriver` interface with `FileWatcherDriver`, `APIIngestDriver` implementations. Pluggable ingest pipelines. (#500-#503)
+- **Review Queue Dashboard**: Single HTML page for reviewing flagged facts. (#509)
+- **LoCoMo single-document data path**: Benchmark support for single-document evaluation format. (#481)
+- **Per-question checkpoint**: Benchmark harness saves progress per-question for resumable evaluation. (#481)
+- **LongMemEval splitter script**: Stream-parses 277MB datasets into per-conversation files. (#481)
+
+### Bug Fixes
+- **Batch recall**: Parallel batch processing, error isolation, per-query timeout. (#498)
+- **Missing meta arg in main.go Ingest call**: Fixed argument mismatch. (#548)
+- **LoCoMo speaker mapping**: Fixed speaker mapping and evaluator model config. (#481)
+- **main.go duplicate ingress import**: Resolved duplicate import and chan direction mismatch. (#503)
+- **CI build failures**: Fixed review_test.go arg and unused imports. (#492)
+- **Resolved service.go build failures**: Fixed test file compilation errors. (#492)
+
+### Refactoring
+- **Shared utility functions**: Extracted `writeError`, `writeJSON`, `IsIndexable` as reusable shared functions. (#511)
+- **MCP-to-REST adapter**: Separated MCP handshake from REST dispatch. (#492)
+
+### Documentation
+- **SPEC.md**: Updated with all new endpoints, env vars, and temporal filtering. (#478)
+- **Benchmark README**: Added docs for LongMemEval and LoCoMo benchmarks. (#452)
+
+## v0.7.0 (2026-06-06)
+
+### Features
+- **Adaptive pruner thresholds**: Pruner thresholds auto-tune based on review resolution history via `GET /v1/pruner/auto-tune?dry_run=true`. Analyzes accept rates to recommend optimal thresholds. (#447, #448)
+- **Fact knowledge graph**: `GET /v1/facts/{key}/graph` returns supersedes/superseded_by chains for any fact. Global and vault-scoped routes. (#448)
+- **MCP `detail` param on recall**: Configures result detail level (chunk metadata, headers, full text) per recall query. (#447)
+- **Webhook notifications for fact lifecycle**: CloudEvents v1.0 structured JSON pushed to configured webhook URL on fact events. (#447)
+- **`RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD`**: Configurable threshold for low-confidence fact flagging. (#447)
+- **`ragamuffin_get_chunk` MCP tool**: Fetch individual chunks by Qdrant point ID. (#453)
+- **Resolution logging**: Every review action logged with before/after state for auditability. (#456-#461)
+- **`first_paragraph` in Qdrant payload**: Stored during indexing for richer snippet previews. (#443)
+- **AGPL-3.0 license**: Replaced MIT with AGPL-3.0. NOTICE file added for copyright attribution. (#440)
+- **Mermaid diagrams**: ASCII art replaced with Mermaid for mobile-friendly README rendering. (#439)
+
+### Bug Fixes
+- **Rate limit keys**: Fixed per-endpoint rate limiting to use correct bucket keys. (#456-#461)
+- **License detection**: Replaced LICENSE with raw AGPL-3.0 text to fix GitHub detection. (#440)
+- **6 fixes from code review**: #435, #436, #437, #399, #423, #425. (#431, #438)
+- **`markContradiction` GetPoints fix**: Uses `GetPoints` instead of `ScrollFiltered` for reliable conflict detection. (#406)
+- **`PrunerSourceStaleInterval` env var binding**: Fixed env var wiring. (#434)
+- **Helper migration**: Moved duplicated helpers to shared packages (`qutil`). (#428)
+- **Auth + infra fixes**: #410, #411, #413, #414, #424. (#427)
+- **Facts package fixes**: #408, #409, #412, #395, #416, #419, #420. (#426)
+
+### Documentation
+- **Env vars and endpoints**: Complete env var table, missing endpoint docs added. (#432, #433)
+- **Mermaid diagrams**: README diagrams now render properly on mobile. (#439)
+- **Fact graph and webhook docs**: Added to SPEC.md, DEPLOY.md, README.md. (#448, #454)
+
+## v0.6.1 (2026-06-05)
+
+### Bug Fixes
+- **Pruner source-stale interval**: Fixed env var binding for `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL`. (#434)
+- **Facts-phase fixes**: Batch of fact lifecycle fixes (#408, #409, #412, #395, #416, #419, #420). (#426)
+- **Auth + infra fixes**: 4 fixes for auth middleware and infrastructure (#410, #411, #413, #414, #424). (#427)
+- **Helper consolidation**: Migrated duplicated helpers to shared `qutil` package. (#428)
+- **`markContradiction` fix**: Uses `GetPoints` instead of `ScrollFiltered` for reliable conflict scanning. (#406)
+- **License file replacement**: Raw AGPL-3.0 text for GitHub detection. (#440)
+
+### Documentation
+- **Removed stale references**: Cleaned up CONFIDENCE_BOOST, /vaults/:name/health, port 8080 references. (#432)
+- **Missing env vars and endpoints**: Added to SPEC.md. (#433)
+
 ## v0.6.0 (2026-06-05)
 
 ### Features
