@@ -586,7 +586,46 @@ else
   echo "FAIL: session turn not found via /ask (answer: $ANSWER)"
 fi
 
-echo "=== Results: $PASS passed, $FAIL failed ===
+# ── Inbox path traversal rejection ───────────────────────────────────────
+echo "--- inbox path traversal ---"
+
+# Valid inbox read should fail gracefully (no inbox entries exist by default)
+RESP=$(curl -s -X GET "$BASE/vault/default/inbox/../../etc/passwd" 2>&1)
+if echo "$RESP" | grep -q "INVALID_ID"; then
+  PASS=$((PASS + 1))
+  echo "PASS: inbox path traversal rejected with INVALID_ID"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: inbox path traversal not rejected: $RESP"
+fi
+
+# Absolute path
+RESP=$(curl -s -X GET "$BASE/vault/default/inbox//etc/passwd" 2>&1)
+if echo "$RESP" | grep -q "INVALID_ID"; then
+  PASS=$((PASS + 1))
+  echo "PASS: inbox absolute path rejected with INVALID_ID"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: inbox absolute path not rejected: $RESP"
+fi
+
+# Valid format should return 404 NOT_FOUND (entry doesn't exist), not 400
+RESP=$(curl -s -X GET "$BASE/vault/default/inbox/20260102-150405-nonexistent" 2>&1)
+if echo "$RESP" | grep -q "NOT_FOUND"; then
+  PASS=$((PASS + 1))
+  echo "PASS: inbox valid ID returns NOT_FOUND (not 400 INVALID_ID)"
+else
+  # If the vault doesn't exist (no default in multi-tenant), that's fine too
+  if echo "$RESP" | grep -q "VAULT_NOT"; then
+    PASS=$((PASS + 1))
+    echo "PASS: inbox valid ID returned VAULT_NOT_FOUND (non-default vault)"
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: inbox valid ID unexpected response: $RESP"
+  fi
+fi
+
+echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
   exit 1
 fi
