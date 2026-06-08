@@ -129,7 +129,11 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		basePath = filepath.Dir(s.cfg.VaultPath)
 	}
 	if basePath == "" {
-		basePath = "."
+		if s.cfg.VaultsRoot != "" {
+			basePath = s.cfg.VaultsRoot
+		} else {
+			basePath = "."
+		}
 	}
 	vaultPath := filepath.Join(basePath, "agent-vaults", name)
 
