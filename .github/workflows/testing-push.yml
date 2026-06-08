@@ -18,11 +18,23 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      - name: Run tests
-        run: go test -timeout 60s ./...
+      - name: Run Go tests
+        run: go test -timeout 120s ./internal/... ./cmd/...
+
+  test-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install Python deps
+        run: pip install pytest requests
+      - name: Run adapter tests
+        run: pytest plugins/memory_ragamuffin_hermes/tests/ -v
 
   docker:
-    needs: test
+    needs: [test, test-adapter]
     runs-on: ubuntu-latest
     permissions:
       contents: read
