@@ -907,3 +907,32 @@ func TestValidate_MultiTenantVaultPaths(t *testing.T) {
 		t.Errorf("unexpected error for valid vault path: %v", errs)
 	}
 }
+
+func TestLoad_AutoProvisionModeNoCrash(t *testing.T) {
+	// #538: VAULTS_ROOT + AUTO_PROVISION_VAULTS without VAULTS or VAULT_PATH
+	// should not crash on requireEnv("RAGAMUFFIN_VAULT_PATH").
+	root := t.TempDir()
+
+	os.Setenv("RAGAMUFFIN_VAULTS_ROOT", root)
+	os.Setenv("RAGAMUFFIN_AUTO_PROVISION_VAULTS", "true")
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Unsetenv("RAGAMUFFIN_VAULTS")
+	os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULTS_ROOT")
+		os.Unsetenv("RAGAMUFFIN_AUTO_PROVISION_VAULTS")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed with VAULTS_ROOT + AUTO_PROVISION_VAULTS: %v", err)
+	}
+
+	if !cfg.IsMultiTenant() {
+		t.Error("expected multi-tenant mode")
+	}
+	if len(cfg.Vaults) != 0 {
+		t.Errorf("expected 0 vaults, got %d", len(cfg.Vaults))
+	}
+}

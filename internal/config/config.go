@@ -444,9 +444,9 @@ func Load() (*Config, error) {
 		cfg.MultiTenantMode = true
 	}
 
-	// Parse multi-tenancy if RAGAMUFFIN_VAULTS is set
+	// Parse multi-tenancy if vaults are explicitly set or auto-provision mode is active
 	vaultsRaw := os.Getenv("RAGAMUFFIN_VAULTS")
-	if vaultsRaw != "" {
+	if vaultsRaw != "" || cfg.MultiTenantMode {
 		vaults := make(map[string]*VaultConfig)
 		for _, entry := range strings.Split(vaultsRaw, ",") {
 			entry = strings.TrimSpace(entry)
