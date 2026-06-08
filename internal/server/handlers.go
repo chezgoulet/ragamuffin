@@ -135,6 +135,15 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	if qc == nil {
 		qc = s.qdrant
 	}
+	if qc == nil {
+		writeJSON(w, 200, map[string]any{
+			"status":        "degraded",
+			"vault_path":    s.cfg.VaultPath,
+			"qdrant_status": "connecting",
+			"chunk_count":   0,
+		})
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	chunkCount, err := qc.Count(ctx)
 	cancel()
