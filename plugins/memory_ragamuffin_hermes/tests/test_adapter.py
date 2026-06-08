@@ -33,6 +33,12 @@ from plugins.memory_ragamuffin_hermes.__init__ import (
     _build_endpoint,
     _build_headers,
     RECALL_SCHEMA,
+    ASK_SCHEMA,
+    FACT_GET_SCHEMA,
+    FACT_PUT_SCHEMA,
+    FACT_GRAPH_SCHEMA,
+    REVIEW_LIST_SCHEMA,
+    REVIEW_RESOLVE_SCHEMA,
     _DEFAULT_ENDPOINT,
     _VAULT_PREFIX,
 )
@@ -508,25 +514,428 @@ class TestToolCall:
 
 
 # ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_ask
+# ---------------------------------------------------------------------------
+
+class TestToolAsk:
+
+    def test_ask_basic(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(200, {
+            "answer": "Physical isolation per agent is the recommended approach.",
+            "citations": [
+                {"text": "Use physical collections per agent", "score": 0.89},
+            ],
+        })
+
+        result = provider.handle_tool_call("ragamuffin_ask", {
+            "query": "How should we isolate agent memory?",
+        })
+
+        data = json.loads(result)
+        assert "answer" in data
+        assert "Physical isolation" in data["answer"]
+        assert len(data["citations"]) == 1
+
+    def test_ask_with_mode_and_top_k(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(200, {
+            "answer": "Concise answer",
+        })
+
+        provider.handle_tool_call("ragamuffin_ask", {
+            "query": "test",
+            "mode": "concise",
+            "top_k": 10,
+        })
+
+        call_kwargs = provider._requests.post.call_args[1]
+        assert call_kwargs["json"]["mode"] == "concise"
+        assert call_kwargs["json"]["top_k"] == 10
+
+    def test_ask_empty_query_returns_error(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_ask", {"query": ""})
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_ask_503_returns_ask_unavailable(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(503, {
+            "error": True, "code": "LLM_UNAVAILABLE",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_ask", {
+            "query": "anything",
+        })
+        data = json.loads(result)
+        assert data["error"] == "ASK_UNAVAILABLE"
+
+    def test_ask_server_error(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(500, {})
+
+        result = provider.handle_tool_call("ragamuffin_ask", {
+            "query": "test",
+        })
+        data = json.loads(result)
+        assert "error" in data
+        assert "500" in data["detail"] or "500" in data["error"]
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_fact_get
+# ---------------------------------------------------------------------------
+
+class TestToolFactGet:
+
+    def test_fact_get_found(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(200, {
+            "key": "user_timezone",
+            "value": "America/New_York",
+            "confidence": 0.85,
+            "status": "active",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_fact_get", {
+            "key": "user_timezone",
+        })
+
+        data = json.loads(result)
+        assert data["key"] == "user_timezone"
+        assert data["value"] == "America/New_York"
+        assert data["confidence"] == 0.85
+
+    def test_fact_get_not_found(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(404, {})
+
+        result = provider.handle_tool_call("ragamuffin_fact_get", {
+            "key": "nonexistent",
+        })
+
+        data = json.loads(result)
+        assert data["error"] == "NOT_FOUND"
+        assert "nonexistent" in data["detail"]
+
+    def test_fact_get_empty_key(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_fact_get", {"key": ""})
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_fact_get_connection_error(self):
+        provider = make_provider()
+        provider._requests.get.side_effect = ConnectionError("Connection refused")
+
+        result = provider.handle_tool_call("ragamuffin_fact_get", {
+            "key": "test",
+        })
+        data = json.loads(result)
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_fact_put
+# ---------------------------------------------------------------------------
+
+class TestToolFactPut:
+
+    def test_fact_put_created(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(201, {
+            "key": "user_timezone",
+            "status": "created",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_fact_put", {
+            "key": "user_timezone",
+            "value": "America/New_York",
+        })
+
+        data = json.loads(result)
+        assert data["status"] == "created"
+
+        # Verify payload sent to server
+        call_kwargs = provider._requests.post.call_args[1]
+        assert call_kwargs["json"]["key"] == "user_timezone"
+        assert call_kwargs["json"]["value"] == "America/New_York"
+
+    def test_fact_put_with_optional_fields(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(201, {
+            "key": "user_pref", "status": "created",
+        })
+
+        provider.handle_tool_call("ragamuffin_fact_put", {
+            "key": "user_pref",
+            "value": "dark mode",
+            "confidence": 0.9,
+            "ttl_days": 90,
+            "tags": ["preference", "ui"],
+            "source": "session",
+        })
+
+        call_kwargs = provider._requests.post.call_args[1]
+        payload = call_kwargs["json"]
+        assert payload["confidence"] == 0.9
+        assert payload["ttl_days"] == 90
+        assert payload["tags"] == ["preference", "ui"]
+        assert payload["source"] == "session"
+
+    def test_fact_put_confidence_clamped(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(201, {})
+
+        provider.handle_tool_call("ragamuffin_fact_put", {
+            "key": "test",
+            "value": "test",
+            "confidence": 5.0,  # above 1.0, should be clamped
+        })
+
+        call_kwargs = provider._requests.post.call_args[1]
+        assert call_kwargs["json"]["confidence"] == 1.0
+
+    def test_fact_put_missing_key_value(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_fact_put", {"key": ""})
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_fact_put_server_error(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(502, {
+            "error": True,
+        })
+
+        result = provider.handle_tool_call("ragamuffin_fact_put", {
+            "key": "test",
+            "value": "test",
+        })
+        data = json.loads(result)
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_fact_graph
+# ---------------------------------------------------------------------------
+
+class TestToolFactGraph:
+
+    def test_fact_graph_found(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(200, {
+            "key": "user_timezone",
+            "supersedes": ["user_timezone_old"],
+            "contradicts": [],
+            "refines": [],
+        })
+
+        result = provider.handle_tool_call("ragamuffin_fact_graph", {
+            "key": "user_timezone",
+        })
+
+        data = json.loads(result)
+        assert data["key"] == "user_timezone"
+        assert "user_timezone_old" in data["supersedes"]
+
+    def test_fact_graph_not_found(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(404, {})
+
+        result = provider.handle_tool_call("ragamuffin_fact_graph", {
+            "key": "nonexistent",
+        })
+
+        data = json.loads(result)
+        assert data["error"] == "NOT_FOUND"
+
+    def test_fact_graph_empty_key(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_fact_graph", {"key": ""})
+        data = json.loads(result)
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_review_list
+# ---------------------------------------------------------------------------
+
+class TestToolReviewList:
+
+    def test_review_list_all(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(200, {
+            "flagged": [
+                {"point_id": "abc123", "reason": "contradiction", "confidence": 0.3},
+                {"point_id": "def456", "reason": "expiring", "confidence": 0.85},
+            ],
+            "total": 2,
+        })
+
+        result = provider.handle_tool_call("ragamuffin_review_list", {})
+
+        data = json.loads(result)
+        assert len(data["flagged"]) == 2
+        assert data["total"] == 2
+
+    def test_review_list_with_filters(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(200, {
+            "flagged": [],
+            "total": 0,
+        })
+
+        provider.handle_tool_call("ragamuffin_review_list", {
+            "reason": "contradiction",
+            "limit": 10,
+        })
+
+        call_kwargs = provider._requests.get.call_args[1]
+        assert call_kwargs["params"]["reason"] == "contradiction"
+        assert call_kwargs["params"]["limit"] == 10
+
+    def test_review_list_empty(self):
+        provider = make_provider()
+        provider._requests.get.return_value = make_mock_response(200, {
+            "flagged": [],
+            "total": 0,
+        })
+
+        result = provider.handle_tool_call("ragamuffin_review_list", {})
+        data = json.loads(result)
+        assert len(data["flagged"]) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: Tool call — ragamuffin_review_resolve
+# ---------------------------------------------------------------------------
+
+class TestToolReviewResolve:
+
+    def test_review_resolve_confirm(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(200, {
+            "status": "confirmed",
+            "point_id": "abc123",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {
+            "point_id": "abc123",
+            "action": "confirm",
+        })
+
+        data = json.loads(result)
+        assert data["status"] == "confirmed"
+
+    def test_review_resolve_supersede_with_correction(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(200, {
+            "status": "superseded",
+            "point_id": "abc123",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {
+            "point_id": "abc123",
+            "action": "supersede",
+            "correction": "Corrected fact value",
+        })
+
+        data = json.loads(result)
+        assert data["status"] == "superseded"
+
+        # Verify correction sent to server
+        call_kwargs = provider._requests.post.call_args[1]
+        assert call_kwargs["json"]["correction"] == "Corrected fact value"
+
+    def test_review_resolve_reject(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(200, {
+            "status": "rejected",
+        })
+
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {
+            "point_id": "abc123",
+            "action": "reject",
+        })
+
+        data = json.loads(result)
+        assert data["status"] == "rejected"
+
+    def test_review_resolve_missing_params(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {"point_id": ""})
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_review_resolve_invalid_action(self):
+        provider = make_provider()
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {
+            "point_id": "abc123",
+            "action": "delete",
+        })
+        data = json.loads(result)
+        assert "INVALID_ACTION" in data.get("error", "")
+
+    def test_review_resolve_server_error(self):
+        provider = make_provider()
+        provider._requests.post.return_value = make_mock_response(500, {})
+
+        result = provider.handle_tool_call("ragamuffin_review_resolve", {
+            "point_id": "abc123",
+            "action": "confirm",
+        })
+        data = json.loads(result)
+        assert "error" in data
+
+
+# ---------------------------------------------------------------------------
 # Tests: Tool schemas
 # ---------------------------------------------------------------------------
 
 class TestToolSchemas:
 
-    def test_get_tool_schemas(self):
+    def test_get_tool_schemas_all_seven(self):
         provider = make_provider()
         schemas = provider.get_tool_schemas()
-        assert len(schemas) == 1
-        assert schemas[0]["name"] == "ragamuffin_recall"
+        assert len(schemas) == 7
+        names = [s["name"] for s in schemas]
+        assert "ragamuffin_recall" in names
+        assert "ragamuffin_ask" in names
+        assert "ragamuffin_fact_get" in names
+        assert "ragamuffin_fact_put" in names
+        assert "ragamuffin_fact_graph" in names
+        assert "ragamuffin_review_list" in names
+        assert "ragamuffin_review_resolve" in names
 
     def test_schema_has_required_fields(self):
         provider = make_provider()
         schemas = provider.get_tool_schemas()
-        schema = schemas[0]
-        assert "description" in schema
-        assert "parameters" in schema
-        assert schema["parameters"]["type"] == "object"
-        assert "properties" in schema["parameters"]
+        for schema in schemas:
+            assert "description" in schema
+            assert "parameters" in schema
+            assert schema["parameters"]["type"] == "object"
+            assert "properties" in schema["parameters"]
+
+    def test_ask_schema_required_query(self):
+        assert "query" in ASK_SCHEMA["parameters"]["required"]
+        assert ASK_SCHEMA["parameters"]["properties"]["query"]["type"] == "string"
+
+    def test_fact_get_schema_required_key(self):
+        assert "key" in FACT_GET_SCHEMA["parameters"]["required"]
+
+    def test_fact_put_schema_required_key_value(self):
+        assert "key" in FACT_PUT_SCHEMA["parameters"]["required"]
+        assert "value" in FACT_PUT_SCHEMA["parameters"]["required"]
+
+    def test_review_resolve_schema_required_fields(self):
+        assert "point_id" in REVIEW_RESOLVE_SCHEMA["parameters"]["required"]
+        assert "action" in REVIEW_RESOLVE_SCHEMA["parameters"]["required"]
+        assert REVIEW_RESOLVE_SCHEMA["parameters"]["properties"]["action"]["type"] == "string"
+
+    def test_fact_graph_schema_required_key(self):
+        assert "key" in FACT_GRAPH_SCHEMA["parameters"]["required"]
 
 
 # ---------------------------------------------------------------------------
