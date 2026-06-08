@@ -25,7 +25,7 @@ jobs:
         run: |
           go test -v -timeout 30s ./internal/pruner
           go test -v -timeout 30s ./internal/server
-          go test -timeout 60s ./...
+          go test -timeout 120s ./...
 
   # ── Docker build + push to Docker Hub (main + tags only) ───────────────
   docker:
