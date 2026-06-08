@@ -542,11 +542,26 @@ def parse_args():
                         help="Resume from checkpoint")
     parser.add_argument("--output", default="",
                         help="Output path (default: auto-generated)")
-    parser.add_argument("--vault-prefix", default="bench-",
-                        help="Prefix for vault names")
+    parser.add_argument("--vault-prefix", default="",
+                        help="Prefix for vault names (default: benchmark name)")
+    parser.add_argument("--separate-vaults", action="store_true",
+                        help="One vault per conversation (default: one vault per benchmark)")
     parser.add_argument("--path", default="",
                         help="Path to data file or directory (overrides default data dir)")
     return parser.parse_args()
+
+
+def make_vault_name(args):
+    """Return a single vault name for the given benchmark/config combo.
+
+    By default all conversations in a benchmark share one vault so that
+    configs A-D can reuse the same ingested data (only the /ask parameters
+    change).  Override with --vault-prefix for per-conversation vaults.
+    """
+    if args.vault_prefix:
+        return args.vault_prefix
+    suffix = args.config.upper() if args.separate_vaults else "DATA"
+    return f"{args.benchmark}-{suffix}"
 
 
 def build_ask_mode(config):
@@ -618,7 +633,7 @@ def main():
     question_count = 0
 
     for idx, (conv_id, turns, questions) in enumerate(conversations):
-        vault = f"{args.vault_prefix}{conv_id}"
+        vault = f"{args.vault_prefix}{conv_id}" if args.separate_vaults else make_vault_name(args)
 
         # Check if this conversation was already completed
         conv_done = any(
