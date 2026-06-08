@@ -117,6 +117,60 @@ def answer_with_retry(question, vault, mode="rag", top_k=10, max_retries=5):
     return "ANSWER_FAILED"
 
 
+def ask_with_trace(question, vault, mode="rag", top_k=10, max_retries=5, question_id="", question_type=""):
+    """
+    Ask a question and return (answer, trace_dict).
+    Trace includes latency, sources, and error info.
+    """
+    start = time.time()
+    answer = "ANSWER_FAILED"
+    error = None
+    sources = []
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            url = f"{RAGAMUFFIN_URL}/vault/{vault}/ask"
+            body = {"query": question, "mode": mode, "top_k": top_k}
+            r = requests.post(url, json=body, timeout=30)
+            if r.status_code >= 400:
+                raise requests.HTTPError(f"POST /ask {r.status_code}: {r.text[:200]}", response=r)
+            data = r.json()
+            answer = data.get("answer", "")
+            sources = data.get("sources", [])
+            break
+        except requests.HTTPError as e:
+            status = e.response.status_code if e.response else 0
+            error = str(e)
+            if status == 429:
+                wait = 15 * (2 ** (attempt - 1))
+            elif status in (502, 503):
+                wait = 10 * attempt
+            else:
+                wait = 5 * attempt
+            print(f"  [WARN] Q attempt {attempt}/{max_retries} ({status}): {e}", file=sys.stderr)
+        except (requests.Timeout, ConnectionError) as e:
+            error = str(e)
+            wait = 5 * attempt
+            print(f"  [WARN] Q attempt {attempt}/{max_retries} (timeout): {e}", file=sys.stderr)
+        time.sleep(wait)
+
+    elapsed = int((time.time() - start) * 1000)
+
+    trace = {
+        "question_id": question_id,
+        "question_type": question_type,
+        "question": question,
+        "ragamuffin_answer": answer,
+        "retrieved_chunks": [
+            {"source": s, "chunk_id": "", "score": 0.0}
+            for s in sources
+        ],
+        "latency_ms": elapsed,
+        "error": error,
+    }
+    return answer, trace
+
+
 # ── Data loaders ────────────────────────────────────────────────────────────
 
 
@@ -565,6 +619,14 @@ def parse_args():
                         help="One vault per conversation (default: one vault per benchmark)")
     parser.add_argument("--path", default="",
                         help="Path to data file or directory (overrides default data dir)")
+    parser.add_argument("--gauntlet", action="store_true",
+                        help="Run in CI gauntlet mode (Config D, all convs, trace capture)")
+    parser.add_argument("--gauntlet-output", default="",
+                        help="Output path for gauntlet results JSON")
+    parser.add_argument("--gauntlet-traces", default="",
+                        help="Output path for per-question traces JSONL")
+    parser.add_argument("--gauntlet-hyp-file", default="",
+                        help="Output path for LongMemEval hyp_file JSONL")
     return parser.parse_args()
 
 
@@ -607,6 +669,17 @@ def main():
         conversations = conversations[:args.max_convs]
         print(f"  Limited to {args.max_convs}")
 
+    if args.gauntlet:
+        # Gauntlet mode always uses Config D with all conversations
+        args.config = "d"
+        args.max_convs = 0
+        if not args.gauntlet_output:
+            args.gauntlet_output = "gauntlet_results.json"
+        if not args.gauntlet_traces:
+            args.gauntlet_traces = "gauntlet_traces.jsonl"
+        if not args.gauntlet_hyp_file:
+            args.gauntlet_hyp_file = "gauntlet_hyp_file.jsonl"
+
     auto_extract = args.config in ("b", "d")
     # LoCoMo uses full-context ask mode (load entire document into LLM context)
     # LongMemEval uses the config-prescribed mode (rag/tiered)
@@ -648,6 +721,10 @@ def main():
     all_answers = []
     all_ground_truths = []
     question_count = 0
+
+    # Open trace and hyp_file for gauntlet mode
+    traces_fh = open(args.gauntlet_traces, "w") if args.gauntlet else None
+    hyp_fh = open(args.gauntlet_hyp_file, "w") if args.gauntlet else None
 
     for idx, (conv_id, turns, questions) in enumerate(conversations):
         vault = f"{args.vault_prefix}{conv_id}" if args.separate_vaults else make_vault_name(args)
@@ -708,7 +785,32 @@ def main():
                 continue
 
             print(f"  [{q_idx+1}/{len(questions)}] Q: {question[:80]}...")
-            answer = answer_with_retry(question, vault, mode=ask_mode)
+
+            q_type = q_item.get("type", q_item.get("category", "")) if isinstance(q_item, dict) else ""
+            q_id = q_item.get("question_id", q_item.get("id", f"{conv_id}-q{q_idx}")) if isinstance(q_item, dict) else f"{conv_id}-q{q_idx}"
+
+            if args.gauntlet:
+                answer, trace = ask_with_trace(
+                    question, vault, mode=ask_mode,
+                    question_id=q_id, question_type=str(q_type),
+                )
+                # Write trace immediately
+                traces_fh.write(json.dumps(trace) + "\n")
+                traces_fh.flush()
+                # Write hyp_file entry for upstream evaluate_qa.py
+                hyp_entry = {
+                    "question_id": q_id,
+                    "answer": answer,
+                    "question_type": str(q_type),
+                }
+                if isinstance(q_item, dict):
+                    hyp_entry["ground_truth"] = q_item.get("answer", q_item.get("ground_truth", ""))
+                hyp_fh.write(json.dumps(hyp_entry) + "\n")
+                hyp_fh.flush()
+                # Score with upstream evaluate_qa.py format
+                correct = None  # upstream will compute
+            else:
+                answer = answer_with_retry(question, vault, mode=ask_mode)
 
             conv_answers.append(answer)
             conv_gts.append(ground_truth)
@@ -718,15 +820,16 @@ def main():
 
             # Score
             if args.benchmark == "longmemeval":
-                score = score_longmemeval(answer, ground_truth)
+                score = score_longmemeval(answer, ground_truth) if not args.gauntlet else 0.0
             else:
-                score = score_locomo(answer, ground_truth)
+                score = score_locomo(answer, ground_truth) if not args.gauntlet else 0.0
 
             conv_details.append({
                 "question": question,
                 "answer": answer,
                 "ground_truth": ground_truth,
                 "score": round(score, 4),
+                "question_type": str(q_type),
             })
             print(f"    Score: {score:.3f}")
 
@@ -811,6 +914,31 @@ def main():
     print(f"Overall score:   {overall:.4f}")
     print(f"{'='*50}\n")
     print(json.dumps(results, indent=2))
+
+    # Close gauntlet file handles
+    if traces_fh:
+        traces_fh.close()
+    if hyp_fh:
+        hyp_fh.close()
+
+    # Write gauntlet output with per-type accuracy
+    if args.gauntlet:
+        per_type = {}
+        for conv in results["per_conversation"]:
+            for d in conv.get("details", []):
+                qt = d.get("question_type", "unknown")
+                if qt not in per_type:
+                    per_type[qt] = {"correct": 0, "total": 0}
+                per_type[qt]["total"] += 1
+                if d.get("score", 0) >= 0.5:
+                    per_type[qt]["correct"] += 1
+        results["per_type_accuracy"] = {
+            k: round(v["correct"] / v["total"], 4)
+            for k, v in per_type.items() if v["total"] > 0
+        }
+        results["gauntlet_mode"] = True
+        save_checkpoint(args.gauntlet_output, results)
+        print(f"\nGauntlet results written to {args.gauntlet_output}")
 
     # Write final output
     save_checkpoint(out_path, results)

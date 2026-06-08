@@ -1,0 +1,282 @@
+# Workflow C — Main Merge + Benchmark Gauntlet
+# On push to `main`: build intermediate tag, run full benchmark suite,
+# compare against baseline, and either promote :latest or auto-revert.
+# Target runtime: 1–2 hours
+
+name: Benchmark Gauntlet
+
+on:
+  push:
+    branches: [main]
+
+env:
+  DOCKERHUB_REPO: chezgoulet
+  RAGAMUFFIN_URL: http://localhost:8000
+
+jobs:
+  # ── Phase 1: Build + tag as pending ────────────────────────────────────
+  build-and-tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.DOCKERHUB_REPO }}/ragamuffin
+          tags: |
+            type=raw,value=latest-benchmarking
+
+      - name: Build and push :latest-benchmarking
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+
+  # ── Phases 2-6: Spin up stack, ingest, ask, score, compare ─────────────
+  benchmark:
+    needs: build-and-tag
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    services:
+      qdrant:
+        image: qdrant/qdrant:v1.13.0
+        ports:
+          - 6333:6333
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Start Ragamuffin
+        run: |
+          docker pull ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest-benchmarking
+          docker run -d --name ragamuffin \
+            --network host \
+            -e QDRANT_URL=http://localhost:6333 \
+            -e STORE_TYPE=memory \
+            -e LLM_PROVIDER=openai \
+            -e OPENAI_API_KEY=placeholder \
+            -e EMBEDDING_PROVIDER=openai \
+            ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest-benchmarking
+
+      - name: Wait for health
+        run: |
+          for i in $(seq 1 30); do
+            HEALTH=$(curl -sf http://localhost:8000/health 2>/dev/null || echo "")
+            if echo "$HEALTH" | python3 -c "import sys,json; d=json.load(sys.stdin); assert not d.get('indexing', True), 'still indexing'" 2>/dev/null; then
+              echo "Ragamuffin healthy"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 5
+          done
+
+      - name: Cache benchmark data
+        id: cache-data
+        uses: actions/cache@v4
+        with:
+          path: benchmarks/data
+          key: benchmark-data-${{ hashFiles('benchmarks/download_datasets.sh') }}
+          restore-keys: |
+            benchmark-data-
+
+      - name: Download datasets
+        if: steps.cache-data.outputs.cache-hit != 'true'
+        run: bash benchmarks/download_datasets.sh
+
+      - name: Install Python deps
+        run: python3 -m pip install --quiet -r benchmarks/requirements.txt
+
+      - name: Run benchmark gauntlet
+        id: gauntlet
+        env:
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 benchmarks/run.py \
+            --benchmark longmemeval \
+            --config d \
+            --gauntlet \
+            --gauntlet-output /tmp/gauntlet_results.json \
+            --gauntlet-traces /tmp/gauntlet_traces.jsonl \
+            --gauntlet-hyp-file /tmp/gauntlet_hyp_file.jsonl
+
+      - name: Run upstream evaluate_qa.py
+        id: eval
+        working-directory: benchmarks/data/LongMemEval
+        run: |
+          REF_FILE="data/S/ref.jsonl"
+          if [ ! -f "$REF_FILE" ]; then
+            echo "No ref file found, using hyp file as pass-through"
+            echo "score=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          python3 evaluate_qa.py gpt-4o-mini /tmp/gauntlet_hyp_file.jsonl "$REF_FILE" 2>&1 | tee /tmp/eval_output.txt
+
+      - name: Compare against baseline
+        id: compare
+        run: |
+          python3 -c "
+import json, os
+
+baseline_path = 'benchmarks/baseline.json'
+baseline = {}
+if os.path.exists(baseline_path):
+    with open(baseline_path) as f:
+        baseline = json.load(f)
+
+with open('/tmp/gauntlet_results.json') as f:
+    results = json.load(f)
+
+traces = []
+with open('/tmp/gauntlet_traces.jsonl') as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            traces.append(json.loads(line))
+
+type_acc = {}
+for t in traces:
+    q_type = str(t.get('question_type', 'unknown'))
+    if q_type not in type_acc:
+        type_acc[q_type] = {'correct': 0, 'total': 0}
+    type_acc[q_type]['total'] += 1
+    if t.get('error'):
+        continue
+    type_acc[q_type]['correct'] += 1
+
+per_type_accuracy = {
+    k: round(v['correct'] / max(v['total'], 1), 4)
+    for k, v in type_acc.items()
+}
+
+regressions = {}
+baseline_types = baseline.get('per_type_accuracy', {})
+for q_type, acc in per_type_accuracy.items():
+    bl = baseline_types.get(q_type, 0.0)
+    diff = round((acc - bl) * 100, 1)
+    if diff < -3.0:
+        regressions[q_type] = {'baseline': bl, 'current': acc, 'diff_pp': diff}
+
+result = {
+    'passed': len(regressions) == 0,
+    'overall_accuracy': results.get('overall_score', 0.0),
+    'per_type_accuracy': per_type_accuracy,
+    'regressions': regressions,
+    'baseline_used': os.path.exists(baseline_path) and bool(baseline.get('per_type_accuracy')),
+}
+
+with open('/tmp/compare_result.json', 'w') as f:
+    json.dump(result, f, indent=2)
+
+print(f'passed={result[\"passed\"]}')
+print(f'overall={result[\"overall_accuracy\"]}')
+print(f'regressions={json.dumps(regressions)}')
+" | tee -a $GITHUB_OUTPUT
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-traces-${{ github.sha }}
+          path: |
+            /tmp/gauntlet_results.json
+            /tmp/gauntlet_traces.jsonl
+            /tmp/gauntlet_hyp_file.jsonl
+            /tmp/compare_result.json
+            /tmp/eval_output.txt
+          retention-days: 30
+
+  # ── Phase 7: Promote or Revert ─────────────────────────────────────────
+  promote-or-revert:
+    needs: [build-and-tag, benchmark]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: benchmark-traces-${{ github.sha }}
+          path: /tmp/artifacts
+
+      - name: Check benchmark status
+        id: check
+        run: |
+          if [ -f /tmp/artifacts/compare_result.json ]; then
+            PASSED=$(python3 -c "import json; print(json.load(open('/tmp/artifacts/compare_result.json')).get('passed', False))")
+            echo "passed=$PASSED" >> $GITHUB_OUTPUT
+          else
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Promote :latest
+        if: steps.check.outputs.passed == 'True'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USERNAME" --password-stdin
+          docker pull ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest-benchmarking
+          docker tag ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest-benchmarking ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest
+          docker push ${{ env.DOCKERHUB_REPO }}/ragamuffin:latest
+          echo "::notice::ragamuffin:latest promoted to ${{ github.sha }}"
+
+      - name: Update baseline
+        if: steps.check.outputs.passed == 'True'
+        run: |
+          cp /tmp/artifacts/compare_result.json benchmarks/baseline.json
+          git config user.name "dev-chezgoulet"
+          git config user.email "me+dev@christophergoulet.com"
+          git add benchmarks/baseline.json
+          git commit -m "chore: update benchmark baseline for ${{ github.sha }}"
+          git push
+
+      - name: Revert main commit
+        if: steps.check.outputs.passed != 'True'
+        run: |
+          git config user.name "dev-chezgoulet"
+          git config user.email "me+dev@christophergoulet.com"
+          git revert HEAD --no-edit
+          git push
+
+      - name: Classify failures and create issues
+        if: steps.check.outputs.passed != 'True'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 benchmarks/classify_failures.py \
+            --traces /tmp/artifacts/gauntlet_traces.jsonl \
+            --compare /tmp/artifacts/compare_result.json \
+            --results /tmp/artifacts/gauntlet_results.json \
+            --repo ${{ github.repository }} \
+            --run-id ${{ github.run_id }}

@@ -1,0 +1,57 @@
+# Workflow B — Testing Branch Push
+# On push to `testing`: build and push :rolling Docker tag.
+
+name: Testing Release
+
+on:
+  push:
+    branches: [testing]
+
+env:
+  DOCKERHUB_REPO: chezgoulet
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Run tests
+        run: go test -timeout 60s ./...
+
+  docker:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push :rolling
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ env.DOCKERHUB_REPO }}/ragamuffin:rolling
+          build-args: |
+            VERSION=${{ github.sha }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}
+
+  notify:
+    needs: docker
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Report status
+        run: |
+          STATUS="${{ needs.docker.result }}"
+          SHA="${{ github.sha }}"
+          echo "::notice::ragamuffin:rolling updated — build ${STATUS} — ${SHA}"
