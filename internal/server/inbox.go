@@ -60,9 +60,21 @@ func (s *Server) inboxDir(vaultPath string) (string, error) {
 	return dir, nil
 }
 
-// parseInboxID extracts the timestamp and slug from an inbox entry ID
-// (format: "20060102-150405-slug").
+// validInboxID checks that the ID contains only safe characters and no path traversal sequences.
+// Inbox IDs are generated server-side as "20060102-150405-slug", so only alphanumeric,
+// hyphens, and underscores are permitted.
+var inboxIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+func validInboxID(id string) bool {
+	return id != "" && len(id) <= 128 && inboxIDPattern.MatchString(id) && !strings.Contains(id, "..")
+}
+
+// parseInboxID validates the id and returns the filename (id + ".md")
+// if valid, or empty string if the id is rejected for path traversal.
 func parseInboxFile(id string) string {
+	if !validInboxID(id) {
+		return ""
+	}
 	// IDs are stored as "20060102-150405-slug.md"
 	return id + ".md"
 }
@@ -270,13 +282,19 @@ func (s *Server) handleInboxList(w http.ResponseWriter, r *http.Request, vaultPa
 }
 
 func (s *Server) handleInboxRead(w http.ResponseWriter, r *http.Request, vaultPath, id string) {
+	filename := parseInboxFile(id)
+	if filename == "" {
+		writeError(w, 400, "INVALID_ID", "invalid inbox entry ID: contains path traversal or disallowed characters")
+		return
+	}
+
 	inboxPath, err := s.inboxDir(vaultPath)
 	if err != nil {
 		writeError(w, 500, "INTERNAL_ERROR", "failed to access inbox directory")
 		return
 	}
 
-	filePath := filepath.Join(inboxPath, parseInboxFile(id))
+	filePath := filepath.Join(inboxPath, filename)
 	entry, err := readInboxEntry(filePath)
 	if err != nil {
 		s.logger.Error("inbox read failed", "error", err, "id", id)
@@ -292,13 +310,19 @@ func (s *Server) handleInboxRead(w http.ResponseWriter, r *http.Request, vaultPa
 }
 
 func (s *Server) handleInboxDelete(w http.ResponseWriter, r *http.Request, vaultPath, id string) {
+	filename := parseInboxFile(id)
+	if filename == "" {
+		writeError(w, 400, "INVALID_ID", "invalid inbox entry ID: contains path traversal or disallowed characters")
+		return
+	}
+
 	inboxPath, err := s.inboxDir(vaultPath)
 	if err != nil {
 		writeError(w, 500, "INTERNAL_ERROR", "failed to access inbox directory")
 		return
 	}
 
-	filePath := filepath.Join(inboxPath, parseInboxFile(id))
+	filePath := filepath.Join(inboxPath, filename)
 	entry, err := readInboxEntry(filePath)
 	if err != nil {
 		s.logger.Error("inbox read for delete failed", "error", err, "id", id)
