@@ -375,6 +375,8 @@ curl -s http://localhost:8000/recall \
 | `top_k` | int | 10 | Max results (1–100) |
 | `score_threshold` | float | 0.0 | Minimum similarity (0.0–1.0) |
 | `source_filter` | string | — | Restrict to files under this path prefix |
+| `mode` | string | `auto` | Recall mode: `auto` (classify then recall), `rag` (RAG-only), `full` (load full source files) |
+| `time_filter` | string | `active` | Temporal filter: `active` (current index), `active_at:<RFC3339>`, or `all` |
 
 **Response:**
 ```json
@@ -408,6 +410,24 @@ curl -s http://localhost:8000/ask \
 | `top_k` | int | 8 | RAG results to retrieve (1–50) |
 
 Returns `mode_used` so callers can see if auto-mode chose RAG or full.
+
+**Additional fields:** same `time_filter` and `source_filter` as `/recall`.
+
+---
+
+### Tiered Recall
+
+Ragamuffin supports three recall modes, controllable per-query via the `mode`
+parameter on `/recall`, `/ask`, and their vault-scoped variants:
+
+| Mode | Behavior | When to use |
+|---|---|---|
+| `rag` | Retrieval-Augmented Generation — always searches the index, returns chunk results, and (for `/ask`) synthesizes an answer from the retrieved chunks | When you know the answer is in the index and want the fastest path |
+| `auto` | **Default.** Classifies the query first: if it's a targeted information need, uses `rag`; if it's a broad question needing full context, falls back to `full` | General purpose — lets Ragamuffin decide |
+| `full` | Loads entire source files matching the query into the LLM context, skipping chunk-level search | When the question requires understanding the full document (architecture docs, policies) |
+
+The `/ask` response includes `mode_used` so callers can see which mode was
+selected by `auto` classification, useful for debugging and observability.
 
 #### `POST /draft` — Write files to the vault
 
@@ -565,6 +585,7 @@ curl -s -X POST http://localhost:8000/v1/ingest/conversation \
 | `turns` | array | `[]` | List of conversation turns |
 | `turns[].role` | string | — | `user` or `assistant` |
 | `turns[].text` | string | — | Turn content |
+| `auto_extract` | bool | `false` | Enable automatic fact extraction from conversation turns |
 
 **Response:**
 ```json
@@ -573,6 +594,48 @@ curl -s -X POST http://localhost:8000/v1/ingest/conversation \
   "turns": 2
 }
 ```
+
+#### `POST /v1/documents` — Ingest a document with extraction
+
+Index a document into a vault, with optional automatic fact extraction.
+Extraction runs asynchronously — the handler returns once the document is
+indexed, while extraction continues in a background goroutine.
+
+```bash
+curl -s -X POST http://localhost:8000/v1/documents \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Alice is a software engineer who lives in Montreal and enjoys skiing.",
+    "source": "notes/alice.md",
+    "vault": "default",
+    "auto_extract": true,
+    "tags": ["profile", "hobbies"]
+  }'
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `content` | string | — | Document body text **(required)** |
+| `source` | string | — | Source identifier (filename or logical name) **(required)** |
+| `vault` | string | `default` | Target vault |
+| `auto_extract` | bool | `false` | Enable automatic fact extraction from document content |
+| `tags` | array | `[]` | Optional tags for metadata filtering |
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "vault": "default",
+  "source": "notes/alice.md"
+}
+```
+
+Extraction is powered by the extraction pipeline (`extractor.Enabled()` in config)
+and requires both an LLM and embedding client to be configured. When `auto_extract`
+is `true`, the document is scanned for extractable facts — structured key-value
+pairs with confidence scores, categories, and TTLs.
+
+---
 
 #### `POST /vault/{name}/recall` — Semantic search across vaults
 
@@ -597,6 +660,8 @@ curl -s -X POST http://localhost:8000/vault/agent::robot/recall \
 | `query` | string | — | Natural-language query **(required)** |
 | `limit` | int | 10 | Max results (1–100) |
 | `min_score` | float | 0.0 | Minimum similarity threshold (0.0–1.0) |
+| `mode` | string | `auto` | Recall mode: `auto` (classify then recall), `rag` (RAG-only), `full` (load full source files) |
+| `time_filter` | string | `active` | Temporal filter: `active` (current index), `active_at:<RFC3339>`, or `all` |
 
 **Response:**
 ```json
@@ -931,6 +996,34 @@ curl -s -X PATCH http://localhost:8000/v1/facts \
 }
 ```
 
+---
+
+### Fact Extraction
+
+Ragamuffin can automatically extract structured facts from unstructured content
+(documents and conversation turns). When enabled via the `auto_extract` parameter
+on `POST /v1/documents` or `POST /v1/ingest/conversation`, the extraction pipeline:
+
+1. **Analyzes** the content using the configured LLM to identify factual statements
+2. **Extracts** structured facts as key-value pairs with:
+   - `key` — unique identifier (e.g., `user/location`, `deployment/url`)
+   - `value` — the fact content
+   - `confidence` — normalized to 0.0–1.0 (LLM output 1–10 is `/10`, capped at 0.85)
+   - `category` — classification (knowledge, preference, policy, etc.)
+   - `ttl_days` — time-to-live before the pruner flags as stale
+3. **Embeds** the fact value for semantic search
+4. **Stores** the fact in the facts Qdrant collection
+
+Extraction runs asynchronously after the handler returns, using the server's
+shutdown context (not the HTTP request context) so it survives fast responses.
+
+**Configuration prerequisites:**
+- LLM client configured (`RAGAMUFFIN_LLM_API_KEY`, etc.)
+- Embedding client configured (`RAGAMUFFIN_EMBEDDING_API_KEY`, etc.)
+- Fact collection configured (`RAGAMUFFIN_FACTS_COLLECTION`, defaults to `ragamuffin_facts`)
+
+---
+
 #### `GET /v1/facts/{key}/graph` — Fact knowledge graph
 
 Returns the dependency graph for a fact — what it supersedes and what supersedes it.
@@ -1236,10 +1329,13 @@ curl -s -X POST http://localhost:8000/mcp \
 #### Available Tools
 
 All tools mirror the REST API:
-- `ragamuffin_recall` — semantic search (`/recall`)
+- `ragamuffin_recall` — semantic search (`/recall`, supports `mode` and `time_filter`)
 - `ragamuffin_ask` — synthesized answer with RAG (`/ask`)
 - `ragamuffin_draft` — write files to vault or create PR (`/draft`)
 - `ragamuffin_audit` — vault health checks (`/audit`)
+- `ragamuffin_store` — ingest content into agent vault (`POST /v1/ingest`)
+- `ragamuffin_facts` — upsert and query structured facts (`POST /v1/facts`)
+- `ragamuffin_inbox` — send and receive inbox messages (`POST /inbox`, `GET /inbox`)
 
 Client disconnect cancels any in-flight operations. Each SSE connection has a
 40-second keepalive heartbeat. Sessions expire after 5 minutes of inactivity.
@@ -1501,10 +1597,12 @@ header set to the number of seconds to wait (integer, not a date string).
 | Collection | Env Var | Default | Vector Size | Purpose |
 |---|---|---|---|---|
 | Main index | `RAGAMUFFIN_QDRANT_COLLECTION` | `ragamuffin` | 1536 (default) | File chunk embeddings for /recall |
-| Facts | `RAGAMUFFIN_FACTS_COLLECTION` | `ragamuffin_facts` | 4 (configurable) | Structured key-value facts, zero-vector sentinel |
+| Facts | `RAGAMUFFIN_FACTS_COLLECTION` | `ragamuffin_facts` | 4 (configurable) | Structured key-value facts; conversation and document facts use embeddings |
 
-The facts collection uses a 4-dim zero vector `[0,0,0,0]` by default — payload-only storage
-that satisfies Qdrant's vector requirement without embedding costs.
+The facts collection uses a 4-dim zero vector `[0,0,0,0]` by default for direct
+`POST /v1/facts` writes (payload-only storage). Conversation facts extracted via
+`auto_extract` use actual embeddings from the configured embedding client for
+semantic search. See [Fact Extraction](#fact-extraction).
 
 ### SQLite Database
 
@@ -1711,6 +1809,17 @@ Ragamuffin has two API clients with **opposite base URL conventions** — this i
 For a LiteLLM proxy (`http://litellm:4000`), set:
 - `RAGAMUFFIN_EMBEDDING_BASE_URL=http://litellm:4000/v1` (LiteLLM proxies `/v1/embeddings`)
 - `RAGAMUFFIN_LLM_BASE_URL=http://litellm:4000` (LiteLLM handles `/v1/chat/completions`)
+
+### Extraction
+
+| Env Var | Default | Description |
+|---|---|---|
+| `RAGAMUFFIN_EXTRACT_ENABLED` | `false` | Master switch for automatic fact extraction from documents and conversations |
+| `RAGAMUFFIN_EXTRACT_WINDOW` | `10` | Number of preceding turns to include as context for conversation extraction |
+| `RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE` | `0.85` | Hard ceiling for extracted fact confidence (0.0–1.0) |
+| `RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD` | `0.85` | Cosine similarity threshold for duplicate fact detection |
+| `RAGAMUFFIN_EXTRACT_CONCURRENCY` | `2` | Max concurrent extractions |
+| `RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN` | `30` | Seconds between extractions for the same session |
 
 ### Qdrant
 
