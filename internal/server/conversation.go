@@ -33,11 +33,12 @@ type conversationResponse struct {
 	Facts          []string `json:"facts"`
 }
 
-// extractedFact represents a single factual claim extracted from conversation
+// extractedFact represents a single factual claim extracted from conversation.
+// Confidence is an integer 1-10 from the LLM, normalized to 0.0-1.0 at storage.
 type extractedFact struct {
 	Key         string `json:"key"`
 	Value       string `json:"value"`
-	Confidence  int    `json:"confidence"` // 1-10
+	Confidence  int    `json:"confidence"` // 1-10 (normalized to 0.0-1.0 at storage)
 	Category    string `json:"category"`   // e.g., preference, knowledge, relationship
 	TTLDays     int    `json:"ttl_days"`   // 0 = no expiry
 }
@@ -156,6 +157,15 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 
 		now := time.Now().UTC()
 
+		// Normalize confidence from LLM's 1-10 scale to Qdrant's 0.0-1.0 scale
+		normalizedConfidence := float64(f.Confidence) / 10.0
+		if normalizedConfidence > 0.85 {
+			normalizedConfidence = 0.85
+		}
+		if normalizedConfidence < 0.0 {
+			normalizedConfidence = 0.0
+		}
+
 		payload := map[string]*qdrant.Value{
 			"fact_key":           qutil.Nv(key),
 			"fact_value":         qutil.Nv(f.Value),
@@ -163,7 +173,7 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 			"source_type":        qutil.Nv("conversation_extraction"),
 			"source":             qutil.Nv("conversation"),
 			"conversation_id":    qutil.Nv(conversationID),
-			"confidence":         qutil.Nv(float64(f.Confidence)),
+			"confidence":         qutil.Nv(normalizedConfidence),
 			"category":           qutil.Nv(f.Category),
 			"created_at":         qutil.Nv(now.Format(time.RFC3339)),
 			"updated_at":         qutil.Nv(now.Format(time.RFC3339)),
@@ -233,7 +243,7 @@ func buildExtractionPrompt(messages []conversationMessage, ctx map[string]interf
 For each factual claim, return a JSON array of objects. Each object must have these fields:
 - "key": A short, unique identifier for this fact (snake_case, descriptive)
 - "value": The factual statement itself
-- "confidence": Integer 1-10 estimating how certain the claim is
+- "confidence": Integer 1-10 estimating how certain the claim is (normalized to 0.0-1.0 at storage)
 - "category": One of "preference", "knowledge", "relationship", "event", "goal", "identity", "opinion"
 - "ttl_days": Number of days until this fact expires (0 = no expiry). Default 90 for transient info like preferences, 365 for knowledge.
 
