@@ -30,12 +30,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	qdrantStatus := "ok"
-	err := s.qdrant.Health(ctx)
-	if err != nil {
-		if s.QdrantReconnecting() {
-			qdrantStatus = "reconnecting"
-		} else {
-			qdrantStatus = "down"
+	if s.qdrant == nil {
+		qdrantStatus = "connecting"
+	} else {
+		if err := s.qdrant.Health(ctx); err != nil {
+			if s.QdrantReconnecting() {
+				qdrantStatus = "reconnecting"
+			} else {
+				qdrantStatus = "down"
+			}
 		}
 	}
 
