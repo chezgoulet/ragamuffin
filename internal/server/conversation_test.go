@@ -82,6 +82,11 @@ func (m *conversationMockStore) Count(_ context.Context) (uint64, error) { retur
 func (m *conversationMockStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
 func (m *conversationMockStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error { return nil }
 func (m *conversationMockStore) Health(_ context.Context) error { return nil }
+func (m *conversationMockStore) Close() error { return nil }
+func (m *conversationMockStore) GetVectorSize(_ context.Context, collectionName string) (uint64, error) { return 0, nil }
+func (m *conversationMockStore) GetPoints(_ context.Context, collection string, ids []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) { return nil, nil }
+func (m *conversationMockStore) SetPayload(_ context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error { return nil }
+func (m *conversationMockStore) Collection() string { return "test_facts" }
 
 // ── Test: conversation facts have non-zero vectors ────────────────────────────
 

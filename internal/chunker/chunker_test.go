@@ -282,9 +282,9 @@ func TestExtractFirstParagraph(t *testing.T) {
 }
 
 func TestExtractFirstParagraph_UTF8Boundary(t *testing.T) {
-	// A 3-byte UTF-8 character (U+121B, ማ) spanning the 200-byte truncation point.
-	// 197 ASCII bytes + 3-byte char at byte 197-199 → truncation at 200 cuts mid-character.
-	prefix := strings.Repeat("a", 197)
+	// A 3-byte UTF-8 character (U+121B, ማ) split by the 200-byte truncation.
+	// 199 ASCII bytes + 3-byte char at byte 199-201 → text[:200] cuts at first byte of char.
+	prefix := strings.Repeat("a", 199)
 	multiByte := "ማ" // U+121B, 3 bytes in UTF-8: E1 88 9B
 	text := prefix + multiByte + " trailing text"
 
@@ -293,7 +293,7 @@ func TestExtractFirstParagraph_UTF8Boundary(t *testing.T) {
 		t.Errorf("extractFirstParagraph() produced invalid UTF-8: %q", got)
 	}
 	// Should truncate to valid UTF-8 by dropping the incomplete rune
-	expected := prefix // 197 a's, dropped the split multi-byte character
+	expected := prefix // 199 a's, dropped the split multi-byte character
 	if got != expected {
 		t.Errorf("extractFirstParagraph() = %q (len=%d), want %q (len=%d)",
 			got, len(got), expected, len(expected))

@@ -159,7 +159,7 @@ func TestHandleInboxDelete_PathTraversalRejected(t *testing.T) {
 		{"..%2f..%2fetc%2fpasswd", 400, "INVALID_ID", "URL-encoded path traversal rejected"},
 		{"/etc/passwd", 400, "INVALID_ID", "absolute path rejected"},
 		{"nonexistent", 404, "NOT_FOUND", "valid ID but nonexistent returns 404"},
-		{"20260102-150405-test-slug", 200, "already_processed", "valid ID processed (first delete marks processed)"},
+		{"20260102-150405-test-slug", 200, "processed", "valid ID processed (first delete marks processed)"},
 		{"20260102-150405-test-slug", 200, "already_processed", "second delete returns already_processed"},
 	}
 
