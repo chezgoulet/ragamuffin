@@ -31,6 +31,8 @@ Quick-reference `.env.example` at the repo root.
 | `RAGAMUFFIN_QDRANT_URL` | yes | Qdrant gRPC endpoint |
 | `RAGAMUFFIN_EMBEDDING_API_KEY` | yes | OpenAI or compatible API key (omit to run without /recall) |
 | `RAGAMUFFIN_LLM_*` | no | Enable `/ask` and semantic conflict detection |
+| `RAGAMUFFIN_EXTRACT_*` | no | Enable automatic fact extraction from documents and conversations |
+| `RAGAMUFFIN_PRUNER_*` | no | Enable background fact health scans (stale, conflict, low-confidence) |
 | `RAGAMUFFIN_GIT_*` | no | Enable `/draft` PR mode |
 
 ## Multi-Tenant Vault Setup
@@ -106,6 +108,78 @@ curl -s http://localhost:8000/v1/auth/check
 
 Returns the current auth mode, whether auth is enforced, and any decoding issues
 with the provided token (if present). Useful for debugging auth configuration.
+
+## Extraction (Automatic Fact Extraction)
+
+Ragamuffin can extract structured facts from documents and conversation turns,
+powered by the configured LLM. Extraction runs asynchronously in background
+goroutines after the handler returns.
+
+Enable and configure:
+
+```bash
+RAGAMUFFIN_EXTRACT_ENABLED=true              # Master switch (default false)
+RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE=0.85       # Hard ceiling (0.0–1.0)
+RAGAMUFFIN_EXTRACT_WINDOW=10                 # Preceding turns for context
+RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD=0.85      # Cosine similarity for dedup
+RAGAMUFFIN_EXTRACT_CONCURRENCY=2             # Max concurrent extractions
+RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN=30   # Seconds between extractions
+```
+
+When enabled, clients can opt in per-request with `auto_extract: true` on:
+- `POST /v1/documents` — extract facts from document content
+- `POST /v1/ingest/conversation` — extract facts from conversation turns
+- `POST /v1/sessions` with `auto_extract: true`
+- `POST /v1/sessions/{id}/turns` with `auto_extract: true`
+
+Extracted facts are stored in the facts Qdrant collection (configured via
+`RAGAMUFFIN_FACTS_COLLECTION`) with actual embeddings for semantic search.
+Confidence from the LLM (integer 1-10) is normalized to 0.0-1.0 at storage
+with a hard cap at the configured `RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE`.
+
+## Auto-Tune (Threshold Optimization)
+
+The auto-tune endpoint analyzes review resolution history and recommends
+threshold adjustments for pruner scans. It reviews how operators have resolved
+flagged facts (confirmed, rejected, superseded) and suggests thresholds that
+would reduce noise while maintaining coverage.
+
+```bash
+# Preview recommendations without applying
+curl http://localhost:8000/v1/pruner/auto-tune?dry_run=true
+
+# Apply recommendations to in-memory pruner config
+curl "http://localhost:8000/v1/pruner/auto-tune?dry_run=false"
+```
+
+Response structure:
+```json
+{
+  "dry_run": true,
+  "recommendations": [
+    {
+      "reason_type": "low_confidence",
+      "current": 0.5,
+      "recommended": 0.35,
+      "accept_rate": 0.72,
+      "sample_size": 45,
+      "rationale": "72% of low-confidence flags were rejected — threshold may be too high",
+      "applied": false
+    }
+  ],
+  "sample_count": 1
+}
+```
+
+**Requirements:**
+- Pruner must be enabled (`RAGAMUFFIN_PRUNER_ENABLED=true`)
+- Log store must be configured (automatic with default config)
+- Admin JWT claim required if auth is enabled
+- Requires resolved review history to base recommendations on
+
+Config changes from auto-tune are **in-memory only** — they do not persist
+across restarts. Use the recommendations as guidance for permanent env var
+changes in your config.
 
 ## Pruner (Background Fact Health)
 
