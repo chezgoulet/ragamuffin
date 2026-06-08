@@ -118,8 +118,14 @@ curl -s http://ragamuffin:8000/recall \
 }
 ```
 
-`top_k` max is 100. `score_threshold` (0.0–1.0) filters by minimum similarity.
-`source_filter` restricts results to files under a path prefix.
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | string | — | Natural-language search query |
+| `top_k` | int | 10 | Max results (1–100) |
+| `score_threshold` | float | 0.0 | Minimum similarity (0.0–1.0) |
+| `source_filter` | string | — | Restrict to files under this path prefix |
+| `mode` | string | `auto` | `auto` (classify), `rag` (RAG-only), `full` (load full source) |
+| `time_filter` | string | `active` | `active`, `active_at:<RFC3339>`, or `all` |
 
 ### Synthesized Answers — `/ask`
 
@@ -131,8 +137,12 @@ curl -s http://ragamuffin:8000/ask \
   -d '{"query": "Summarize our infrastructure", "mode": "auto"}'
 ```
 
-Modes: `rag` (RAG only), `auto` (RAG, fallback to full if low confidence),
-`full` (load entire source files for context).
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | string | — | Question to answer |
+| `mode` | string | `auto` | `rag`, `auto`, or `full` |
+| `top_k` | int | 8 | RAG results to retrieve (1–50) |
+| `time_filter` | string | `active` | `active`, `active_at:<RFC3339>`, or `all` |
 
 ### Write-Back — `/draft`
 
@@ -185,6 +195,12 @@ curl -s "http://ragamuffin:8000/v1/facts?prefix=db/"
 ```bash
 curl -s "http://ragamuffin:8000/v1/facts?tag=prod&prefix=db/"
 ```
+
+**Query by graph (dependencies):**
+```bash
+curl -s "http://ragamuffin:8000/v1/facts/deployment%2Furl/graph"
+```
+Returns the fact's supersedes chain.
 
 **Update (full replace):**
 ```bash
@@ -263,6 +279,15 @@ curl -s -X POST http://ragamuffin:8000/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{"vault": "agent::dev", "content": "Important decision: ...", "metadata": {"type": "decision"}}'
 ```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `vault` | string | `default` | Target vault |
+| `content` | string | — | Content text to index **(required)** |
+| `source` | string | — | Source identifier |
+| `tags` | array | `[]` | Metadata tags |
+| `auto_extract` | bool | `false` | Enable automatic fact extraction |
+| `metadata` | object | `{}` | Additional metadata |
 
 Max body size: 10 MB.
 
@@ -583,6 +608,7 @@ curl -s http://ragamuffin:8000/stats
 # The full API surface is: /recall /ask /draft /audit /v1/facts /v1/logs
 # /v1/snapshot /health /stats /version /metrics /mcp /events
 # /v1/review /v1/review/stats /v1/ingest /v1/sessions /v1/auth/check
+# /v1/documents /v1/ingest/conversation /v1/pruner/auto-tune /v1/pruner/config
 # /vaults /graph /reindex /vault/{name}/... (v0.4)
 ```
 
