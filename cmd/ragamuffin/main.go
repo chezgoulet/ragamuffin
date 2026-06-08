@@ -91,9 +91,13 @@ func main() {
 	if logPath == "" {
 		logPath = cfg.VaultPath + "/.ragamuffin/logs.db"
 		if cfg.IsMultiTenant() {
-			for _, vc := range cfg.Vaults {
-				logPath = filepath.Dir(vc.Path) + "/.ragamuffin/logs.db"
-				break
+			if len(cfg.Vaults) > 0 {
+				for _, vc := range cfg.Vaults {
+					logPath = filepath.Dir(vc.Path) + "/.ragamuffin/logs.db"
+					break
+				}
+			} else if cfg.VaultsRoot != "" {
+				logPath = cfg.VaultsRoot + "/.ragamuffin/logs.db"
 			}
 		}
 	}
