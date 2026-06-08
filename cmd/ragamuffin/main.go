@@ -396,6 +396,9 @@ func main() {
 	} else {
 		qc = idxManager.GetClient("default")
 	}
+	if qc == nil {
+		qc = factsQc // fallback to facts client when no vaults configured
+	}
 
 	extractionCfg := extraction.DefaultConfig()
 	extractionCfg.Enabled = cfg.ExtractEnabled
