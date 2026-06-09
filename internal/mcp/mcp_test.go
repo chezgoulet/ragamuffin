@@ -694,7 +694,7 @@ func TestHandleSSE_NoFlusher(t *testing.T) {
 	w := &nonFlusherResponseWriter{ResponseRecorder: httptest.NewRecorder()}
 
 	// Should return 500 because the ResponseWriter doesn't support Flusher
-	h.ServeHTTP(w, w.ResponseRecorder)
+	h.ServeHTTP(w, req)
 	if w.ResponseRecorder.Code != 500 {
 		t.Errorf("expected 500 for non-flusher ResponseWriter, got %d", w.ResponseRecorder.Code)
 	}
