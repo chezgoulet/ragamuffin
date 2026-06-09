@@ -88,7 +88,7 @@ func TestDocumentUpload_ExtractionSurvivesRequestCancellation(t *testing.T) {
 			return vec, nil
 		},
 	}
-	testIdx := indexer.New("/tmp/test-vault", mockQC, mockEC, testLogger(t))
+	testIdx := indexer.New("/tmp/test-vault", "test-vault", mockQC, mockEC, testLogger(t))
 	if err := mg.Add("default", testIdx, mockQC); err != nil {
 		t.Fatalf("failed to add test indexer: %v", err)
 	}

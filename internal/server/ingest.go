@@ -175,7 +175,7 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 
 	// Create indexer (share server-wide embedder, or the per-vault one if configured)
 	ec := s.embeddingFor(ctx)
-	idx := indexer.New(vaultPath, qc, ec, s.log(ctx).With("vault", name))
+	idx := indexer.New(vaultPath, name, qc, ec, s.log(ctx).With("vault", name))
 	idx.SetChunkMaxTokens(s.cfg.ChunkMaxTokens)
 
 	// Register with manager

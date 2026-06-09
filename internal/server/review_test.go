@@ -143,7 +143,7 @@ func newReviewServer(store *reviewMockStore) *Server {
 	}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	idxm.Add("default", indexer.New("/test/vault", "default", nil, nil, nil), nil)
 	logger := slog.New(slog.DiscardHandler)
 	return New(cfg, store, store, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, logger, nil, nil)
 }

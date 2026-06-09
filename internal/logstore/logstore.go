@@ -144,6 +144,19 @@ func migrate(db *sql.DB) error {
 		);
 		CREATE INDEX IF NOT EXISTS idx_res_reason ON review_resolutions(reason_type);
 		CREATE INDEX IF NOT EXISTS idx_res_created ON review_resolutions(created_at);
+
+		CREATE TABLE IF NOT EXISTS link_index (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_path TEXT NOT NULL,
+			target_path TEXT NOT NULL,
+			link_type  TEXT NOT NULL,
+			context    TEXT,
+			vault      TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_link_source ON link_index(source_path);
+		CREATE INDEX IF NOT EXISTS idx_link_target ON link_index(target_path);
+		CREATE INDEX IF NOT EXISTS idx_link_vault ON link_index(vault);
 	`)
 	return err
 }

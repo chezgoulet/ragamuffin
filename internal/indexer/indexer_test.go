@@ -39,7 +39,7 @@ func TestIsIndexable(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	if idx == nil {
 		t.Fatal("New() returned nil")
 	}
@@ -49,7 +49,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestSetChunkMaxTokens(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	idx.SetChunkMaxTokens(500)
 	if idx.chunkMaxTokens != 500 {
 		t.Errorf("chunkMaxTokens = %d, want 500", idx.chunkMaxTokens)
@@ -63,7 +63,7 @@ func TestSetChunkMaxTokens(t *testing.T) {
 // ── Ingest ──────────────────────────────────────────────────────────────────
 
 func TestIngest_NilEmbedder(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	err := idx.Ingest(context.Background(), "some content", "source-1", nil, nil)
 	if err == nil {
 		t.Error("expected error with nil embedder")
@@ -71,7 +71,7 @@ func TestIngest_NilEmbedder(t *testing.T) {
 }
 
 func TestIngest_EmptyContent(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	err := idx.Ingest(context.Background(), "", "source-1", nil, nil)
 	if err == nil {
 		t.Error("expected error with empty content")
@@ -79,7 +79,7 @@ func TestIngest_EmptyContent(t *testing.T) {
 }
 
 func TestStats_Initial(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	fc, cc, li, indexing, pp, tf := idx.Stats()
 
 	if fc != 0 {
@@ -103,7 +103,7 @@ func TestStats_Initial(t *testing.T) {
 }
 
 func TestStats_AfterIndex(t *testing.T) {
-	idx := New("/vault", nil, nil, nil)
+	idx := New("/vault", "test-vault", nil, nil, nil)
 	idx.mu.Lock()
 	idx.fileCount = 5
 	idx.chunkCount = 42
