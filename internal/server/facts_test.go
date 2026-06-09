@@ -186,6 +186,15 @@ func matchFactsCondition(payload map[string]*pb.Value, cond *pb.Condition) bool 
 		}
 		if m := f.GetMatch(); m != nil {
 			if kw := m.GetKeyword(); kw != "" {
+				// Qdrant keyword match on list fields checks if ANY element matches.
+				if list := val.GetListValue(); list != nil {
+					for _, v := range list.GetValues() {
+						if v.GetStringValue() == kw {
+							return true
+						}
+					}
+					return false
+				}
 				return val.GetStringValue() == kw
 			}
 		}
