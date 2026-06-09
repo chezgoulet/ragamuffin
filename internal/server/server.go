@@ -156,6 +156,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/vaults", s.withRequestID(s.handleVaults))
 	mux.HandleFunc("/events", s.withRequestID(s.handleEvents))
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
+	mux.HandleFunc("/webhook/git", s.withRequestID(s.handleWebhookGit))
 
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
