@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // ── JSON-RPC message types ───────────────────────────────────────────────────
@@ -214,9 +215,23 @@ func decodeRPCResponse(t *testing.T, w *httptest.ResponseRecorder) JSONRPCRespon
 
 func TestServeHTTP_GET(t *testing.T) {
 	h := defaultHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+
+	// SSE handler blocks on message loop, so run in goroutine
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(w, req)
+	}()
+
+	// Let handler start, verify headers
+	time.Sleep(50 * time.Millisecond)
+	cancel() // kill the SSE loop
+	<-done
 
 	if w.Code != 200 {
 		t.Errorf("expected 200, got %d", w.Code)
@@ -517,9 +532,21 @@ func TestPushSSE_FullBuffer(t *testing.T) {
 
 func TestSSEEndpoint_GeneratesSessionID(t *testing.T) {
 	h := defaultHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(w, req)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	<-done
 
 	h.mu.Lock()
 	sessionCount := len(h.clients)
@@ -528,29 +555,42 @@ func TestSSEEndpoint_GeneratesSessionID(t *testing.T) {
 	if sessionCount != 1 {
 		t.Errorf("expected 1 connected client, got %d", sessionCount)
 	}
-	if !w.Flushed {
-		t.Log("SSE endpoint flushed")
-	}
 }
 
 func TestSSE_DisconnectRemovesClient(t *testing.T) {
 	h := defaultHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "/mcp?session_id=disc-test", nil)
+	req = req.WithContext(ctx)
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, req)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(w, req)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
 
 	// Client should be registered
 	h.mu.Lock()
 	_, exists := h.clients["disc-test"]
 	h.mu.Unlock()
 	if !exists {
-		t.Error("expected client to be registered")
+		t.Error("expected client to be registered before disconnect")
 	}
 
-	// SSE handler returns when request context is done
-	// For httptest, the handler returns after writing headers
-	// and the deferred cleanup runs. We can't trigger ctx.Done
-	// easily here, but the handler at least doesn't panic.
+	cancel() // trigger disconnect
+	<-done
+
+	// After handler returns, the client should be removed
+	h.mu.Lock()
+	_, exists = h.clients["disc-test"]
+	h.mu.Unlock()
+	if exists {
+		t.Error("expected client to be removed after disconnect")
+	}
 }
 
 // ── ToolDefinition ───────────────────────────────────────────────────────────
