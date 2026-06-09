@@ -148,7 +148,7 @@ func TestMCPDispatch_RoutesCorrectly(t *testing.T) {
 		{"ragamuffin_audit", false, ""},
 		{"ragamuffin_graph", true, `vault "default" not found`},
 		{"ragamuffin_stats", false, ""},
-		{"ragamuffin_session_create", true, "session_id is required"},
+		{"ragamuffin_session_create", true, "agent_id is required"},
 		{"ragamuffin_session_get", true, "session_id is required"},
 		{"ragamuffin_session_list", false, ""},
 		{"ragamuffin_get_chunk", true, "chunk_id is required"},
@@ -385,10 +385,10 @@ func TestMCPSessionCreate_MissingArgs(t *testing.T) {
 	srv := newMCPTestServer(t)
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_session_create", map[string]interface{}{})
 	if err == nil {
-		t.Fatal("expected error for missing session_id")
+		t.Fatal("expected error for missing args")
 	}
-	if err.Error() != "session_id is required" {
-		t.Errorf("expected 'session_id is required', got %q", err.Error())
+	if err.Error() != "agent_id is required" {
+		t.Errorf("expected 'agent_id is required', got %q", err.Error())
 	}
 }
 
