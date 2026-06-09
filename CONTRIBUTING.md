@@ -16,13 +16,11 @@ dev/*  ──(PR)──→  testing  ──(PR)──→  main
 
 1. **Feature branches (`dev/<issue-N>-<short-desc>`)** — branch from `testing`,
    PR into `testing`. This is where all development happens.
-
 2. **`testing` branch** — the integration/staging branch. Merges to `testing`
    build the `:rolling` Docker image and deploy for validation.
-
 3. **`main` branch** — the stable release branch. Only release PRs from
    `testing` to `main` land here. Merges trigger the benchmark gauntlet and
-   produce `:latest`.
+   produce `:latest` + version tag.
 
 ## Creating a Pull Request
 
@@ -87,8 +85,8 @@ branch — the check re-runs automatically.
 
 ## Architecture Conventions
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full pipeline
-architecture and [AGENTS.md](AGENTS.md) for the development conventions.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
+and branch topology.
 
 Key rules:
 
@@ -116,6 +114,39 @@ Key rules:
 - Local benchmarking: `python3 benchmarks/run.py --config D --benchmark longmemeval --max-convs 5`
 - Results are compared against `benchmarks/baseline.json`. Regressions in
   the benchmark gauntlet can block a `testing` → `main` release PR.
+
+## Dogfooding — We Ship What We Run
+
+Ragamuffin runs in production at ChezGoulet. Every agent in the House uses it
+every day. This means:
+
+- **Every rough edge is a bug.** If an endpoint returns the wrong thing,
+  if a build fails unexpectedly, if documentation is stale — file an issue.
+  That's not overhead, that's product feedback.
+- **You are the first consumer.** When something is hard to use, confusing,
+  or broken, that's the most valuable signal the project can get. File
+  aggressively.
+- **Mention dogfooding in PRs.** If you fixed a bug you discovered while
+  running the system, say so in the PR body. It helps reviewers understand
+  the severity.
+- **Assign issues to the appropriate milestone** if the pattern is clear
+  from existing issues. If unsure, leave unassigned — robot triages periodically.
+
+## Changes That Need a Release PR
+
+Not every change goes through the full `testing` → `main` pipeline.
+Changes that *do* need a release PR:
+
+- New features
+- Configuration changes
+- Dependency upgrades
+- Any change that modifies the Docker image
+
+Changes that *don't* need a release PR (just merge to `testing`):
+
+- Documentation updates
+- CI workflow changes
+- Test-only changes
 
 ## Questions?
 
