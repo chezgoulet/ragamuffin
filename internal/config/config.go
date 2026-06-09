@@ -71,6 +71,12 @@ type Config struct {
 	FactsCollection  string
 	FactsVectorSize  uint64
 
+	// FactsMode controls which /v1/facts routes are registered.
+	// "vault"  — only vault-prefixed /vault/{name}/v1/facts (default for multi-tenant)
+	// "global" — only bare /v1/facts (default for single-tenant)
+	// "both"   — both, as separate namespaces
+	FactsMode string
+
 	// Optional — Watcher
 	WatchInterval string
 	WatcherMode   string
@@ -360,6 +366,7 @@ func Load() (*Config, error) {
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
+		FactsMode:        envOrDefault("RAGAMUFFIN_FACTS_MODE", ""),
 		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536))),
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
@@ -550,6 +557,23 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 		cfg.VaultPath = vaultPath
+	}
+
+	// Resolve FactsMode default based on tenancy if not explicitly set
+	if cfg.FactsMode == "" {
+		if cfg.IsMultiTenant() {
+			cfg.FactsMode = "vault"
+		} else {
+			cfg.FactsMode = "global"
+		}
+	}
+
+	// Validate FactsMode
+	switch cfg.FactsMode {
+	case "vault", "global", "both":
+		// valid
+	default:
+		return nil, fmt.Errorf("invalid RAGAMUFFIN_FACTS_MODE %q: must be \"vault\", \"global\", or \"both\"", cfg.FactsMode)
 	}
 
 	return cfg, nil

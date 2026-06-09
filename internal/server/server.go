@@ -214,9 +214,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
 	}
 
-	// Facts
-	mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
-	mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	// Facts — registration depends on FactsMode
+	switch s.cfg.FactsMode {
+	case "global":
+		// Only bare /v1/facts (default single-tenant behavior)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	case "both":
+		// Both bare and vault-prefixed (already registered above)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	case "vault":
+		// Only vault-prefixed (already registered above) — no bare /v1/facts
+		// The vault-prefixed routes are registered in the IsMultiTenant() block above
+		// or via vaultChain() in the single-tenant block.
+	default:
+		// Default: register bare (backward compat)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	}
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Chunk retrieval
