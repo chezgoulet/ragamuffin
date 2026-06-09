@@ -1,4 +1,10 @@
 # Workflow C — Main Merge + Benchmark Gauntlet
+# DISABLED (2026-06-08) — rename to benchmark-gauntlet.yml to re-enable
+# Reason: free GH Actions can't run the gauntlet (needs embedded datasets, GPU/LLM judge, 1-2h runtime).
+# Preserved intact for Forgejo/self-hosted runner migration.
+# 
+# The pipeline flow is: PR → testing (:rolling) → main (:latest) with gauntlet as gate.
+# Tag scheme: :rolling from testing branch, :latest from main (after benchmarks).
 # On push to `main`: build intermediate tag, run full benchmark suite,
 # compare against baseline, and either promote :latest or auto-revert.
 # Target runtime: 1–2 hours
