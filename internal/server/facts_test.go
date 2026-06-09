@@ -434,12 +434,21 @@ func TestFactsGet_ListAll(t *testing.T) {
 	store.addPoint("fact-2", "value 2", "active")
 	s := newFactsServer(store)
 
+	// Check that s.facts is actually the mock
+	if _, ok := s.facts.(*factsMockStore); !ok {
+		t.Fatalf("s.facts is not *factsMockStore, it's %T", s.facts)
+	}
+	// Verify store and s.facts share the same underlying store
+	mock, _ := s.facts.(*factsMockStore)
+	t.Logf("debug: len(mock.points)=%d", len(mock.points))
+
 	req := factsGetRequest("/v1/facts")
 
 	// Write simulation result via writeJSON to check if writeJSON is the issue
 	simW := httptest.NewRecorder()
 	c := s.factsCollectionFor(req.Context())
 	pts, _ := s.facts.ScrollFiltered(req.Context(), c, nil, 101, "")
+	t.Logf("debug: simulation got %d points from s.facts.ScrollFiltered", len(pts))
 	simResp := make([]factResponse, 0, 100)
 	for _, p := range pts {
 		if fr := pointToFact(p); fr != nil {
