@@ -259,7 +259,7 @@ func TestSessionGet(t *testing.T) {
 	srv, sto := newSessionTestServer(t, false)
 
 	// Create a session
-	sess, err := sto.CreateSession(context.Background(), "test-sess-1", "test_vault", "test-agent", "")
+	_, err := sto.CreateSession(context.Background(), "test-sess-1", "test_vault", "test-agent", "")
 	if err != nil {
 		t.Fatalf("failed to create session: %v", err)
 	}
