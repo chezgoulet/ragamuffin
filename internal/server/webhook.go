@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -18,16 +19,26 @@ func (s *Server) handleWebhookGit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Identify provider from request headers
-	provider := detectProvider(r)
+	// Identify provider from request headers (only accept push events)
+	provider, eventType := detectProvider(r)
 	if provider == "" {
 		writeError(w, 400, "UNKNOWN_PROVIDER",
 			"set X-GitHub-Event, X-GitLab-Event, or X-Forgejo-Event header")
 		return
 	}
+	if eventType != "push" && eventType != "Push Hook" {
+		s.logger.Debug("webhook: ignoring non-push event", "provider", provider, "event", eventType)
+		writeJSON(w, 200, map[string]any{
+			"status": "ignored",
+			"reason": fmt.Sprintf("non-push event: %s", eventType),
+		})
+		return
+	}
 
-	// Read body
-	body, err := io.ReadAll(io.LimitReader(r.Body, 5<<20)) // 5 MB max
+	// Read body — http.MaxBytesReader rejects oversized bodies early
+	// by closing the connection; the handler must not read more if the
+	// limit was exceeded.
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 5<<20)) // 5 MB max
 	if err != nil {
 		writeError(w, 400, "INVALID_REQUEST", "failed to read request body")
 		return
@@ -90,11 +101,12 @@ func (s *Server) handleWebhookGit(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
-		if err := idx.Ingest(ctx, content, f.Path, map[string]string{
+		// Ingest signature: Ingest(ctx, content, source string, tags []string, meta map[string]string)
+		if err := idx.Ingest(ctx, content, f.Path, nil, map[string]string{
 			"source": "webhook",
 			"repo":   event.RepoURL,
 			"sha":    event.AfterSHA,
-		}, nil); err != nil {
+		}); err != nil {
 			cancel()
 			s.logger.Warn("webhook: ingest failed", "file", f.Path, "error", err)
 			errCount++
@@ -117,17 +129,20 @@ func (s *Server) handleWebhookGit(w http.ResponseWriter, r *http.Request) {
 
 // ── Provider detection ─────────────────────────────────────────────────────────
 
-func detectProvider(r *http.Request) string {
-	if r.Header.Get("X-GitHub-Event") != "" {
-		return "github"
+// detectProvider reads provider-specific webhook headers and returns
+// (provider, eventType). Forgejo detection takes priority over GitHub
+// since Forgejo sets both X-Forgejo-Event and X-GitHub-Event headers.
+func detectProvider(r *http.Request) (string, string) {
+	if v := r.Header.Get("X-Forgejo-Event"); v != "" {
+		return "gitea", v // Forgejo shares the same payload format
 	}
-	if r.Header.Get("X-GitLab-Event") != "" {
-		return "gitlab"
+	if v := r.Header.Get("X-GitHub-Event"); v != "" {
+		return "github", v
 	}
-	if r.Header.Get("X-Forgejo-Event") != "" {
-		return "gitea" // Forgejo shares the same payload format
+	if v := r.Header.Get("X-GitLab-Event"); v != "" {
+		return "gitlab", v
 	}
-	return ""
+	return "", ""
 }
 
 // ── Parsed event types ─────────────────────────────────────────────────────────
@@ -169,12 +184,13 @@ func parseGitHubPush(body []byte) (*pushEvent, error) {
 		return nil, fmt.Errorf("parse github push: %w", err)
 	}
 
-	files := collectFiles(p.Commits)
+	files := collectChangedFiles(p.Commits)
 	rawURLs := make([]webhookFile, 0, len(files))
 	for _, f := range files {
 		rawURLs = append(rawURLs, webhookFile{
 			Path:   f,
-			RawURL: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", p.Repository.FullName, p.After, f),
+			RawURL: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
+				p.Repository.FullName, p.After, url.PathEscape(f)),
 		})
 	}
 
@@ -211,13 +227,13 @@ func parseGitLabPush(body []byte) (*pushEvent, error) {
 		return nil, fmt.Errorf("parse gitlab push: %w", err)
 	}
 
-	files := collectFiles(p.Commits)
+	files := collectChangedFiles(p.Commits)
 	repoBase := strings.TrimSuffix(p.Project.HTTPURL, ".git")
 	rawURLs := make([]webhookFile, 0, len(files))
 	for _, f := range files {
 		rawURLs = append(rawURLs, webhookFile{
 			Path:   f,
-			RawURL: fmt.Sprintf("%s/-/raw/%s/%s", repoBase, p.After, f),
+			RawURL: fmt.Sprintf("%s/-/raw/%s/%s", repoBase, p.After, url.PathEscape(f)),
 		})
 	}
 
@@ -255,14 +271,15 @@ func parseGiteaPush(body []byte) (*pushEvent, error) {
 		return nil, fmt.Errorf("parse gitea push: %w", err)
 	}
 
-	files := collectFiles(p.Commits)
-	// Gitea raw URL: {html_url}/raw/{branch}/{path}
-	branch := strings.TrimPrefix(p.Ref, "refs/heads/")
+	files := collectChangedFiles(p.Commits)
+	// Gitea raw URL: {html_url}/raw/{sha}/{path}
+	// Note: Uses SHA not branch name to avoid race condition (branch
+	// could move between push and download).
 	rawURLs := make([]webhookFile, 0, len(files))
 	for _, f := range files {
 		rawURLs = append(rawURLs, webhookFile{
 			Path:   f,
-			RawURL: fmt.Sprintf("%s/raw/%s/%s", p.Repository.HTMLURL, branch, f),
+			RawURL: fmt.Sprintf("%s/raw/%s/%s", p.Repository.HTMLURL, p.After, url.PathEscape(f)),
 		})
 	}
 
@@ -291,9 +308,15 @@ func parsePushEvent(provider string, body []byte) (*pushEvent, error) {
 	}
 }
 
-// collectFiles extracts unique added + modified file paths from a sequence of commits.
-// T is any type with Added, Modified fields (the three payload types all share this shape).
-func collectFiles[T interface{ Added, Modified []string }](commits []T) []string {
+// ── File collection ────────────────────────────────────────────────────────────
+
+// Collect unique Added + Modified paths from a commit list.
+// Inlined per parser (no generics to avoid Go struct-field constraint syntax issues).
+func collectChangedFiles(commits []struct {
+	Added    []string `json:"added"`
+	Modified []string `json:"modified"`
+	Removed  []string `json:"removed"`
+}) []string {
 	seen := make(map[string]bool)
 	var files []string
 	for _, c := range commits {
@@ -320,11 +343,21 @@ func (s *Server) resolveVault(repoURL string) string {
 	if v, ok := s.cfg.WebhookVaultMap[repoURL]; ok {
 		return v
 	}
-	// Check suffix match: "github.com/chezgoulet/my-repo" matches
-	// entries keyed by "chezgoulet/my-repo" or "github.com/chezgoulet/my-repo"
+	// Check suffix match: "github.com/chezgoulet/ragamuffin" matches
+	// entries keyed by "chezgoulet/ragamuffin" (pattern must be a suffix
+	// of repoURL preceded by '/' or ':' — avoids false positives like
+	// "muffin" matching "ragamuffin").
 	for pattern, vault := range s.cfg.WebhookVaultMap {
-		if strings.HasSuffix(repoURL, pattern) || strings.HasSuffix(pattern, repoURL) {
-			return vault
+		if strings.HasSuffix(repoURL, pattern) {
+			// Require that the pattern is either the entire URL or
+			// preceded by a separator character ('/' or '.').
+			if len(pattern) == len(repoURL) {
+				return vault
+			}
+			sep := repoURL[len(repoURL)-len(pattern)-1]
+			if sep == '/' || sep == '.' || sep == ':' {
+				return vault
+			}
 		}
 	}
 	return ""
@@ -371,8 +404,6 @@ func downloadFile(ctx context.Context, url string, timeout time.Duration) (strin
 // isIngestableContentType returns true if the MIME type can be ingested
 // as text. Binary files (images, archives, etc.) are skipped.
 func isIngestableContentType(contentType string) bool {
-	// Only accept plain text, markdown, code, JSON, XML, YAML, etc.
-	// http.DetectContentType returns things like "text/plain; charset=utf-8"
 	lower := strings.ToLower(contentType)
 	switch {
 	case strings.HasPrefix(lower, "text/"):
@@ -383,15 +414,7 @@ func isIngestableContentType(contentType string) bool {
 		return true
 	case strings.HasPrefix(lower, "application/x-yaml"):
 		return true
-	case strings.Contains(lower, "yaml"):
-		return true
-	case strings.Contains(lower, "xml"):
-		return true
-	case strings.Contains(lower, "json"):
-		return true
 	default:
 		return false
 	}
 }
-
-

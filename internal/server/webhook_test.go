@@ -12,16 +12,19 @@ import (
 
 func TestDetectProvider(t *testing.T) {
 	tests := []struct {
-		name   string
-		header string
-		value  string
-		want   string
+		name       string
+		header     string
+		value      string
+		wantProv   string
+		wantEvent  string
 	}{
-		{"github", "X-GitHub-Event", "push", "github"},
-		{"gitlab", "X-GitLab-Event", "Push Hook", "gitlab"},
-		{"forgejo", "X-Forgejo-Event", "push", "gitea"},
-		{"no header", "", "", ""},
-		{"unknown header", "X-Foobar-Event", "push", ""},
+		{"github push", "X-GitHub-Event", "push", "github", "push"},
+		{"github ping", "X-GitHub-Event", "ping", "github", "ping"},
+		{"gitlab push hook", "X-GitLab-Event", "Push Hook", "gitlab", "Push Hook"},
+		{"forgejo push", "X-Forgejo-Event", "push", "gitea", "push"},
+		{"forgejo takes priority over github", "X-Forgejo-Event", "push", "gitea", "push"},
+		{"no header", "", "", "", ""},
+		{"unknown header", "X-Foobar-Event", "push", "", ""},
 	}
 
 	for _, tt := range tests {
@@ -30,9 +33,16 @@ func TestDetectProvider(t *testing.T) {
 			if tt.header != "" {
 				r.Header.Set(tt.header, tt.value)
 			}
-			got := detectProvider(r)
-			if got != tt.want {
-				t.Errorf("detectProvider = %q, want %q", got, tt.want)
+			// Forgejo priority test: set both headers
+			if tt.name == "forgejo takes priority over github" {
+				r.Header.Set("X-GitHub-Event", "push")
+			}
+			prov, eventType := detectProvider(r)
+			if prov != tt.wantProv {
+				t.Errorf("detectProvider provider = %q, want %q", prov, tt.wantProv)
+			}
+			if eventType != tt.wantEvent {
+				t.Errorf("detectProvider eventType = %q, want %q", eventType, tt.wantEvent)
 			}
 		})
 	}
@@ -87,7 +97,7 @@ func TestParseGitHubPush(t *testing.T) {
 		if event.Files[i].Path != e.path {
 			t.Errorf("file %d path = %q, want %q", i, event.Files[i].Path, e.path)
 		}
-		if !contains(event.Files[i].RawURL, e.suffix) {
+		if !strings.Contains(event.Files[i].RawURL, e.suffix) {
 			t.Errorf("file %d rawURL = %q, want suffix %q", i, event.Files[i].RawURL, e.suffix)
 		}
 	}
@@ -150,7 +160,7 @@ func TestParseGitLabPush(t *testing.T) {
 	if event.Files[0].Path != "docs/guide.md" {
 		t.Errorf("file 0 path = %q, want %q", event.Files[0].Path, "docs/guide.md")
 	}
-	if !contains(event.Files[0].RawURL, "/-/raw/") {
+	if !strings.Contains(event.Files[0].RawURL, "/-/raw/") {
 		t.Errorf("rawURL should contain /-/raw/, got %q", event.Files[0].RawURL)
 	}
 }
@@ -186,17 +196,17 @@ func TestParseGiteaPush(t *testing.T) {
 		t.Fatalf("expected 2 files, got %d", len(event.Files))
 	}
 
-	// Gitea raw URLs use branch from ref, not SHA
-	if !contains(event.Files[0].RawURL, "/raw/main/") {
-		t.Errorf("gitea rawURL should contain /raw/main/, got %q", event.Files[0].RawURL)
+	// Gitea raw URLs use SHA (not branch name) to avoid race conditions
+	if !strings.Contains(event.Files[0].RawURL, "/raw/def456/") {
+		t.Errorf("gitea rawURL should contain /raw/def456/, got %q", event.Files[0].RawURL)
 	}
 }
 
-func TestCollectFiles_Deduplicates(t *testing.T) {
+func TestCollectChangedFiles_Deduplicates(t *testing.T) {
 	type commitShape struct {
-		Added    []string
-		Modified []string
-		Removed  []string
+		Added    []string `json:"added"`
+		Modified []string `json:"modified"`
+		Removed  []string `json:"removed"`
 	}
 
 	commits := []commitShape{
@@ -204,9 +214,21 @@ func TestCollectFiles_Deduplicates(t *testing.T) {
 		{Added: []string{"a.md"}, Modified: []string{"c.md"}}, // a.md appears in both commits
 	}
 
-	files := collectFiles(commits)
+	files := collectChangedFiles(commits)
 	if len(files) != 3 {
 		t.Errorf("expected 3 unique files, got %d: %v", len(files), files)
+	}
+}
+
+func TestCollectChangedFiles_Empty(t *testing.T) {
+	type commitShape struct {
+		Added    []string `json:"added"`
+		Modified []string `json:"modified"`
+		Removed  []string `json:"removed"`
+	}
+	files := collectChangedFiles([]commitShape{})
+	if len(files) != 0 {
+		t.Errorf("expected 0 files, got %d", len(files))
 	}
 }
 
@@ -227,10 +249,21 @@ func TestResolveVault_SuffixMatch(t *testing.T) {
 		"chezgoulet/ragamuffin": "ragamuffin",
 		"chezgoulet/library":    "library",
 	}}}
-	// repoURL ends with the key suffix
 	vault := s.resolveVault("https://github.com/chezgoulet/ragamuffin")
 	if vault != "ragamuffin" {
 		t.Errorf("suffix match: got %q, want %q", vault, "ragamuffin")
+	}
+}
+
+func TestResolveVault_NoPartialSuffixMatch(t *testing.T) {
+	// Short pattern must not match a longer repo path.
+	// "muffin" is not a valid repo suffix so "ragamuffin" should NOT match.
+	s := &Server{cfg: &config.Config{WebhookVaultMap: map[string]string{
+		"muffin": "bad-vault",
+	}}}
+	vault := s.resolveVault("https://github.com/chezgoulet/ragamuffin")
+	if vault != "" {
+		t.Errorf("expected empty (no boundary before pattern), got %q", vault)
 	}
 }
 
@@ -283,8 +316,25 @@ func TestParsePushEvent_UnknownProvider(t *testing.T) {
 	}
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+func TestURLPathEscape(t *testing.T) {
+	// Verify that file paths with special chars are URL-encoded
+	// (the RawURL is constructed with url.PathEscape)
+	payload := `{
+		"ref": "refs/heads/main",
+		"before": "a",
+		"after": "b",
+		"commits": [{"added": ["path with spaces.md"], "modified": [], "removed": []}],
+		"repository": {"full_name": "test/repo", "clone_url": "https://github.com/test/repo.git"}
+	}`
 
-func contains(s, substr string) bool {
-	return strings.Contains(s, substr)
+	event, err := parseGitHubPush([]byte(payload))
+	if err != nil {
+		t.Fatalf("parseGitHubPush failed: %v", err)
+	}
+	if len(event.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(event.Files))
+	}
+	if !strings.Contains(event.Files[0].RawURL, "path%20with%20spaces.md") {
+		t.Errorf("rawURL should URL-encode spaces, got %q", event.Files[0].RawURL)
+	}
 }
