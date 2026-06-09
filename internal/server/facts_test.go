@@ -478,9 +478,6 @@ func TestFactsGet_ListAll(t *testing.T) {
 		}
 		if len(resp) >= limit {
 			t.Logf("debug:   hit limit")
-			if id := p.Id.GetUuid(); id != "" {
-				nextToken = id
-			}
 			break
 		}
 		if fr := pointToFact(p); fr != nil {
@@ -490,7 +487,7 @@ func TestFactsGet_ListAll(t *testing.T) {
 			t.Logf("debug:   pointToFact returned nil!")
 		}
 	}
-	t.Logf("debug: response entries length=%d", len(resp))
+	t.Logf("debug: response entries length=%d (before handler call)", len(resp))
 
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, req)
