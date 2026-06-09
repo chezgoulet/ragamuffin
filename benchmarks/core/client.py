@@ -81,19 +81,20 @@ class RagamuffinClient:
     ) -> Dict[str, Any]:
         """Create a fact in a vault.
 
-        Uses POST /v1/facts with vault in body (not path-based).
+        Uses vault-prefixed POST /vault/{name}/v1/facts for
+        correct routing to the per-vault facts collection.
         Accepts optional list of tag strings.
         """
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts"
         body = {
             "key": key,
             "value": value,
-            "vault": vault,
             "source": source or "benchmark",
             "source_type": source_type or "conversation",
         }
         if tags:
             body["tags"] = tags
-        data, status = self._request("POST", "/v1/facts", body=body)
+        data, status = self._request("POST", path, body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
 
     def get_fact(
@@ -103,10 +104,10 @@ class RagamuffinClient:
     ) -> Dict[str, Any]:
         """Get a single fact by key from a vault.
 
-        Uses GET /v1/facts?key=...&vault=... (query param, NOT path-based).
+        Uses vault-prefixed GET /vault/{name}/v1/facts?key=...
         Returns the fact dict or raises PermanentError on 404.
         """
-        path = f"/v1/facts?key={urllib.parse.quote(key)}&vault={urllib.parse.quote(vault)}"
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts?key={urllib.parse.quote(key)}"
         data, status = self._request("GET", path)
         return data if isinstance(data, dict) else {}
 
@@ -119,16 +120,18 @@ class RagamuffinClient:
     ) -> Dict[str, Any]:
         """List facts in a vault with optional filters.
 
-        Uses GET /v1/facts?prefix=...&vault=... (query params, not path-based).
+        Uses vault-prefixed GET /vault/{name}/v1/facts?prefix=...
         """
-        params = [f"vault={urllib.parse.quote(vault)}"]
+        params = []
         if prefix:
             params.append(f"prefix={urllib.parse.quote(prefix)}")
         if tag:
             params.append(f"tag={urllib.parse.quote(tag)}")
         if status:
             params.append(f"status={urllib.parse.quote(status)}")
-        path = "/v1/facts?" + "&".join(params)
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts"
+        if params:
+            path += "?" + "&".join(params)
         data, status_code = self._request("GET", path)
         return data if isinstance(data, dict) else {}
 
