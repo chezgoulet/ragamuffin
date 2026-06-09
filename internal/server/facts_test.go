@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -440,6 +441,13 @@ func TestFactsGet_ListAll(t *testing.T) {
 		t.Fatalf("scroll: %v", err)
 	}
 	t.Logf("debug: ScrollFiltered(nil) returned %d points", len(pts))
+
+	// Check pointToFact on each point
+	for i, p := range pts {
+		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
+		fr := pointToFact(p)
+		t.Logf("debug: pt[%d] key=%q pointToFact=%v", i, k, fr)
+	}
 
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, factsGetRequest("/v1/facts"))
