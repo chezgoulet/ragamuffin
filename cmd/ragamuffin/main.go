@@ -121,7 +121,11 @@ func main() {
 
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
-	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker, cfg.EventWebhookEvents)
+	emitterSource := cfg.VaultPath
+	if emitterSource == "" {
+		emitterSource = "ragamuffin"
+	}
+	emitter := events.NewEmitter(cfg.EventWebhookURL, emitterSource, logger, logStore, eventBroker, cfg.EventWebhookEvents)
 	if cfg.EventWebhookURL != "" {
 		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
 	}
