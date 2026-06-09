@@ -182,7 +182,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
-		// Single-tenant routes — bare endpoints + /vault/{name} routes (#536)
+		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
 
 		// /vault/{name} routes (same set as multi-tenant, validated against single vault name)
@@ -206,19 +206,20 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 
-		// Bare endpoints (keep existing v0.1–v0.3 behavior)
-		mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleBatchRecall))))
-		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
-		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
-		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
-		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
-
-		// Pruner endpoints (auto-tune, config)
-		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
-		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
-		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
-		mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
 	}
+
+	// Bare endpoints (keep existing v0.1–v0.3 behavior)
+	mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleBatchRecall))))
+	mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
+	mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
+	mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
+	mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
+
+	// Pruner endpoints (auto-tune, config)
+	mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
+	mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
+	mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
+	mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
 
 	// Facts — registration depends on FactsMode
 	switch s.cfg.FactsMode {
