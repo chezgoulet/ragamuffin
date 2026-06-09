@@ -433,6 +433,14 @@ func TestFactsGet_ListAll(t *testing.T) {
 	store.addPoint("fact-2", "value 2", "active")
 	s := newFactsServer(store)
 
+	// Direct check: does ScrollFiltered return points?
+	ctx := context.Background()
+	pts, err := s.facts.ScrollFiltered(ctx, "test_facts", nil, 100, "")
+	if err != nil {
+		t.Fatalf("scroll: %v", err)
+	}
+	t.Logf("debug: ScrollFiltered(nil) returned %d points", len(pts))
+
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, factsGetRequest("/v1/facts"))
 
