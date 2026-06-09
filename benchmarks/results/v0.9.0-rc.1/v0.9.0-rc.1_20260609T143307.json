@@ -1,0 +1,257 @@
+{
+  "run_id": "v0.9.0-rc.1_20260609T143307",
+  "target": "http://ragamuffin:8000",
+  "timestamp": "2026-06-09T14:33:07.609852+00:00",
+  "tests": {
+    "server_version": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        3
+      ],
+      "errors": []
+    },
+    "server_health": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        212
+      ],
+      "errors": []
+    },
+    "vault_create": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "vault_list": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        ""
+      ]
+    },
+    "ingest_conversation": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        309
+      ],
+      "errors": []
+    },
+    "fact_write": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        16
+      ],
+      "errors": []
+    },
+    "fact_write2": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        6
+      ],
+      "errors": []
+    },
+    "ask_synthesis": {
+      "total": 3,
+      "passed": 0,
+      "latencies": [
+        4,
+        3,
+        3
+      ],
+      "errors": [
+        "status=400",
+        "status=400",
+        "status=400"
+      ]
+    },
+    "recall": {
+      "total": 3,
+      "passed": 0,
+      "latencies": [
+        2,
+        2,
+        2
+      ],
+      "errors": [
+        "status=400",
+        "status=400",
+        "status=400"
+      ]
+    },
+    "concurrent_stress": {
+      "total": 60,
+      "passed": 0,
+      "latencies": [
+        3,
+        3,
+        6,
+        7,
+        7,
+        12,
+        8,
+        6,
+        10,
+        10,
+        15,
+        7,
+        22,
+        15,
+        8,
+        14,
+        16,
+        9,
+        10,
+        11,
+        16,
+        7,
+        18,
+        34,
+        16,
+        28,
+        19,
+        6,
+        28,
+        27,
+        9,
+        25,
+        18,
+        19,
+        12,
+        21,
+        20,
+        13,
+        18,
+        16,
+        7,
+        6,
+        10,
+        19,
+        21,
+        16,
+        6,
+        15,
+        13,
+        22,
+        7,
+        10,
+        11,
+        4,
+        10,
+        11,
+        12,
+        7,
+        6,
+        4
+      ],
+      "errors": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ]
+    },
+    "malformed_empty body": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        1,
+        1
+      ],
+      "errors": []
+    },
+    "malformed_garbage body": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        1,
+        1
+      ],
+      "errors": []
+    },
+    "malformed_negative number": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        1,
+        1
+      ],
+      "errors": []
+    },
+    "malformed_huge nested": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        1,
+        1
+      ],
+      "errors": []
+    }
+  }
+}

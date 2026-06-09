@@ -77,10 +77,12 @@ class RagamuffinClient:
         vault: str,
         source: str = "benchmark",
         source_type: str = "conversation",
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a fact in a vault.
 
         Uses POST /v1/facts with vault in body (not path-based).
+        Accepts optional list of tag strings.
         """
         body = {
             "key": key,
@@ -89,6 +91,8 @@ class RagamuffinClient:
             "source": source or "benchmark",
             "source_type": source_type or "conversation",
         }
+        if tags:
+            body["tags"] = tags
         data, status = self._request("POST", "/v1/facts", body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
 
@@ -133,17 +137,53 @@ class RagamuffinClient:
         content: str,
         source: str,
         vault: str,
-        tags: Optional[Dict[str, str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Ingest content into a vault."""
+        """Ingest content into a vault. Tags must be a list of strings."""
         body = {
             "content": content,
             "source": source,
             "vault": vault,
-            "tags": tags or {},
         }
+        if tags:
+            body["tags"] = tags
         data, status = self._request("POST", "/v1/ingest", body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
+
+    def recall(
+        self,
+        query: str,
+        vault: str,
+        top_k: int = 5,
+        score_threshold: float = 0.0,
+        detail: str = "l2",
+    ) -> Dict[str, Any]:
+        """Recall chunks matching a query from a vault."""
+        path = f"/vault/{vault}/recall"
+        body = {
+            "query": query,
+            "top_k": top_k,
+            "score_threshold": score_threshold,
+            "detail": detail,
+        }
+        data, _ = self._request("POST", path, body=body)
+        return data if isinstance(data, dict) else {"results": []}
+
+    def batch_recall(
+        self,
+        queries: List[str],
+        vault: str,
+        top_k: int = 3,
+    ) -> Dict[str, Any]:
+        """Submit multiple recall queries in a single batch request."""
+        path = f"/vault/{vault}/v1/batch/recall"
+        query_objects = [
+            {"query": q, "vault": vault, "top_k": top_k}
+            for q in queries
+        ]
+        body = {"queries": query_objects}
+        data, _ = self._request("POST", path, body=body)
+        return data if isinstance(data, dict) else {}
 
     def ask(
         self,
