@@ -63,7 +63,8 @@ internal/
 
 plugins/
   memory-ragamuffin-openclaw/  # v0.5 — OpenClaw plugin adapter (Node.js)
-  memory-ragamuffin-hermes/    # v0.5 — Hermes plugin adapter (Python)
+adapters/
+  hermes-memory/               # v0.5 — Hermes memory adapter (Python)
 
 docs/
   integration/
