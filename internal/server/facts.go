@@ -340,7 +340,8 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		Vectors: s.zeroFactVector(),
 	}
 
-	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
+	qc := s.factsQdrantFor(r.Context())
+	if err := qc.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
 		s.log(r.Context()).Error("facts upsert failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to store fact")
 		return
@@ -654,7 +655,8 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		Vectors: s.zeroFactVector(),
 	}
 
-	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
+	qc := s.factsQdrantFor(r.Context())
+	if err := qc.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
 		s.log(r.Context()).Error("facts put failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to update fact")
 		return
@@ -784,8 +786,10 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		qc := s.factsQdrantFor(r.Context())
+
 		// Atomic field-level update — no read-modify-write race (#408)
-		if err := s.facts.SetPayload(r.Context(), collection, []*qdrant.PointId{{
+		if err := qc.SetPayload(r.Context(), collection, []*qdrant.PointId{{
 			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
 		}}, updates); err != nil {
 			results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
@@ -816,7 +820,7 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 					},
 				}
 			}
-			if err := s.facts.SetPayload(r.Context(), collection, []*qdrant.PointId{{
+			if err := qc.SetPayload(r.Context(), collection, []*qdrant.PointId{{
 				PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
 			}}, tagUpdates); err != nil {
 				results = append(results, factBulkResult{Key: key, OK: false, Error: "INTERNAL"})
@@ -857,7 +861,7 @@ func (s *Server) handleFactsDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.facts.DeleteFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key)); err != nil {
+	if err := s.factsQdrantFor(r.Context()).DeleteFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(key)); err != nil {
 		s.log(r.Context()).Error("facts delete failed", "error", err)
 		writeError(w, 500, "DELETE_FAILED", "failed to delete fact")
 		return
