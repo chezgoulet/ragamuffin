@@ -37,6 +37,10 @@ func (m *mockSynthesizer) Compare(_ context.Context, _, _, _, _ string) (string,
 	return "", nil
 }
 
+func (m *mockSynthesizer) Health(_ context.Context) error {
+	return nil
+}
+
 type mockEmbedder struct {
 	vec   []float32
 	vecs  [][]float32
