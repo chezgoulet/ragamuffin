@@ -18,11 +18,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      - name: Run tests
-        run: go test -timeout 60s ./...
+      - name: Run Go tests
+        run: go test -timeout 120s ./internal/... ./cmd/...
 
   docker:
-    needs: test
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: read

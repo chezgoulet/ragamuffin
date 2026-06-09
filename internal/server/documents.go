@@ -96,7 +96,7 @@ func (s *Server) handleDocuments(w http.ResponseWriter, r *http.Request) {
 
 	// Trigger fact extraction if auto_extract is requested (#529)
 	if req.AutoExtract != nil && *req.AutoExtract && s.extractor != nil && s.extractor.Enabled() {
-		go s.extractor.Extract(r.Context(), req.Source, req.Content, "system")
+		go s.extractor.Extract(s.shutdownCtx, req.Source, req.Content, "system")
 	}
 
 	writeJSON(w, 200, documentsResponse{

@@ -373,7 +373,7 @@ or importing into API tooling.
 ## Reference Implementations
 
 - **OpenClaw:** `plugins/memory-ragamuffin-openclaw/` (Node.js, ~250 lines)
-- **Hermes:** `plugins/memory-ragamuffin-hermes/` (Python, ~200 lines)
+- **Hermes:** `adapters/hermes-memory/` (Python, ~200 lines)
 
 Both live in the [chezgoulet/ragamuffin](https://github.com/chezgoulet/ragamuffin) repo.
 

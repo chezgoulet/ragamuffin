@@ -84,7 +84,173 @@ RECALL_SCHEMA = {
     },
 }
 
-ALL_TOOL_SCHEMAS = [RECALL_SCHEMA]
+ASK_SCHEMA = {
+    "name": "ragamuffin_ask",
+    "description": (
+        "Ask a synthesis question across agent memory. "
+        "Returns a natural language answer with citations from relevant "
+        "vault content. Use for questions that need synthesis across "
+        "multiple pieces of information, rather than raw recall."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Natural language question to synthesize across memory.",
+            },
+            "mode": {
+                "type": "string",
+                "description": "Synthesis mode (default: 'standard').",
+                "enum": ["standard", "concise", "detailed"],
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Number of relevant chunks to retrieve (1-20, default 5).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+FACT_GET_SCHEMA = {
+    "name": "ragamuffin_fact_get",
+    "description": (
+        "Retrieve a specific fact by its key. Returns the fact value, "
+        "confidence (0.0-1.0), TTL, status, and relationships. "
+        "Use when you need the full detail of a known fact rather than "
+        "semantic search."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Fact key to retrieve (e.g., 'user_preference_timezone').",
+            },
+        },
+        "required": ["key"],
+    },
+}
+
+FACT_PUT_SCHEMA = {
+    "name": "ragamuffin_fact_put",
+    "description": (
+        "Write or update a fact in the agent's own vault. "
+        "Use to record persistent knowledge — user preferences, "
+        "decisions made, learned patterns, or any structured information "
+        "the agent should remember across sessions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Unique key for the fact (snake_case, descriptive).",
+            },
+            "value": {
+                "type": "string",
+                "description": "The fact value / statement to store.",
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence 0.0-1.0 (default 0.7).",
+            },
+            "ttl_days": {
+                "type": "integer",
+                "description": "Days until expiry (0 = no expiry, default 365).",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for categorization.",
+            },
+            "source": {
+                "type": "string",
+                "description": "Source context (e.g., 'session', 'observation').",
+            },
+        },
+        "required": ["key", "value"],
+    },
+}
+
+FACT_GRAPH_SCHEMA = {
+    "name": "ragamuffin_fact_graph",
+    "description": (
+        "Get the lineage graph of a fact — what it supersedes, "
+        "contradicts, or refines. Use to understand how a fact has "
+        "evolved over time or to resolve conflicting information."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "Fact key to get the lineage graph for.",
+            },
+        },
+        "required": ["key"],
+    },
+}
+
+REVIEW_LIST_SCHEMA = {
+    "name": "ragamuffin_review_list",
+    "description": (
+        "List flagged facts awaiting review. Facts enter the review queue "
+        "when the pruner detects contradictions, low confidence, or near-expiry. "
+        "Returns facts with their review reason, confidence, and creation time."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Filter by review reason (e.g., 'contradiction', 'low_confidence', 'expiring').",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum results to return (1-100, default 20).",
+            },
+        },
+    },
+}
+
+REVIEW_RESOLVE_SCHEMA = {
+    "name": "ragamuffin_review_resolve",
+    "description": (
+        "Resolve a flagged fact in the review queue. Actions: confirm the fact, "
+        "supersede it with a corrected version, or reject it as invalid."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "point_id": {
+                "type": "string",
+                "description": "The Qdrant point ID of the fact to resolve.",
+            },
+            "action": {
+                "type": "string",
+                "description": "Resolution action: 'confirm', 'supersede', or 'reject'.",
+                "enum": ["confirm", "supersede", "reject"],
+            },
+            "correction": {
+                "type": "string",
+                "description": "Corrected fact value (required for 'supersede' action).",
+            },
+        },
+        "required": ["point_id", "action"],
+    },
+}
+
+ALL_TOOL_SCHEMAS = [
+    RECALL_SCHEMA,
+    ASK_SCHEMA,
+    FACT_GET_SCHEMA,
+    FACT_PUT_SCHEMA,
+    FACT_GRAPH_SCHEMA,
+    REVIEW_LIST_SCHEMA,
+    REVIEW_RESOLVE_SCHEMA,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +631,18 @@ class RagamuffinMemoryProvider(MemoryProvider):
         """Handle a tool call for one of this provider's tools."""
         if tool_name == "ragamuffin_recall":
             return self._handle_recall(args)
+        elif tool_name == "ragamuffin_ask":
+            return self._handle_ask(args)
+        elif tool_name == "ragamuffin_fact_get":
+            return self._handle_fact_get(args)
+        elif tool_name == "ragamuffin_fact_put":
+            return self._handle_fact_put(args)
+        elif tool_name == "ragamuffin_fact_graph":
+            return self._handle_fact_graph(args)
+        elif tool_name == "ragamuffin_review_list":
+            return self._handle_review_list(args)
+        elif tool_name == "ragamuffin_review_resolve":
+            return self._handle_review_resolve(args)
         raise NotImplementedError(
             f"Ragamuffin provider does not handle tool '{tool_name}'"
         )
@@ -516,6 +694,218 @@ class RagamuffinMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Ragamuffin recall error: %s", e)
             return json.dumps({"error": f"Recall failed: {e}"})
+
+    def _handle_ask(self, args: Dict[str, Any]) -> str:
+        """POST /ask — synthesis with citations."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        query = args.get("query", "")
+        mode = args.get("mode", "standard")
+        top_k = args.get("top_k", 5)
+
+        if not query:
+            return json.dumps({"error": "Query is required"})
+
+        try:
+            url = _build_endpoint(self._endpoint, "/ask")
+            headers = _build_headers(self._auth_token)
+            payload = {
+                "query": query,
+                "mode": mode,
+                "top_k": min(max(top_k, 1), 20),
+                "vault": self._agent_vault,
+            }
+
+            resp = self._requests.post(
+                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                return json.dumps(resp.json(), indent=2)
+            elif resp.status_code == 503:
+                return json.dumps({
+                    "error": "ASK_UNAVAILABLE",
+                    "detail": "LLM not configured",
+                })
+            else:
+                return json.dumps({
+                    "error": f"Ask failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin ask error: %s", e)
+            return json.dumps({"error": f"Ask failed: {e}"})
+
+    def _handle_fact_get(self, args: Dict[str, Any]) -> str:
+        """GET /v1/facts/{key} — retrieve a fact by key."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        key = args.get("key", "")
+        if not key:
+            return json.dumps({"error": "Key is required"})
+
+        try:
+            url = _build_endpoint(self._endpoint, f"/v1/facts/{key}")
+            headers = _build_headers(self._auth_token)
+
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                return json.dumps(resp.json(), indent=2)
+            elif resp.status_code == 404:
+                return json.dumps({
+                    "error": "NOT_FOUND",
+                    "detail": f"Fact '{key}' not found",
+                })
+            else:
+                return json.dumps({
+                    "error": f"Fact get failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin fact_get error: %s", e)
+            return json.dumps({"error": f"Fact get failed: {e}"})
+
+    def _handle_fact_put(self, args: Dict[str, Any]) -> str:
+        """POST /v1/facts — write/upsert a fact."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        key = args.get("key", "")
+        value = args.get("value", "")
+        if not key or not value:
+            return json.dumps({"error": "Both 'key' and 'value' are required"})
+
+        try:
+            url = _build_endpoint(self._endpoint, "/v1/facts")
+            headers = _build_headers(self._auth_token)
+            payload = {
+                "key": key,
+                "value": value,
+                "vault": self._agent_vault,
+            }
+            if "confidence" in args:
+                payload["confidence"] = min(max(float(args["confidence"]), 0.0), 1.0)
+            if "ttl_days" in args:
+                payload["ttl_days"] = int(args["ttl_days"])
+            if "tags" in args:
+                payload["tags"] = args["tags"]
+            if "source" in args:
+                payload["source"] = args["source"]
+
+            resp = self._requests.post(
+                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code in (200, 201):
+                return json.dumps(resp.json(), indent=2)
+            else:
+                return json.dumps({
+                    "error": f"Fact put failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin fact_put error: %s", e)
+            return json.dumps({"error": f"Fact put failed: {e}"})
+
+    def _handle_fact_graph(self, args: Dict[str, Any]) -> str:
+        """GET /v1/facts/{key}/graph — fact lineage."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        key = args.get("key", "")
+        if not key:
+            return json.dumps({"error": "Key is required"})
+
+        try:
+            url = _build_endpoint(self._endpoint, f"/v1/facts/{key}/graph")
+            headers = _build_headers(self._auth_token)
+
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                return json.dumps(resp.json(), indent=2)
+            elif resp.status_code == 404:
+                return json.dumps({
+                    "error": "NOT_FOUND",
+                    "detail": f"Fact '{key}' not found",
+                })
+            else:
+                return json.dumps({
+                    "error": f"Fact graph failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin fact_graph error: %s", e)
+            return json.dumps({"error": f"Fact graph failed: {e}"})
+
+    def _handle_review_list(self, args: Dict[str, Any]) -> str:
+        """GET /v1/review — list flagged facts."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        try:
+            params = {}
+            if "reason" in args:
+                params["reason"] = args["reason"]
+            if "limit" in args:
+                params["limit"] = min(max(int(args["limit"]), 1), 100)
+
+            url = _build_endpoint(self._endpoint, "/v1/review")
+            headers = _build_headers(self._auth_token)
+
+            resp = self._requests.get(
+                url, params=params, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                return json.dumps(resp.json(), indent=2)
+            else:
+                return json.dumps({
+                    "error": f"Review list failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin review_list error: %s", e)
+            return json.dumps({"error": f"Review list failed: {e}"})
+
+    def _handle_review_resolve(self, args: Dict[str, Any]) -> str:
+        """POST /v1/review/{point_id}/resolve — resolve a flagged fact."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        point_id = args.get("point_id", "")
+        action = args.get("action", "")
+        if not point_id or not action:
+            return json.dumps({"error": "Both 'point_id' and 'action' are required"})
+
+        if action not in ("confirm", "supersede", "reject"):
+            return json.dumps({
+                "error": "INVALID_ACTION",
+                "detail": "Action must be 'confirm', 'supersede', or 'reject'",
+            })
+
+        try:
+            url = _build_endpoint(self._endpoint, f"/v1/review/{point_id}/resolve")
+            headers = _build_headers(self._auth_token)
+            payload = {"action": action}
+            if "correction" in args and action == "supersede":
+                payload["correction"] = args["correction"]
+
+            resp = self._requests.post(
+                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                return json.dumps(resp.json(), indent=2)
+            else:
+                return json.dumps({
+                    "error": f"Review resolve failed: HTTP {resp.status_code}",
+                    "detail": resp.text[:500],
+                })
+        except Exception as e:
+            logger.debug("Ragamuffin review_resolve error: %s", e)
+            return json.dumps({"error": f"Review resolve failed: {e}"})
 
     def shutdown(self) -> None:
         """Clean shutdown — wait for pending syncs."""

@@ -124,11 +124,23 @@ func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error 
 	}
 	for _, col := range list.Collections {
 		if col.Name == c.collection {
-			return nil // already exists
+			// Collection exists — verify vector dimension matches config
+			existingSize, err := c.GetVectorSize(ctx, c.collection)
+			if err != nil {
+				return fmt.Errorf("check vector size for %s: %w", c.collection, err)
+			}
+			if existingSize != vectorSize {
+				// Dimension mismatch — delete and recreate with correct size
+				if err := c.deleteCollection(ctx); err != nil {
+					return fmt.Errorf("recreate %s: delete failed: %w", c.collection, err)
+				}
+				break // fall through to create below
+			}
+			return nil // dimension matches
 		}
 	}
 
-	// Create it
+	// Create collection
 	_, err = c.collections.Create(ctx, &pb.CreateCollection{
 		CollectionName: c.collection,
 		VectorsConfig: &pb.VectorsConfig{
@@ -143,11 +155,23 @@ func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error 
 	return err
 }
 
+func (c *Client) deleteCollection(ctx context.Context) error {
+	_, err := c.collections.Delete(ctx, &pb.DeleteCollection{
+		CollectionName: c.collection,
+	})
+	return err
+}
+
 // Upsert inserts or updates points in the collection.
+// Sets wait=true so Qdrant validates the operation synchronously before returning.
+// Without wait, Qdrant returns "acknowledged" immediately and silently drops points
+// with mismatched vector dimensions, causing data loss (#630).
 func (c *Client) Upsert(ctx context.Context, points []*pb.PointStruct) error {
+	wait := true
 	_, err := c.points.Upsert(ctx, &pb.UpsertPoints{
 		CollectionName: c.collection,
 		Points:         points,
+		Wait:           &wait,
 	})
 	return err
 }
@@ -322,6 +346,9 @@ func (c *Client) SetPayload(ctx context.Context, collection string, points []*pb
 
 // Close shuts down the gRPC connection.
 func (c *Client) Close() error {
+	if c.conn == nil {
+		return nil
+	}
 	return c.conn.Close()
 }
 

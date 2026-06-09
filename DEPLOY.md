@@ -19,6 +19,120 @@ curl -X POST http://localhost:8000/recall \
   -d '{"query":"what do we know about this project?"}'
 ```
 
+## Deployment Model
+
+Ragamuffin uses a **staged-branch Docker tagging model**. Every branch level
+produces a Docker tag, matching the CI pipeline described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+| Tag | Source Branch | When Updated | Stability |
+|---|---|---|---|
+| `:rolling` | `testing` | Every merge to `testing` | Pre-release — validate in staging |
+| `:latest` | `main` | Every merge to `main` | Production — benchmarked and released |
+| `vX.Y.Z` | `main` tag | Every release to `main` | Versioned — stable, auditable |
+
+### Rolling Deployments (`:rolling`)
+
+Every merge to `testing` triggers `testing-push.yml`, which builds and pushes
+`chezgoulet/ragamuffin:rolling`. This tag is meant for:
+
+- **Staging validation** — deploy on the host, run smoke tests
+- **Agent preview** — let agents use the latest before it hits production
+- **Integration testing** — verify new features with the full stack
+
+To deploy the rolling tag:
+
+```bash
+docker compose pull ragamuffin
+docker compose up -d ragamuffin
+```
+
+### Pinning to a Specific Version
+
+For production stability, pin to a specific version tag instead of `:rolling`:
+
+```yaml
+# docker-compose.yml
+services:
+  ragamuffin:
+    image: chezgoulet/ragamuffin:v0.9.0
+```
+
+Or override at deploy time:
+
+```bash
+docker compose pull ragamuffin
+TAG=v0.9.0 docker compose up -d ragamuffin
+```
+
+Where your `docker-compose.yml` uses one:
+
+```yaml
+services:
+  ragamuffin:
+    image: chezgoulet/ragamuffin:${TAG:-rolling}
+```
+
+This pattern lets you default to `:rolling` for staging and pin to `v0.9.0`
+for production, with the same Compose file.
+
+### Production Releases (`:latest`)
+
+Merges to `main` trigger `build.yml`, which runs the full benchmark gauntlet.
+If benchmarks pass, the image is promoted to `chezgoulet/ragamuffin:latest`
+and a version tag (`vX.Y.Z`) is applied. This tag is meant for:
+
+- **Production deployments** — the stable, benchmarked release
+- **CI base images** — other pipelines that depend on ragamuffin
+
+### Tag Lifecycle
+
+```
+testing ──(merge)──→ testing-push.yml ──→ :rolling
+   │
+   └──(PR merge)──→ build.yml ──→ :latest + git tag vX.Y.Z
+                        │
+                        └── benchmark gauntlet ──→ pass → promote
+```
+
+Version tags (`v0.9.0-rc.1`, `v0.9.0`) are applied to `main` commits only.
+The `:rolling` tag tracks `testing` tip without versioning.
+
+### Updating a Running Deployment
+
+```bash
+# 1. Pull the latest tag you want
+docker compose pull ragamuffin
+
+# 2. Recreate the container with the new image
+docker compose up -d ragamuffin
+
+# 3. Verify
+curl http://localhost:8000/health
+curl http://localhost:8000/version
+```
+
+To update Qdrant separately:
+
+```bash
+docker compose pull qdrant
+docker compose up -d qdrant
+```
+
+> **Downgrade caution:** Rolling back to an older image may cause issues if
+> Qdrant collection schemas have changed. Check CHANGELOG.md for migration
+> notes before downgrading past a breaking release.
+
+### Which Tag Should I Use?
+
+| Situation | Tag |
+|---|---|
+| Staging / smoke tests | `:rolling` |
+| Production — I want the latest stable | `:latest` |
+| Production — I want a specific release | `v0.9.0` |
+| Agent preview of what's cooking | `:rolling` |
+| CI pipeline base image | `:latest` |
+
 ## Configuration
 
 Full variable reference: [SPEC.md](SPEC.md#configuration).
@@ -31,6 +145,8 @@ Quick-reference `.env.example` at the repo root.
 | `RAGAMUFFIN_QDRANT_URL` | yes | Qdrant gRPC endpoint |
 | `RAGAMUFFIN_EMBEDDING_API_KEY` | yes | OpenAI or compatible API key (omit to run without /recall) |
 | `RAGAMUFFIN_LLM_*` | no | Enable `/ask` and semantic conflict detection |
+| `RAGAMUFFIN_EXTRACT_*` | no | Enable automatic fact extraction from documents and conversations |
+| `RAGAMUFFIN_PRUNER_*` | no | Enable background fact health scans (stale, conflict, low-confidence) |
 | `RAGAMUFFIN_GIT_*` | no | Enable `/draft` PR mode |
 
 ## Multi-Tenant Vault Setup
@@ -106,6 +222,78 @@ curl -s http://localhost:8000/v1/auth/check
 
 Returns the current auth mode, whether auth is enforced, and any decoding issues
 with the provided token (if present). Useful for debugging auth configuration.
+
+## Extraction (Automatic Fact Extraction)
+
+Ragamuffin can extract structured facts from documents and conversation turns,
+powered by the configured LLM. Extraction runs asynchronously in background
+goroutines after the handler returns.
+
+Enable and configure:
+
+```bash
+RAGAMUFFIN_EXTRACT_ENABLED=true              # Master switch (default false)
+RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE=0.85       # Hard ceiling (0.0–1.0)
+RAGAMUFFIN_EXTRACT_WINDOW=10                 # Preceding turns for context
+RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD=0.85      # Cosine similarity for dedup
+RAGAMUFFIN_EXTRACT_CONCURRENCY=2             # Max concurrent extractions
+RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN=30   # Seconds between extractions
+```
+
+When enabled, clients can opt in per-request with `auto_extract: true` on:
+- `POST /v1/documents` — extract facts from document content
+- `POST /v1/ingest/conversation` — extract facts from conversation turns
+- `POST /v1/sessions` with `auto_extract: true`
+- `POST /v1/sessions/{id}/turns` with `auto_extract: true`
+
+Extracted facts are stored in the facts Qdrant collection (configured via
+`RAGAMUFFIN_FACTS_COLLECTION`) with actual embeddings for semantic search.
+Confidence from the LLM (integer 1-10) is normalized to 0.0-1.0 at storage
+with a hard cap at the configured `RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE`.
+
+## Auto-Tune (Threshold Optimization)
+
+The auto-tune endpoint analyzes review resolution history and recommends
+threshold adjustments for pruner scans. It reviews how operators have resolved
+flagged facts (confirmed, rejected, superseded) and suggests thresholds that
+would reduce noise while maintaining coverage.
+
+```bash
+# Preview recommendations without applying
+curl http://localhost:8000/v1/pruner/auto-tune?dry_run=true
+
+# Apply recommendations to in-memory pruner config
+curl "http://localhost:8000/v1/pruner/auto-tune?dry_run=false"
+```
+
+Response structure:
+```json
+{
+  "dry_run": true,
+  "recommendations": [
+    {
+      "reason_type": "low_confidence",
+      "current": 0.5,
+      "recommended": 0.35,
+      "accept_rate": 0.72,
+      "sample_size": 45,
+      "rationale": "72% of low-confidence flags were rejected — threshold may be too high",
+      "applied": false
+    }
+  ],
+  "sample_count": 1
+}
+```
+
+**Requirements:**
+- Pruner must be enabled (`RAGAMUFFIN_PRUNER_ENABLED=true`)
+- Log store must be configured (automatic with default config)
+- Admin JWT claim required if auth is enabled
+- Requires resolved review history to base recommendations on
+
+Config changes from auto-tune are **in-memory only** — they do not persist
+across restarts. Use the recommendations as guidance for permanent env var
+changes in your config.
 
 ## Pruner (Background Fact Health)
 

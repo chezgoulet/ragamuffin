@@ -88,6 +88,76 @@ func (m *conversationMockStore) GetPoints(_ context.Context, collection string, 
 func (m *conversationMockStore) SetPayload(_ context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error { return nil }
 func (m *conversationMockStore) Collection() string { return "test_facts" }
 
+// ── Test: confidence normalization (1-10 → 0.0-1.0) ───────────────────────────
+
+func TestIngestConversation_ConfidenceNormalized(t *testing.T) {
+	tests := []struct {
+		desc     string
+		llmInput int
+		wantMin  float64
+		wantMax  float64
+	}{
+		{"confidence 8 → 0.8", 8, 0.79, 0.81},
+		{"confidence 10 → 0.85 (capped)", 10, 0.84, 0.86},
+		{"confidence 1 → 0.1", 1, 0.09, 0.11},
+		{"confidence 5 → 0.5", 5, 0.49, 0.51},
+		{"confidence 0 → 0.0 (clamped)", 0, -0.01, 0.01},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			mockStore := &conversationMockStore{}
+			mockLLM := &mockLLM{
+				synthesizeFn: func(query, context string) string {
+					return fmt.Sprintf(`[{"key":"test_fact","value":"test value","confidence":%d,"category":"knowledge","ttl_days":90}]`, tt.llmInput)
+				},
+			}
+			mockEmbed := &mockEmbedder{
+				embedSingleFn: func(text string) []float32 {
+					return []float32{0.1, 0.2, 0.3, 0.4}
+				},
+			}
+
+			srv := &Server{
+				facts:    mockStore,
+				cfg:      &config.Config{FactsCollection: "test_facts"},
+				llm:      mockLLM,
+				embedder: mockEmbed,
+				logger:   testLogger(t),
+			}
+
+			body := conversationRequest{
+				Vault:    "default",
+				Messages: []conversationMessage{{Role: "user", Content: "test"}},
+			}
+			bodyBytes, _ := json.Marshal(body)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/ingest/conversation", bytes.NewReader(bodyBytes))
+			w := httptest.NewRecorder()
+			srv.handleIngestConversation(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+
+			if len(mockStore.points) == 0 {
+				t.Fatal("no points upserted")
+			}
+
+			confidenceVal := mockStore.points[0].GetPayload()["confidence"]
+			if confidenceVal == nil {
+				t.Fatal("confidence not found in stored point payload")
+			}
+			storedConfidence := confidenceVal.GetDoubleValue()
+
+			if storedConfidence < tt.wantMin || storedConfidence > tt.wantMax {
+				t.Errorf("stored confidence = %f, want in [%f, %f] (raw input was %d)",
+					storedConfidence, tt.wantMin, tt.wantMax, tt.llmInput)
+			}
+		})
+	}
+}
+
 // ── Test: conversation facts have non-zero vectors ────────────────────────────
 
 func TestIngestConversation_FactsHaveNonZeroVectors(t *testing.T) {

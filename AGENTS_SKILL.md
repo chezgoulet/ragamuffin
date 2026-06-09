@@ -1,6 +1,5 @@
-# Agent Skill: Ragamuffin Vault
+# Agent Skill: Ragamuffin
 
-Know an agent that needs to read, search, and write to a knowledge base?
 Ragamuffin is a REST API that turns a directory of files into a queryable
 vector store — and in v0.6, it's also the memory backend that powers your
 agent's persistent, isolated cross-session recall.
@@ -13,12 +12,30 @@ Two modes:
 ## Quickstart
 
 ```bash
-# Discovery — check the vault is alive
+# Discovery — check the service is alive
 curl -s http://ragamuffin:8000/health | jq .
 
 # Quick info
 curl -s http://ragamuffin:8000/stats | jq .
+
+# Search the knowledge base
+curl -s http://ragamuffin:8000/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query":"deployment process","top_k":5}'
 ```
+
+### Repo Workflow
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
+architecture. The key points for agents:
+
+- **Branch from `testing`** — all feature branches (`dev/*`) branch from
+  and PR into `testing`. Never PR directly to `main`.
+- **CI checks** — every PR triggers `pr-check.yml` (compile, test, vet).
+  Must pass before merge.
+- **Tag semantics** — `chezgoulet/ragamuffin:rolling` tracks `testing`
+  (pre-release), `:latest` tracks `main` (production, benchmarked).
+- **Review** — robot reviews PRs against `testing`, not `main`.
 
 ## Agent Memory Mode (v0.5)
 
@@ -56,7 +73,7 @@ endpoint), because the harness authenticates and authorizes the request.
 
 - Write structured facts → `POST /v1/facts` (for small, persistent data)
 - Write log entries → `POST /v1/logs` (for what you did, when)
-- Read shared vaults → `POST /recall` with `source_filter`
+- Search shared knowledge → `POST /recall` with `source_filter`
 - Create and manage sessions → `POST /v1/sessions`
 
 ### Hybrid mode: don't swap your slot, just add tools
@@ -118,8 +135,14 @@ curl -s http://ragamuffin:8000/recall \
 }
 ```
 
-`top_k` max is 100. `score_threshold` (0.0–1.0) filters by minimum similarity.
-`source_filter` restricts results to files under a path prefix.
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | string | — | Natural-language search query |
+| `top_k` | int | 10 | Max results (1–100) |
+| `score_threshold` | float | 0.0 | Minimum similarity (0.0–1.0) |
+| `source_filter` | string | — | Restrict to files under this path prefix |
+| `mode` | string | `auto` | `auto` (classify), `rag` (RAG-only), `full` (load full source) |
+| `time_filter` | string | `active` | `active`, `active_at:<RFC3339>`, or `all` |
 
 ### Synthesized Answers — `/ask`
 
@@ -131,12 +154,16 @@ curl -s http://ragamuffin:8000/ask \
   -d '{"query": "Summarize our infrastructure", "mode": "auto"}'
 ```
 
-Modes: `rag` (RAG only), `auto` (RAG, fallback to full if low confidence),
-`full` (load entire source files for context).
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `query` | string | — | Question to answer |
+| `mode` | string | `auto` | `rag`, `auto`, or `full` |
+| `top_k` | int | 8 | RAG results to retrieve (1–50) |
+| `time_filter` | string | `active` | `active`, `active_at:<RFC3339>`, or `all` |
 
 ### Write-Back — `/draft`
 
-Agents contribute to the vault. Two modes:
+Agents contribute to the knowledge base. Two modes:
 
 **Direct** — writes immediately to the filesystem:
 ```bash
@@ -186,6 +213,12 @@ curl -s "http://ragamuffin:8000/v1/facts?prefix=db/"
 curl -s "http://ragamuffin:8000/v1/facts?tag=prod&prefix=db/"
 ```
 
+**Query by graph (dependencies):**
+```bash
+curl -s "http://ragamuffin:8000/v1/facts/deployment%2Furl/graph"
+```
+Returns the fact's supersedes chain.
+
 **Update (full replace):**
 ```bash
 curl -s -X PUT "http://ragamuffin:8000/v1/facts?key=***" \
@@ -213,6 +246,18 @@ curl -s "http://ragamuffin:8000/v1/facts?limit=20&before=<next_token>"
 
 Facts are versioned. A `version` integer field auto-increments on update.
 Set the `version` field explicitly to enable optimistic concurrency control.
+
+### Write-Back for Agent Observations — `POST /v1/ingest`
+
+Index content into an agent vault without touching the filesystem. Use this
+to persist observations, analysis results, or any signal that doesn't belong
+in a markdown file:
+
+```bash
+curl -s -X POST http://ragamuffin:8000/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"vault": "agent::dev", "documents": [{"id": "obs-001", "text": "Found 3 npm vulns in the auth service", "metadata": {"source": "scout"}}]}'
+```
 
 ### Structured Logging — `/v1/logs`
 
@@ -249,7 +294,7 @@ curl -s "http://ragamuffin:8000/v1/sessions/<session_id>"
 
 ### Snapshot — `/v1/snapshot`
 
-Download the entire vault as a gzipped tarball:
+Download the entire knowledge base as a gzipped tarball:
 ```bash
 curl -s -O http://ragamuffin:8000/v1/snapshot
 ```
@@ -263,6 +308,15 @@ curl -s -X POST http://ragamuffin:8000/v1/ingest \
   -H "Content-Type: application/json" \
   -d '{"vault": "agent::dev", "content": "Important decision: ...", "metadata": {"type": "decision"}}'
 ```
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `vault` | string | `default` | Target vault |
+| `content` | string | — | Content text to index **(required)** |
+| `source` | string | — | Source identifier |
+| `tags` | array | `[]` | Metadata tags |
+| `auto_extract` | bool | `false` | Enable automatic fact extraction |
+| `metadata` | object | `{}` | Additional metadata |
 
 Max body size: 10 MB.
 
@@ -279,7 +333,7 @@ curl -s "http://ragamuffin:8000/v1/review"
 curl -s "http://ragamuffin:8000/v1/review?reason=stale"
 
 # Filter by source key
-curl -s "http://ragamuffin:8000/v1/review?key=db/url"
+curl -s "http://ragamuffin:8000/v1/review?key=***"
 
 # Paginate
 curl -s "http://ragamuffin:8000/v1/review?limit=20&before=<next_token>"
@@ -343,22 +397,22 @@ Events follow Server-Sent Events protocol. Auto-reconnect compatible.
 ### Before answering a question
 
 1. Check `/stats` to see what's indexed
-2. Use `/recall` with the question as query to find relevant chunks
-3. For complex questions, use `/ask` to synthesize
+2. Use `POST /recall` with the question as query to find relevant chunks
+3. For complex questions, use `POST /ask` to synthesize
 
 ### After learning something new
 
-1. For prose (markdown docs) → use `/draft` with `mode: "direct"`
-2. For structured data (configs, URLs) → use POST `/v1/facts`
-3. For a record of what you did → use POST `/v1/logs`
-4. For session context → use POST `/v1/sessions`
+1. For prose (markdown docs) → use `POST /draft` with `mode: "direct"`
+2. For structured data (configs, URLs) → use `POST /v1/facts`
+3. For a record of what you did → use `POST /v1/logs`
+4. For session context → use `POST /v1/sessions`
 
 ### Periodic maintenance
 
-1. Call `/audit` to check for stale files
+1. Call `POST /audit` to check for stale files
 2. Call `/v1/review/stats` to check fact health
-3. Call `/v1/snapshot` to back up the vault
-4. For git-backed vaults, use `/draft` with `mode: "pr"` for human review
+3. Call `/v1/snapshot` to back up
+4. For git-backed vaults, use `POST /draft` with `mode: "pr"` for human review
 
 ### Fact quality management
 
@@ -583,6 +637,7 @@ curl -s http://ragamuffin:8000/stats
 # The full API surface is: /recall /ask /draft /audit /v1/facts /v1/logs
 # /v1/snapshot /health /stats /version /metrics /mcp /events
 # /v1/review /v1/review/stats /v1/ingest /v1/sessions /v1/auth/check
+# /v1/documents /v1/ingest/conversation /v1/pruner/auto-tune /v1/pruner/config
 # /vaults /graph /reindex /vault/{name}/... (v0.4)
 ```
 

@@ -1,8 +1,13 @@
 package events
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -356,4 +361,279 @@ func TestCloudEvent_DataTypes(t *testing.T) {
 			t.Errorf("constant %q doesn't match value %q", k, v)
 		}
 	}
+}
+
+// ── Broker ────────────────────────────────────────────────────────────────────
+
+func TestBroker_SubscribeUnsubscribe(t *testing.T) {
+	b := NewBroker()
+	ch := make(chan CloudEvent, 10)
+	b.Subscribe(ch)
+
+	if b.Len() != 1 {
+		t.Errorf("expected 1 subscriber, got %d", b.Len())
+	}
+
+	b.Unsubscribe(ch)
+	if b.Len() != 0 {
+		t.Errorf("expected 0 subscribers, got %d", b.Len())
+	}
+}
+
+func TestBroker_PublishFanOut(t *testing.T) {
+	b := NewBroker()
+	ch1 := make(chan CloudEvent, 10)
+	ch2 := make(chan CloudEvent, 10)
+	b.Subscribe(ch1)
+	b.Subscribe(ch2)
+
+	evt := New("test.event", "test", "payload")
+	b.Publish(evt)
+
+	// Both subscribers should receive the event
+	select {
+	case <-ch1:
+	default:
+		t.Error("ch1 did not receive event")
+	}
+	select {
+	case <-ch2:
+	default:
+		t.Error("ch2 did not receive event")
+	}
+}
+
+func TestBroker_PublishDropSlowConsumer(t *testing.T) {
+	b := NewBroker()
+	// Unbuffered channel — publish will drop
+	ch := make(chan CloudEvent)
+	b.Subscribe(ch)
+
+	// Fill with one event (won't block — dropped)
+	evt := New("test.event", "test", nil)
+	b.Publish(evt)
+
+	// Should not block or crash
+	b.Unsubscribe(ch)
+}
+
+func TestBroker_PublishNoSubscribers(t *testing.T) {
+	b := NewBroker()
+	evt := New("test.event", "test", nil)
+	// Should not panic with zero subscribers
+	b.Publish(evt)
+}
+
+func TestBroker_ConcurrentAccess(t *testing.T) {
+	b := NewBroker()
+	var wg sync.WaitGroup
+
+	// Concurrent subscribe/unsubscribe/publish
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ch := make(chan CloudEvent, 5)
+			b.Subscribe(ch)
+			b.Publish(New("e", "s", nil))
+			b.Unsubscribe(ch)
+		}()
+	}
+	wg.Wait()
+	// Should not panic under concurrent access
+}
+
+// ── Emitter ───────────────────────────────────────────────────────────────────
+
+type mockLogStore struct {
+	appended []string
+}
+
+func (m *mockLogStore) Append(_ context.Context, agent, eventType, body string, _ []string, _ time.Time) (string, error) {
+	m.appended = append(m.appended, eventType+":"+body)
+	return "id-1", nil
+}
+
+func TestEmitter_Nil(t *testing.T) {
+	// Calling Emit on nil should not panic
+	var e *Emitter
+	e.Emit("test", nil)
+	err := e.EmitSync(context.Background(), "test", nil)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
+}
+
+func TestEmitter_NoWebhook(t *testing.T) {
+	// Emitter with empty webhook URL should not panic
+	e := NewEmitter("", "test", slog.New(slog.DiscardHandler), nil, nil, nil)
+	e.Emit("test.event", "payload")
+	e.EmitSync(context.Background(), "test.event", "payload")
+	e.Close()
+}
+
+func TestEmitter_Closed(t *testing.T) {
+	e := NewEmitter("http://example.com/webhook", "test", slog.New(slog.DiscardHandler), nil, nil, nil)
+	e.Close()
+	// Emit after close should not panic
+	e.Emit("test.event", "payload")
+}
+
+func TestEmitter_WithLogStore(t *testing.T) {
+	ls := &mockLogStore{}
+	e := NewEmitter("", "test", slog.New(slog.DiscardHandler), ls, nil, nil)
+
+	e.Emit("test.event", "hello world")
+	if len(ls.appended) != 1 {
+		t.Fatalf("expected 1 logstore append, got %d", len(ls.appended))
+	}
+	if !strings.Contains(ls.appended[0], "test.event") {
+		t.Errorf("expected 'test.event' in log, got %q", ls.appended[0])
+	}
+}
+
+func TestEmitter_WithBroker(t *testing.T) {
+	b := NewBroker()
+	ch := make(chan CloudEvent, 10)
+	b.Subscribe(ch)
+
+	e := NewEmitter("", "test", slog.New(slog.DiscardHandler), nil, b, nil)
+	e.Emit("test.event", map[string]string{"key": "val"})
+
+	select {
+	case evt := <-ch:
+		if evt.Type != "test.event" {
+			t.Errorf("expected 'test.event', got %q", evt.Type)
+		}
+	default:
+		t.Error("expected event on broker channel")
+	}
+
+	b.Unsubscribe(ch)
+}
+
+func TestEmitter_AllowedEvents(t *testing.T) {
+	// Create a local HTTP server to catch webhook POSTs
+	var receivedBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		r.Body.Read(buf)
+		receivedBody = string(buf)
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	// Only allow "allowed.event"
+	e := NewEmitter(server.URL, "test", slog.New(slog.DiscardHandler), nil, nil, []string{"allowed.event"})
+
+	// This should not be sent
+	e.Emit("blocked.event", "data")
+
+	// This should be sent
+	e.EmitSync(context.Background(), "allowed.event", "data")
+
+	if receivedBody == "" {
+		t.Fatal("expected webhook to receive allowed.event")
+	}
+	if !strings.Contains(receivedBody, "allowed.event") {
+		t.Errorf("expected 'allowed.event' in body, got %q", receivedBody)
+	}
+}
+
+func TestEmitter_AllowedEventsEmpty(t *testing.T) {
+	// Empty allowed events list = send all to webhook
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	}))
+	defer server.Close()
+
+	e := NewEmitter(server.URL, "test", slog.New(slog.DiscardHandler), nil, nil, []string{})
+	// EmitSync should send since empty list = send all
+	err := e.EmitSync(context.Background(), "any.event", "data")
+	if err != nil {
+		t.Errorf("expected no error, got %v", err)
+	}
+}
+
+func TestEmitter_EmitSyncWebhookError(t *testing.T) {
+	// Server returning 500
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer server.Close()
+
+	e := NewEmitter(server.URL, "test", slog.New(slog.DiscardHandler), nil, nil, nil)
+	err := e.EmitSync(context.Background(), "test.event", "data")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("expected '500' in error, got %q", err.Error())
+	}
+}
+
+func TestEmitter_EmitSyncContextCancelled(t *testing.T) {
+	e := NewEmitter("http://127.0.0.1:1", "test", slog.New(slog.DiscardHandler), nil, nil, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := e.EmitSync(ctx, "test.event", "data")
+	if err == nil {
+		t.Log("emit with cancelled context may return nil if connection refused")
+	}
+}
+
+func TestEmitter_MarshalError(t *testing.T) {
+	// Create an emitter with an unreachable URL
+	e := NewEmitter("http://127.0.0.1:1", "test", slog.New(slog.DiscardHandler), nil, nil, nil)
+	// This should not panic — the post is best-effort
+	e.Emit("test.event", "data")
+}
+
+func TestEmitter_PrunerCompleteData(t *testing.T) {
+	data := PrunerCompleteData{
+		ScanName: "nightly-scan",
+		Duration: "12.3s",
+		Flagged:  5,
+	}
+	evt := New(TypePrunerComplete, "pruner", data)
+	if evt.Type != TypePrunerComplete {
+		t.Errorf("expected %q, got %q", TypePrunerComplete, evt.Type)
+	}
+	d, ok := evt.Data.(PrunerCompleteData)
+	if !ok {
+		t.Fatalf("expected PrunerCompleteData, got %T", evt.Data)
+	}
+	if d.Flagged != 5 {
+		t.Errorf("expected 5 flagged, got %d", d.Flagged)
+	}
+}
+
+func TestEmitterFactDataTypes(t *testing.T) {
+	t.Run("FactCreatedData", func(t *testing.T) {
+		d := FactCreatedData{Key: "user_prefers_rust", Value: "likes Rust", Confidence: 0.85}
+		evt := New(TypeFactCreated, "extraction", d)
+		d2, ok := evt.Data.(FactCreatedData)
+		if !ok || d2.Key != "user_prefers_rust" {
+			t.Errorf("expected user_prefers_rust, got %v", d2.Key)
+		}
+	})
+
+	t.Run("FactFlaggedData", func(t *testing.T) {
+		d := FactFlaggedData{Key: "stale_fact", Reason: "expired", Detail: "TTL exceeded"}
+		evt := New(TypeFactFlagged, "pruner", d)
+		d2, ok := evt.Data.(FactFlaggedData)
+		if !ok || d2.Reason != "expired" {
+			t.Errorf("expected 'expired', got %q", d2.Reason)
+		}
+	})
+
+	t.Run("FactReviewedData", func(t *testing.T) {
+		d := FactReviewedData{Key: "fact_123", Action: "approve"}
+		evt := New(TypeFactReviewed, "review", d)
+		d2, ok := evt.Data.(FactReviewedData)
+		if !ok || d2.Action != "approve" {
+			t.Errorf("expected 'approve', got %q", d2.Action)
+		}
+	})
 }

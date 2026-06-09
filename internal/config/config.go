@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
@@ -144,6 +145,9 @@ type Config struct {
 	GitBaseBranch      string
 	GitBaseURL         string
 	GitRepos           string
+
+	// Optional — Webhook ingestion
+	WebhookVaultMap map[string]string // repo → vault mapping from RAGAMUFFIN_WEBHOOK_VAULT_MAP
 
 	// Optional — Audit / Tuning
 	AuditSampleSize int
@@ -356,7 +360,7 @@ func Load() (*Config, error) {
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
-		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", 4)),
+		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536))),
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
 
@@ -419,6 +423,8 @@ func Load() (*Config, error) {
 		GitBaseBranch:      envOrDefault("RAGAMUFFIN_GIT_BASE_BRANCH", "main"),
 		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
+
+		WebhookVaultMap: parseJSONMap("RAGAMUFFIN_WEBHOOK_VAULT_MAP"),
 
 		AuthMode:         envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
 		AuthReadKey:      os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
@@ -624,4 +630,16 @@ func envCSV(key string) []string {
 		}
 	}
 	return result
+}
+
+func parseJSONMap(key string) map[string]string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
 }
