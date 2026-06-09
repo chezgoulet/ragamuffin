@@ -33,6 +33,10 @@ func (m *mockSynthesizer) Synthesize(_ context.Context, query, system string) (s
 	return m.result, m.err
 }
 
+func (m *mockSynthesizer) Compare(_ context.Context, _, _, _, _ string) (string, error) {
+	return "", nil
+}
+
 type mockEmbedder struct {
 	vec   []float32
 	vecs  [][]float32
