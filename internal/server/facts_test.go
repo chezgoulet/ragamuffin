@@ -687,7 +687,7 @@ func TestFactsDelete_MissingKey(t *testing.T) {
 
 // ── PATCH /v1/facts ─────────────────────────────────────────────────────
 
-func TestFactsPatch_BulkUpdate(t *testing.T) {
+func TestFactsPatch_BulkUpdateAll(t *testing.T) {
 	store := newFactsMockStore()
 	store.addPoint("fact-a", "a", "active")
 	store.addPoint("fact-b", "b", "active")
