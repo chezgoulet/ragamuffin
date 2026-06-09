@@ -62,6 +62,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      - name: Get Go version
+        id: goversion
+        run: echo "gover=$(go version | cut -d' ' -f3)" >> "$GITHUB_OUTPUT"
+
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
@@ -72,7 +76,7 @@ jobs:
               -X 'github.com/chezgoulet/ragamuffin/internal/server.Version=${{ github.ref_name }}' \
               -X 'github.com/chezgoulet/ragamuffin/internal/server.Commit=${{ github.sha }}' \
               -X 'github.com/chezgoulet/ragamuffin/internal/server.BuildDate=${{ github.event.head_commit.timestamp || github.event.repository.updated_at }}' \
-              -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=$(go version | cut -d' ' -f3)'" \
+              -X 'github.com/chezgoulet/ragamuffin/internal/server.GoVersion=${{ steps.goversion.outputs.gover }}'" \
             -o ragamuffin-${{ matrix.goos }}-${{ matrix.goarch }} \
             ./cmd/ragamuffin
       - name: Upload artifact
