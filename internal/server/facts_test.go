@@ -464,7 +464,6 @@ func TestFactsGet_ListAll(t *testing.T) {
 	t.Logf("debug: ScrollFiltered returned %d points", len(pts))
 
 	// Step 5: iterate and build response
-	var nextToken string
 	resp := make([]factResponse, 0, limit)
 	for _, p := range pts {
 		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
