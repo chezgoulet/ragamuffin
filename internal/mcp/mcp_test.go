@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -623,4 +624,122 @@ func TestToolDefinitionMarshals(t *testing.T) {
 	if decoded.Name != "search" {
 		t.Errorf("expected 'search', got %q", decoded.Name)
 	}
+}
+
+// ── SSE push from RPC handlers ───────────────────────────────────────────────
+
+func TestHandleToolsList_PushesSSE(t *testing.T) {
+	h := defaultHandler()
+
+	// Register an SSE client
+	h.mu.Lock()
+	ch := make(chan []byte, 10)
+	h.clients["sse-list-test"] = ch
+	h.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp?session_id=sse-list-test",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	// Should get an SSE notification on the channel
+	select {
+	case msg := <-ch:
+		var notification map[string]interface{}
+		if err := json.Unmarshal(msg, &notification); err != nil {
+			t.Fatalf("unmarshal SSE msg: %v", err)
+		}
+		if notification["method"] != "notifications/tools/list_changed" {
+			t.Errorf("expected list_changed notification, got %v", notification["method"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected SSE push for tools/list")
+	}
+}
+
+func TestHandleToolsCall_PushesSSE(t *testing.T) {
+	h := defaultHandler()
+
+	// Register an SSE client
+	h.mu.Lock()
+	ch := make(chan []byte, 10)
+	h.clients["sse-call-test"] = ch
+	h.mu.Unlock()
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp?session_id=sse-call-test",
+		bytes.NewReader([]byte(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ping","arguments":{}}}`)))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	// Should get an SSE push with the response
+	select {
+	case msg := <-ch:
+		var resp JSONRPCResponse
+		if err := json.Unmarshal(msg, &resp); err != nil {
+			t.Fatalf("unmarshal SSE msg: %v", err)
+		}
+		if resp.Error != nil {
+			t.Fatalf("unexpected error in SSE push: %+v", resp.Error)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected SSE push for tools/call")
+	}
+}
+
+func TestHandleSSE_NoFlusher(t *testing.T) {
+	h := defaultHandler()
+	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	w := &nonFlusherResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+
+	// Should return 500 because the ResponseWriter doesn't support Flusher
+	h.ServeHTTP(w, w.ResponseRecorder)
+	if w.ResponseRecorder.Code != 500 {
+		t.Errorf("expected 500 for non-flusher ResponseWriter, got %d", w.ResponseRecorder.Code)
+	}
+}
+
+func TestSSE_EndpointEventContent(t *testing.T) {
+	h := defaultHandler()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/mcp?session_id=ep-test", nil)
+	req = req.WithContext(ctx)
+	w := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(w, req)
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	<-done
+
+	body := w.Body.String()
+	if !strings.Contains(body, "event: endpoint") {
+		t.Error("expected 'event: endpoint' in SSE body")
+	}
+	if !strings.Contains(body, "session_id=ep-test") {
+		t.Error("expected session_id in endpoint URL")
+	}
+}
+
+// nonFlusherResponseWriter wraps httptest.ResponseRecorder but does NOT implement http.Flusher.
+type nonFlusherResponseWriter struct {
+	*httptest.ResponseRecorder
+}
+
+func (w *nonFlusherResponseWriter) Header() http.Header {
+	return w.ResponseRecorder.Header()
+}
+
+func (w *nonFlusherResponseWriter) Write(b []byte) (int, error) {
+	return w.ResponseRecorder.Write(b)
+}
+
+func (w *nonFlusherResponseWriter) WriteHeader(code int) {
+	w.ResponseRecorder.WriteHeader(code)
 }
