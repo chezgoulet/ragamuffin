@@ -147,6 +147,15 @@ func detectProvider(r *http.Request) (string, string) {
 
 // ── Parsed event types ─────────────────────────────────────────────────────────
 
+// gitCommit is a named type for commit changes across all providers.
+// Using a named type ensures Go struct identity works across parsers
+// and the file-collection helper (field order matches JSON tag order).
+type gitCommit struct {
+	Added    []string `json:"added"`
+	Removed  []string `json:"removed"`
+	Modified []string `json:"modified"`
+}
+
 type webhookFile struct {
 	Path   string // file path within repo
 	RawURL string // URL to download raw content
@@ -167,11 +176,7 @@ type githubPushPayload struct {
 	Ref    string `json:"ref"`
 	Before string `json:"before"`
 	After  string `json:"after"`
-	Commits []struct {
-		Added    []string `json:"added"`
-		Removed  []string `json:"removed"`
-		Modified []string `json:"modified"`
-	} `json:"commits"`
+	Commits []gitCommit `json:"commits"`
 	Repository struct {
 		FullName string `json:"full_name"`
 		CloneURL string `json:"clone_url"`
@@ -210,11 +215,7 @@ type gitlabPushPayload struct {
 	Ref     string `json:"ref"`
 	Before  string `json:"before"`
 	After   string `json:"after"`
-	Commits []struct {
-		Added    []string `json:"added"`
-		Modified []string `json:"modified"`
-		Removed  []string `json:"removed"`
-	} `json:"commits"`
+	Commits []gitCommit `json:"commits"`
 	Project struct {
 		HTTPURL           string `json:"git_http_url"`
 		PathWithNamespace string `json:"path_with_namespace"`
@@ -253,11 +254,7 @@ type giteaPushPayload struct {
 	Ref     string `json:"ref"`
 	Before  string `json:"before"`
 	After   string `json:"after"`
-	Commits []struct {
-		Added    []string `json:"added"`
-		Removed  []string `json:"removed"`
-		Modified []string `json:"modified"`
-	} `json:"commits"`
+	Commits []gitCommit `json:"commits"`
 	Repository struct {
 		FullName string `json:"full_name"`
 		CloneURL string `json:"clone_url"`
@@ -310,13 +307,8 @@ func parsePushEvent(provider string, body []byte) (*pushEvent, error) {
 
 // ── File collection ────────────────────────────────────────────────────────────
 
-// Collect unique Added + Modified paths from a commit list.
-// Inlined per parser (no generics to avoid Go struct-field constraint syntax issues).
-func collectChangedFiles(commits []struct {
-	Added    []string `json:"added"`
-	Modified []string `json:"modified"`
-	Removed  []string `json:"removed"`
-}) []string {
+// collectChangedFiles extracts unique Added + Modified paths from commits.
+func collectChangedFiles(commits []gitCommit) []string {
 	seen := make(map[string]bool)
 	var files []string
 	for _, c := range commits {

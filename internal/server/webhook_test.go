@@ -203,13 +203,7 @@ func TestParseGiteaPush(t *testing.T) {
 }
 
 func TestCollectChangedFiles_Deduplicates(t *testing.T) {
-	type commitShape struct {
-		Added    []string `json:"added"`
-		Modified []string `json:"modified"`
-		Removed  []string `json:"removed"`
-	}
-
-	commits := []commitShape{
+	commits := []gitCommit{
 		{Added: []string{"a.md"}, Modified: []string{"b.md"}},
 		{Added: []string{"a.md"}, Modified: []string{"c.md"}}, // a.md appears in both commits
 	}
@@ -221,12 +215,7 @@ func TestCollectChangedFiles_Deduplicates(t *testing.T) {
 }
 
 func TestCollectChangedFiles_Empty(t *testing.T) {
-	type commitShape struct {
-		Added    []string `json:"added"`
-		Modified []string `json:"modified"`
-		Removed  []string `json:"removed"`
-	}
-	files := collectChangedFiles([]commitShape{})
+	files := collectChangedFiles([]gitCommit{})
 	if len(files) != 0 {
 		t.Errorf("expected 0 files, got %d", len(files))
 	}
