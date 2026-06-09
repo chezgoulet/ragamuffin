@@ -703,6 +703,9 @@ func TestSearch(t *testing.T) {
 	if reqCollection != "test_collection" {
 		t.Errorf("expected 'test_collection', got %q", reqCollection)
 	}
+	if len(reqVector) != 3 || reqVector[0] != 0.1 {
+		t.Errorf("expected [0.1, 0.2, 0.3], got %v", reqVector)
+	}
 	if reqLimit != 5 {
 		t.Errorf("expected limit 5, got %d", reqLimit)
 	}
