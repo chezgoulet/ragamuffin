@@ -434,52 +434,82 @@ func TestFactsGet_ListAll(t *testing.T) {
 	store.addPoint("fact-2", "value 2", "active")
 	s := newFactsServer(store)
 
-	// Direct check: does ScrollFiltered return points?
-	ctx := context.Background()
-	pts, err := s.facts.ScrollFiltered(ctx, "test_facts", nil, 100, "")
+	// Step through handleFactsGet manually and check each step
+	req := factsGetRequest("/v1/facts")
+
+	// Step 1: read query params like handler does
+	key := req.URL.Query().Get("key")
+	prefix := req.URL.Query().Get("prefix")
+	t.Logf("debug: key=%q prefix=%q", key, prefix)
+
+	// Step 2: get collection
+	coll := s.factsCollectionFor(req.Context())
+	t.Logf("debug: collection=%q", coll)
+
+	// Step 3: build filter
+	var conditions []*pb.Condition
+	var filter *pb.Filter
+	if len(conditions) > 0 {
+		filter = &pb.Filter{Must: conditions}
+	}
+	t.Logf("debug: filter=%v", filter)
+
+	// Step 4: scroll
+	limit := 100
+	offset := req.URL.Query().Get("before")
+	pts, err := s.facts.ScrollFiltered(req.Context(), coll, filter, uint32(limit+1), offset)
 	if err != nil {
 		t.Fatalf("scroll: %v", err)
 	}
-	t.Logf("debug: ScrollFiltered(nil) returned %d points", len(pts))
+	t.Logf("debug: ScrollFiltered returned %d points", len(pts))
 
-	// Check pointToFact on each point
-	for i, p := range pts {
+	// Step 5: iterate and build response
+	var nextToken string
+	resp := make([]factResponse, 0, limit)
+	for _, p := range pts {
 		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
-		fr := pointToFact(p)
-		t.Logf("debug: pt[%d] key=%q pointToFact=%v", i, k, fr)
+		t.Logf("debug: loop key=%q prefix=%q", k, prefix)
+		if prefix != "" && !strings.HasPrefix(k, prefix) {
+			t.Logf("debug:   skipping due to prefix")
+			continue
+		}
+		if strings.HasPrefix(k, "_ragamuffin/") {
+			t.Logf("debug:   skipping internal key")
+			continue
+		}
+		if len(resp) >= limit {
+			t.Logf("debug:   hit limit")
+			if id := p.Id.GetUuid(); id != "" {
+				nextToken = id
+			}
+			break
+		}
+		if fr := pointToFact(p); fr != nil {
+			t.Logf("debug:   appending entry key=%q", k)
+			resp = append(resp, *fr)
+		} else {
+			t.Logf("debug:   pointToFact returned nil!")
+		}
 	}
-
-	// Simulate exactly what handleFactsGet does
-	req := factsGetRequest("/v1/facts")
-	coll := s.factsCollectionFor(req.Context())
-	var filter *pb.Filter  // nil, like the handler builds when no conditions
-	pts2, err := s.facts.ScrollFiltered(req.Context(), coll, filter, 101, "")
-	if err != nil {
-		t.Fatalf("scroll2: %v", err)
-	}
-	t.Logf("debug: handler-style ScrollFiltered returned %d points", len(pts2))
-	for i, p := range pts2 {
-		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
-		t.Logf("debug: handler pt[%d] key=%q", i, k)
-	}
+	t.Logf("debug: response entries length=%d", len(resp))
 
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, req)
 
-	t.Logf("response: code=%d body=%s", w.Code, w.Body.String())
+	t.Logf("handler response: code=%d body=%s", w.Code, w.Body.String())
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
-	var resp map[string]interface{}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+	var actualResp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&actualResp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	t.Logf("response map: %v", resp)
-	entries, ok := resp["entries"].([]interface{})
+	t.Logf("handler response map: %v", actualResp)
+	entries, ok := actualResp["entries"].([]interface{})
 	if !ok {
-		t.Fatalf("expected entries array, got: %v (type: %T)", resp["entries"], resp["entries"])
+		t.Fatalf("expected entries array, got: %v (type: %T)", actualResp["entries"], actualResp["entries"])
 	}
 	if len(entries) != 2 {
 		t.Errorf("expected 2 entries, got %d", len(entries))
