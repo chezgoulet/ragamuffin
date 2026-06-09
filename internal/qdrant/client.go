@@ -144,10 +144,15 @@ func (c *Client) ensureCollection(ctx context.Context, vectorSize uint64) error 
 }
 
 // Upsert inserts or updates points in the collection.
+// Sets wait=true so Qdrant validates the operation synchronously before returning.
+// Without wait, Qdrant returns "acknowledged" immediately and silently drops points
+// with mismatched vector dimensions, causing data loss (#630).
 func (c *Client) Upsert(ctx context.Context, points []*pb.PointStruct) error {
+	wait := true
 	_, err := c.points.Upsert(ctx, &pb.UpsertPoints{
 		CollectionName: c.collection,
 		Points:         points,
+		Wait:           &wait,
 	})
 	return err
 }

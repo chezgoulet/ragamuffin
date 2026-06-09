@@ -848,11 +848,7 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 			PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
 		},
 		Payload: payload,
-		Vectors: &pb.Vectors{
-			VectorsOptions: &pb.Vectors_Vector{
-				Vector: &pb.Vector{Data: []float32{0, 0, 0, 0}},
-			},
-		},
+		Vectors: s.zeroFactVector(),
 	}
 
 	if err := s.facts.Upsert(ctx, []*pb.PointStruct{point}); err != nil {
