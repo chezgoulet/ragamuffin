@@ -1,54 +1,33 @@
 # 🧣 ragamuffin
 
-> *noun.* A person, typically a child, in ragged, dirty clothes.
-> In our case: a scrappy little knowledge tool that agents can actually use.
+Ragamuffin is an **open-source knowledge server for AI agents.** Point it at a directory of markdown files. It indexes everything into vector search. Your agents get instant semantic recall over your institutional knowledge.
 
----
+No vector database to manage. No pipeline to build. No agent discipline required.
 
-[![testing](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml)
 [![build](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml)
-[![PR check](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml)
-[![Go Reference](https://pkg.go.dev/badge/github.com/chezgoulet/ragamuffin.svg)](https://pkg.go.dev/github.com/chezgoulet/ragamuffin)
-
-**Ragamuffin** serves two roles in one binary:
-
-1. **Vault Knowledge Server** — point it at a directory, it watches for changes, indexes everything into [Qdrant](https://qdrant.tech), and serves a REST API that any agent can curl. No bridge. No translation layer.
-2. **Agent Memory Backend (v0.6)** — plug it into OpenClaw or Hermes via a harness plugin adapter, and every agent gets isolated, persistent, cross-session memory backed by per-agent Qdrant collections. No agent discipline required.
 
 ```bash
-# Vault mode: semantic search over watched directories
-curl -s http://localhost:8000/recall \
-  -d '{"query":"what do we know about that thing?"}'
-
-# Agent memory mode: recall from a specific agent's private vault
-curl -s -X POST http://localhost:8000/vault/agent::dev/recall \
-  -H "Content-Type: application/json" \
-  -d '{"query":"what did Christopher ask about?"}'
-```
-
-Scroll down to [Two Patterns](#two-patterns) for the full picture.
-
-## Quick Start
-
-```bash
-# 1. Qdrant — the only runtime dependency
-docker run -d -p 6334:6334 qdrant/qdrant
-
-# 2. Run Ragamuffin
-docker run -d \
-  -p 8000:8000 \
-  -v /path/to/vault:/opt/vault:ro \
-  -e RAGAMUFFIN_VAULT_PATH=/opt/vault \
-  -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6334 \
-  -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-...  # optional — omit to run without /recall
-  chezgoulet/ragamuffin:latest
-
-# 3. Wait for indexing, then search
+# Point Ragamuffin at your docs. Ask anything.
 curl -s http://localhost:8000/recall \
   -d '{"query":"what should I know about this project?"}'
-
-# Online docs: https://raw.githubusercontent.com/chezgoulet/ragamuffin/main/README.md
 ```
+
+**What makes this different:** we bet our own infrastructure on it. Every agent in the [Chez Goulet](https://chezgoulet.org) system — real agents answering real questions every day — runs on this single binary. The same code that powers production is the code you download. The benchmarks that gate our releases are public. The bugs we find get filed as open issues and fixed.
+
+**One Docker command.** No separate enterprise version and open-source version. There's one binary.
+
+```bash
+docker run -d -p 8000:8000 \
+  -v /path/to/docs:/opt/vault:ro \
+  -e RAGAMUFFIN_VAULT_PATH=/opt/vault \
+  -e RAGAMUFFIN_QDRANT_URL=http://host.docker.internal:6334 \
+  -e RAGAMUFFIN_EMBEDDING_API_KEY=sk-... \
+  chezgoulet/ragamuffin:latest
+```
+
+> *noun.* A person, typically a child, in ragged, dirty clothes. In our case: a scrappy little knowledge tool that agents can actually use.
+
+> See the [full architecture](#two-patterns), [API reference](docs/API.md), or jump to [Quick Start (Development)](#quick-start-development).
 
 ---
 
@@ -132,28 +111,6 @@ Only release PRs from testing to main land here.
 
 > See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
 > walkthrough and [CONTRIBUTING.md](CONTRIBUTING.md) for how to open a PR.
-
-## CI Badges
-
-| Badge | Workflow | What It Guards |
-|---|---|---|
-| [![testing](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml) | `testing-push.yml` | Merge to `testing` builds and pushes `:rolling` Docker image |
-| [![build](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml) | `build.yml` | Release build — full benchmark gauntlet, `:latest` + version tag |
-| [![PR check](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml) | `pr-check.yml` | Every PR: compile, test, vet — must pass before merge |
-
-### Dependency Audit
-
-Ragamuffin minimizes external dependencies. Key libraries:
-
-| Dependency | Purpose |
-|---|---|
-| [`github.com/qdrant/go-client`](https://github.com/qdrant/qdrant-awesome-go) | Qdrant gRPC client + protobuf types |
-| [`modernc.org/sqlite`](https://gitlab.com/cznic/sqlite) | Pure-Go SQLite driver (no CGo) |
-| [`github.com/golang-jwt/jwt/v5`](https://github.com/golang-jwt/jwt) | JWT verification (RSA/ECDSA) |
-| [`golang.org/x/sys`](https://pkg.go.dev/golang.org/x/sys) | Unix syscall helpers for watcher |
-
-No ORM, no web framework, no heavy SDK — the binary stays small and
-self-contained.
 
 ---
 
@@ -1475,6 +1432,18 @@ Replace `{NAME}` with the uppercase vault name (e.g. `RAGAMUFFIN_VAULT_DOCS_CHUN
 | Env Var | Description |
 |---|---|
 | `RAGAMUFFIN_VAULT_{NAME}_LLM_PROVIDER` | LLM provider name |
+
+---
+
+## CI & Dependencies
+
+Ragamuffin uses a **staged-branch pipeline** to keep `:latest` always benchmarked:
+
+```
+dev/* → PR → testing (tests + build :rolling) → PR → main (gauntlet + :latest + release tag)
+```
+
+Three external dependencies: [Qdrant gRPC](https://github.com/qdrant/go-client), [pure-Go SQLite](https://gitlab.com/cznic/sqlite), [JWT verification](https://github.com/golang-jwt/jwt). No ORM, no web framework.
 
 ## How to Contribute
 
