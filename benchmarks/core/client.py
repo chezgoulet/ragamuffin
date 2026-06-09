@@ -58,14 +58,13 @@ class RagamuffinClient:
             return False
 
     def list_vaults(self) -> List[str]:
-        """List available vaults."""
+        """List available vault names."""
         data, _ = self._request("GET", "/vaults")
         if isinstance(data, dict):
             vaults = data.get("vaults", data.get("names", []))
-            if not vaults and "vaults" not in data:
-                # /vaults returns array in some versions
-                vaults = []
-            return list(vaults)
+            if isinstance(vaults, list):
+                return [v["name"] if isinstance(v, dict) else v for v in vaults]
+            return []
         if isinstance(data, list):
             return data
         return []
