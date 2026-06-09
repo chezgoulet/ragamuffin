@@ -356,7 +356,7 @@ func Load() (*Config, error) {
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
-		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", 4)),
+		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536))),
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
 
