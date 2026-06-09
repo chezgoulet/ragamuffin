@@ -225,12 +225,14 @@ def run_phase2_event_stream(
     all_events = listener.events
     valid_payloads = 0
     for evt in all_events:
-        data = evt.get("data", {})
-        # CloudEvents require specversion, type, source, id, time
-        has_spec = isinstance(data, dict) and data.get("specversion") == "1.0"
-        has_type = isinstance(data, dict) and bool(data.get("type"))
-        has_source = isinstance(data, dict) and bool(data.get("source"))
-        if has_spec and has_type and has_source:
+        # The SSE data: line contains the full CloudEvent envelope as JSON.
+        # The envelope has specversion, type, source, id, time at the top level.
+        # The inner data: field is the typed payload (e.g. FactCreatedData).
+        has_spec = isinstance(evt, dict) and evt.get("specversion") == "1.0"
+        has_type = isinstance(evt, dict) and bool(evt.get("type"))
+        has_source = isinstance(evt, dict) and bool(evt.get("source"))
+        has_id = isinstance(evt, dict) and bool(evt.get("id"))
+        if has_spec and has_type and has_source and has_id:
             valid_payloads += 1
 
     events_with_data = len(all_events)
