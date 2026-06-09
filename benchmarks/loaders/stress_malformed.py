@@ -11,12 +11,12 @@ import time
 from typing import List
 
 from benchmarks.core.client import RagamuffinClient
-from benchmarks.core.types import StressResult
+from benchmarks.core.types import StressProfile, StressResult
 
 logger = logging.getLogger("ragamuffin.benchmark")
 
 
-class MalformedInputStressTest:
+class MalformedInputStressTest(StressProfile):
     """Send malformed/garbage inputs and verify graceful handling."""
 
     def __init__(self, client: RagamuffinClient, vault: str = "default"):

@@ -2,8 +2,28 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
+
+
+class StressProfile(ABC):
+    """Interface for stress test implementations.
+
+    All stress tests must implement this interface so the runner can
+    discover and execute them polymorphically.  Each test produces a
+    ``StressResult``.
+    """
+
+    @abstractmethod
+    def name(self) -> str:
+        """Human-readable name for the test (used in output paths)."""
+        ...
+
+    @abstractmethod
+    def run(self) -> "StressResult":
+        """Execute the stress test and return results."""
+        ...
 
 
 @dataclass

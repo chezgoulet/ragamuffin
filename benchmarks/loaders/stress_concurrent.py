@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from benchmarks.core.client import RagamuffinClient
-from benchmarks.core.types import StressResult
+from benchmarks.core.types import StressProfile, StressResult
 
 logger = logging.getLogger("ragamuffin.benchmark")
 
@@ -30,7 +30,7 @@ class _Result:
     error: Optional[str] = None
 
 
-class ConcurrentStressTest:
+class ConcurrentStressTest(StressProfile):
     """Fire N requests concurrently and measure latency/throughput."""
 
     def __init__(

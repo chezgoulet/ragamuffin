@@ -11,7 +11,7 @@ import time
 from typing import List
 
 from benchmarks.core.client import RagamuffinClient
-from benchmarks.core.types import StressResult
+from benchmarks.core.types import StressProfile, StressResult
 
 logger = logging.getLogger("ragamuffin.benchmark")
 
@@ -49,7 +49,7 @@ assigned.
 """
 
 
-class LargeVaultStressTest:
+class LargeVaultStressTest(StressProfile):
     """Scale vault to N sessions and measure recall/ask latency."""
 
     def __init__(
