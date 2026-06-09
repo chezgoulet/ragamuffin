@@ -223,26 +223,33 @@ def run_phase2_event_stream(
     # ── Test 4: Event payload structure ──────────────────────────────────────
     logger.info("Test 4: Event payload structure")
     all_events = listener.events
+    # The SSEListener wraps events as {"type": <event_type>, "data": <CloudEvent>}.
+    # The CloudEvent envelope (specversion, type, source, id, time) is inside
+    # evt["data"], NOT at the top level. Protocol-level events like "connected"
+    # don't have CloudEvent structure — skip them.
+    cloud_events = [
+        e for e in all_events
+        if e.get("type") not in ("connected",)
+        and isinstance(e.get("data"), dict)
+    ]
     valid_payloads = 0
-    for evt in all_events:
-        # The SSE data: line contains the full CloudEvent envelope as JSON.
-        # The envelope has specversion, type, source, id, time at the top level.
-        # The inner data: field is the typed payload (e.g. FactCreatedData).
-        has_spec = isinstance(evt, dict) and evt.get("specversion") == "1.0"
-        has_type = isinstance(evt, dict) and bool(evt.get("type"))
-        has_source = isinstance(evt, dict) and bool(evt.get("source"))
-        has_id = isinstance(evt, dict) and bool(evt.get("id"))
+    for evt in cloud_events:
+        inner = evt["data"]
+        has_spec = inner.get("specversion") == "1.0"
+        has_type = bool(inner.get("type"))
+        has_source = bool(inner.get("source"))
+        has_id = bool(inner.get("id"))
         if has_spec and has_type and has_source and has_id:
             valid_payloads += 1
 
-    events_with_data = len(all_events)
     elapsed = (time.perf_counter() - t0) * 1000
     results.append({
         "test": "events_payload_structure",
-        "pass": valid_payloads == events_with_data,
+        "pass": valid_payloads == len(cloud_events) and len(cloud_events) > 0,
         "latency_ms": round(elapsed, 1),
         "detail": (
-            f"{valid_payloads}/{events_with_data} events have valid CloudEvents structure"
+            f"{valid_payloads}/{len(cloud_events)} CloudEvents have valid structure"
+            f" ({len(all_events)} total events)"
         ),
     })
 
