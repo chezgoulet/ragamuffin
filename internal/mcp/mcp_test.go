@@ -691,12 +691,14 @@ func TestHandleToolsCall_PushesSSE(t *testing.T) {
 func TestHandleSSE_NoFlusher(t *testing.T) {
 	h := defaultHandler()
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
-	w := &nonFlusherResponseWriter{ResponseRecorder: httptest.NewRecorder()}
+	// nonFlusherResponseWriter deliberately avoids embedding httptest.ResponseRecorder
+	// which in Go 1.20+ has a Flush() method (satisfying http.Flusher).
+	w := newNonFlusherResponseWriter()
 
 	// Should return 500 because the ResponseWriter doesn't support Flusher
 	h.ServeHTTP(w, req)
-	if w.ResponseRecorder.Code != 500 {
-		t.Errorf("expected 500 for non-flusher ResponseWriter, got %d", w.ResponseRecorder.Code)
+	if w.code != 500 {
+		t.Errorf("expected 500 for non-flusher ResponseWriter, got %d", w.code)
 	}
 }
 
@@ -727,19 +729,33 @@ func TestSSE_EndpointEventContent(t *testing.T) {
 	}
 }
 
-// nonFlusherResponseWriter wraps httptest.ResponseRecorder but does NOT implement http.Flusher.
+// nonFlusherResponseWriter is an http.ResponseWriter that does NOT implement
+// http.Flusher. Avoids embedding httptest.ResponseRecorder because that type
+// gained a Flush() method in Go 1.20+ (satisfying http.Flusher).
 type nonFlusherResponseWriter struct {
-	*httptest.ResponseRecorder
+	header    http.Header
+	buf       bytes.Buffer
+	code      int
+	wroteCode bool
 }
 
-func (w *nonFlusherResponseWriter) Header() http.Header {
-	return w.ResponseRecorder.Header()
+func newNonFlusherResponseWriter() *nonFlusherResponseWriter {
+	return &nonFlusherResponseWriter{header: make(http.Header)}
 }
+
+func (w *nonFlusherResponseWriter) Header() http.Header { return w.header }
 
 func (w *nonFlusherResponseWriter) Write(b []byte) (int, error) {
-	return w.ResponseRecorder.Write(b)
+	if !w.wroteCode {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.buf.Write(b)
 }
 
 func (w *nonFlusherResponseWriter) WriteHeader(code int) {
-	w.ResponseRecorder.WriteHeader(code)
+	if w.wroteCode {
+		return
+	}
+	w.code = code
+	w.wroteCode = true
 }
