@@ -80,8 +80,12 @@ func TestDocumentUpload_ExtractionSurvivesRequestCancellation(t *testing.T) {
 	mg := indexer.NewManager()
 	mockQC := &mockQdrantStore{}
 	mockEC := &testutil.MockEmbedder{
-		EmbedSingleFn: func(_ context.Context, _ string) ([]float32, error) {
-			return []float32{0.1, 0.2, 0.3, 0.4}, nil
+		EmbedFn: func(_ context.Context, texts []string) ([][]float32, error) {
+			vec := make([][]float32, len(texts))
+			for i := range texts {
+				vec[i] = []float32{0.1, 0.2, 0.3, 0.4}
+			}
+			return vec, nil
 		},
 	}
 	testIdx := indexer.New("/tmp/test-vault", mockQC, mockEC, testLogger(t))
