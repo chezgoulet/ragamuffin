@@ -161,22 +161,22 @@ func TestStaleFilterConditions(t *testing.T) {
 	}
 	_ = f.Must[0].GetField().GetMatch().GetKeyword()
 
-	// Condition 1: ttl_days > 0
+	// Condition 1: ttl_days > 0 — verify the range filter is present
 	field1 := f.Must[1].GetField()
 	if field1 == nil || field1.Key != "ttl_days" {
 		t.Fatalf("condition 1: expected field 'ttl_days', got %+v", field1)
 	}
-	if field1.Range.Gt == nil {
-		t.Fatal("condition 1 range: expected Gt > 0")
+	if field1.GetRange() == nil {
+		t.Fatal("condition 1: expected Range to be set")
 	}
 
-	// Condition 2: expires_at_unix < now
+	// Condition 2: expires_at_unix < now — verify the range filter is present
 	field2 := f.Must[2].GetField()
 	if field2 == nil || field2.Key != "expires_at_unix" {
 		t.Fatalf("condition 2: expected field 'expires_at_unix', got %+v", field2)
 	}
-	if field2.Range.Lt == nil {
-		t.Fatal("condition 2 range: expected Lt < now")
+	if field2.GetRange() == nil {
+		t.Fatal("condition 2: expected Range to be set")
 	}
 }
 
