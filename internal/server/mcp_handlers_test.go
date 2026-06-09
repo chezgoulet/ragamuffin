@@ -104,10 +104,7 @@ func TestMCPTools_RequiredFields(t *testing.T) {
 
 	for _, tool := range tools {
 		t.Run(tool.Name, func(t *testing.T) {
-			schema, ok := tool.InputSchema.(map[string]interface{})
-			if !ok {
-				t.Fatal("expected map input schema")
-			}
+			schema := tool.InputSchema // already map[string]interface{}
 
 			// Every tool with a "required" field should have non-empty required list
 			if req, has := schema["required"]; has {
