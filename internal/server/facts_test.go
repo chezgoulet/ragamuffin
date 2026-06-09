@@ -436,6 +436,8 @@ func TestFactsGet_ListAll(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, factsGetRequest("/v1/facts"))
 
+	t.Logf("response: code=%d body=%s", w.Code, w.Body.String())
+
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -444,9 +446,10 @@ func TestFactsGet_ListAll(t *testing.T) {
 	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	t.Logf("response map: %v", resp)
 	entries, ok := resp["entries"].([]interface{})
 	if !ok {
-		t.Fatal("expected entries array")
+		t.Fatalf("expected entries array, got: %v (type: %T)", resp["entries"], resp["entries"])
 	}
 	if len(entries) != 2 {
 		t.Errorf("expected 2 entries, got %d", len(entries))
