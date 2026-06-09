@@ -334,6 +334,7 @@ func main() {
 	prunerCfg.ConflictThreshold = cfg.PrunerConflictThreshold
 	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
 	prunerCfg.ImportanceThreshold = cfg.PrunerImportanceThreshold
+	prunerCfg.ReembedScanInterval = cfg.PrunerReembedInterval
 	prunerCfg.LogScanFn = func(scanName string, dur time.Duration, flagged int, errStr string) {
 		body := fmt.Sprintf("scan=%s duration=%s facts_flagged=%d", scanName, dur, flagged)
 		if errStr != "" {

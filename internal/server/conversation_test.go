@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
@@ -36,8 +37,10 @@ func (m *mockLLM) Compare(_ context.Context, chunkA, chunkB, sourceA, sourceB st
 func (m *mockLLM) Health(_ context.Context) error { return nil }
 
 type mockEmbedder struct {
+	mu            sync.Mutex
 	embedSingleFn func(text string) []float32
 	embedErr      bool
+	callCount     int
 }
 
 func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -45,16 +48,27 @@ func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 }
 
 func (m *mockEmbedder) EmbedSingle(_ context.Context, text string) ([]float32, error) {
-	if m.embedErr {
+	m.mu.Lock()
+	m.callCount++
+	errOn := m.embedErr
+	fn := m.embedSingleFn
+	m.mu.Unlock()
+	if errOn {
 		return nil, fmt.Errorf("mock: embed failed")
 	}
-	if m.embedSingleFn != nil {
-		return m.embedSingleFn(text), nil
+	if fn != nil {
+		return fn(text), nil
 	}
 	return []float32{}, nil
 }
 
 func (m *mockEmbedder) Health(_ context.Context) error { return nil }
+
+func (m *mockEmbedder) Calls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
 
 // ── Mock FactStore for conversation tests ─────────────────────────────────────
 
@@ -86,6 +100,7 @@ func (m *conversationMockStore) Close() error { return nil }
 func (m *conversationMockStore) GetVectorSize(_ context.Context, collectionName string) (uint64, error) { return 0, nil }
 func (m *conversationMockStore) GetPoints(_ context.Context, collection string, ids []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) { return nil, nil }
 func (m *conversationMockStore) SetPayload(_ context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error { return nil }
+func (m *conversationMockStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error { return nil }
 func (m *conversationMockStore) Collection() string { return "test_facts" }
 
 // ── Test: confidence normalization (1-10 → 0.0-1.0) ───────────────────────────
@@ -281,6 +296,12 @@ func TestIngestConversation_EmbeddingFailureFallsBack(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
+	// Embedder was called (the real embedding.Client now retries before
+	// returning an error; the mock returns error immediately for testing)
+	if calls := mockEmbed.Calls(); calls == 0 {
+		t.Error("embedder.EmbedSingle was never called")
+	}
+
 	// Point should still be stored (with zero vector fallback)
 	if len(mockStore.points) == 0 {
 		t.Fatal("no points upserted — embedding failure should not prevent storage")
@@ -302,6 +323,9 @@ func TestIngestConversation_EmbeddingFailureFallsBack(t *testing.T) {
 	if !allZero {
 		t.Error("expected zero vector fallback on embedding failure, but got non-zero values")
 	}
+
+	// Pruner's ReembedScan will re-embed this zero-vector fact on the next
+	// cycle once the embedding service is available again.
 }
 
 // ── Test: empty conversation returns error ────────────────────────────────────

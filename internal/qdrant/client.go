@@ -344,6 +344,17 @@ func (c *Client) SetPayload(ctx context.Context, collection string, points []*pb
 	return err
 }
 
+// UpdateVectors updates the vector data on existing points without affecting
+// their payload fields. Uses Qdrant's UpdatePointVectors gRPC API.
+func (c *Client) UpdateVectors(ctx context.Context, collection string, points []*pb.PointVectors) error {
+	req := &pb.UpdatePointVectors{
+		CollectionName: collection,
+		Points:         points,
+	}
+	_, err := c.points.UpdateVectors(ctx, req)
+	return err
+}
+
 // Close shuts down the gRPC connection.
 func (c *Client) Close() error {
 	if c.conn == nil {

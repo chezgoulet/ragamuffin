@@ -63,6 +63,10 @@ type FactStore interface {
 	// for field-level partial updates.
 	SetPayload(ctx context.Context, collection string, points []*pb.PointId, payload map[string]*pb.Value) error
 
+	// UpdateVectors updates the vector data on existing points without
+	// affecting their payload fields.
+	UpdateVectors(ctx context.Context, collection string, points []*pb.PointVectors) error
+
 	// Collection returns the primary collection name this client targets.
 	Collection() string
 }
