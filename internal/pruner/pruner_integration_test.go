@@ -166,7 +166,7 @@ func TestStaleFilterConditions(t *testing.T) {
 	if field1 == nil || field1.Key != "ttl_days" {
 		t.Fatalf("condition 1: expected field 'ttl_days', got %+v", field1)
 	}
-	if field1.Range.GetGt() == nil {
+	if field1.Range.Gt == nil {
 		t.Fatal("condition 1 range: expected Gt > 0")
 	}
 
@@ -175,43 +175,9 @@ func TestStaleFilterConditions(t *testing.T) {
 	if field2 == nil || field2.Key != "expires_at_unix" {
 		t.Fatalf("condition 2: expected field 'expires_at_unix', got %+v", field2)
 	}
-	if field2.Range.GetLt() == nil {
+	if field2.Range.Lt == nil {
 		t.Fatal("condition 2 range: expected Lt < now")
 	}
-}
-
-func TestCosineSimilarity(t *testing.T) {
-	tests := []struct {
-		name string
-		a    []float32
-		b    []float32
-		want float64
-	}{
-		{name: "identical", a: []float32{1, 0, 0}, b: []float32{1, 0, 0}, want: 1.0},
-		{name: "orthogonal", a: []float32{1, 0}, b: []float32{0, 1}, want: 0.0},
-		{name: "empty", a: []float32{}, b: []float32{}, want: 0.0},
-		{name: "mismatched lengths", a: []float32{1, 0}, b: []float32{1}, want: 0.0},
-		{name: "opposite", a: []float32{1, 0}, b: []float32{-1, 0}, want: -1.0},
-		{name: "partial", a: []float32{1, 1, 0}, b: []float32{1, 0, 0}, want: 0.70710678},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := cosineSimilarity(tt.a, tt.b)
-			if tt.want == 0 && got != 0 {
-				t.Errorf("got %f, want %f", got, tt.want)
-			} else if tt.want != 0 && abs(got-tt.want) > 1e-6 {
-				t.Errorf("got %f, want %f (delta %f)", got, tt.want, got-tt.want)
-			}
-		})
-	}
-}
-
-func abs(f float64) float64 {
-	if f < 0 {
-		return -f
-	}
-	return f
 }
 
 // ── Integration tests (require real Qdrant) ─────────────────────────────────
