@@ -43,7 +43,7 @@ type Turn struct {
 var ActionKeywords = []string{
 	"run", "check", "read", "write", "grep", "restart", "verify",
 	"curl", "exec", "edit", "apply", "build", "test", "deploy",
-	"install", "configure", "create", "update", "delete", "copy",
+	"fix", "install", "configure", "create", "update", "delete", "copy",
 	"move", "start", "stop", "reload", "rebuild", "compile",
 	"inspect", "examine", "search", "query", "fetch", "list",
 	"step 1", "step 2", "step 3",

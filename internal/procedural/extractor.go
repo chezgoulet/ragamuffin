@@ -112,31 +112,45 @@ var negativeSignals = []string{
 	"timeout", "unreachable", "unavailable",
 }
 
-// hasPositiveOutcome checks the turn after the last action for positive outcome.
+// hasPositiveOutcome checks up to 2 turns after the last action for a positive outcome.
+// We look ahead up to 2 positions because a system tool output may appear between
+// the last action and the user's confirmation (e.g., user: "ok that fixed it").
 func hasPositiveOutcome(turns []Turn, lastActionIdx int) bool {
-	nextIdx := lastActionIdx + 1
-	if nextIdx >= len(turns) {
+	// Check up to 2 turns ahead: the immediate next turn (often system output)
+	// and the one after that (often user confirmation).
+	maxCheck := lastActionIdx + 2
+	if maxCheck >= len(turns) {
+		maxCheck = len(turns) - 1
+	}
+
+	startIdx := lastActionIdx + 1
+	if startIdx >= len(turns) {
 		return false
 	}
 
-	nextTurn := turns[nextIdx]
-	if nextTurn.Role != "user" && nextTurn.Role != "system" {
-		return false
-	}
-
-	content := strings.ToLower(nextTurn.Content)
-
-	// Check for negative signals first (failure beats success)
-	for _, sig := range negativeSignals {
-		if strings.Contains(content, sig) {
-			return false
+	// Step 1: scan for negative signals in all checked turns
+	for i := startIdx; i <= maxCheck; i++ {
+		if turns[i].Role != "user" && turns[i].Role != "system" {
+			continue
+		}
+		content := strings.ToLower(turns[i].Content)
+		for _, sig := range negativeSignals {
+			if strings.Contains(content, sig) {
+				return false
+			}
 		}
 	}
 
-	// Check for positive signals
-	for _, sig := range positiveSignals {
-		if strings.Contains(content, sig) {
-			return true
+	// Step 2: scan for positive signals in all checked turns
+	for i := startIdx; i <= maxCheck; i++ {
+		if turns[i].Role != "user" && turns[i].Role != "system" {
+			continue
+		}
+		content := strings.ToLower(turns[i].Content)
+		for _, sig := range positiveSignals {
+			if strings.Contains(content, sig) {
+				return true
+			}
 		}
 	}
 

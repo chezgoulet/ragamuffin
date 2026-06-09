@@ -85,7 +85,7 @@ func TestFirstVerb(t *testing.T) {
 	}{
 		{[]string{"Fix", "nginx", "config"}, "Fix"},
 		{[]string{"Install", "postgres"}, "Install"},
-		{[]string{"The", "system", "check", "failed"}, ""},
+		{[]string{"The", "system", "check", "failed"}, "check"},
 		{[]string{"run", "check"}, "run"},
 	}
 	for _, tt := range tests {
