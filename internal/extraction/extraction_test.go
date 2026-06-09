@@ -675,8 +675,8 @@ func TestGetPointVector_NoVectors(t *testing.T) {
 
 func TestGetPointVector_HasVector(t *testing.T) {
 	pt := &pb.RetrievedPoint{
-		Vectors: &pb.Vectors{
-			VectorsOptions: &pb.Vectors_Vector{
+		Vectors: &pb.VectorsOutput{
+			VectorsOptions: &pb.VectorsOutput_Vector{
 				Vector: &pb.Vector{
 					Data: []float32{0.1, 0.2, 0.3},
 				},
