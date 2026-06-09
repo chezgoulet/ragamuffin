@@ -49,6 +49,8 @@ func (s *factsMockStore) addPoint(key, value, status string, tags ...string) {
 		"conflict_resolved":  {Kind: &pb.Value_BoolValue{BoolValue: true}},
 		"confirmation_count": {Kind: &pb.Value_DoubleValue{DoubleValue: 1}},
 		"access_count":       {Kind: &pb.Value_DoubleValue{DoubleValue: 0}},
+		"valid_from_unix":    {Kind: &pb.Value_DoubleValue{DoubleValue: 0}},
+		"valid_until_unix":   {Kind: &pb.Value_DoubleValue{DoubleValue: 0}},
 		"contradicts":        {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: []*pb.Value{}}}},
 		"supports":           {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: []*pb.Value{}}}},
 	}
@@ -203,7 +205,7 @@ func newFactsServer(store *factsMockStore) *Server {
 		cfg:         &config.Config{FactsCollection: "test_facts", FactsVectorSize: 4, AutoProvisionVaults: false},
 		facts:       store,
 		shutdownCtx: ctx,
-		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})),
+		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 }
 

@@ -501,12 +501,10 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	// Prefix filtering: Qdrant has no native string prefix match for payload
 	// fields, so we filter in Go. The number of scroll results may exceed the
 	// requested limit; we iterate until we fill the limit or run out.
-	s.log(r.Context()).Info("DEBUG handleFactsGet", "scroll_points", len(points), "filter", filter, "limit", limit, "prefix", prefix)
 	var nextToken string
 	resp := make([]factResponse, 0, limit)
 	for _, p := range points {
 		key, _ := qutil.GetPayloadString(p.Payload, "fact_key")
-		s.log(r.Context()).Info("DEBUG loop", "key", key, "prefix", prefix)
 		if prefix != "" && !strings.HasPrefix(key, prefix) {
 			continue
 		}
@@ -524,7 +522,6 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		if fr := pointToFact(p); fr != nil {
 			resp = append(resp, *fr)
 		}
-		s.log(r.Context()).Info("DEBUG loop end", "resp_len", len(resp))
 	}
 
 	respBody := map[string]any{
@@ -533,7 +530,6 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	if nextToken != "" {
 		respBody["next_token"] = nextToken
 	}
-	s.log(r.Context()).Info("DEBUG final", "entries_len", len(resp), "nextToken", nextToken)
 	writeJSON(w, 200, respBody)
 }
 
