@@ -328,6 +328,15 @@ func (s *Store) AppendTurn(ctx context.Context, sessionID, content, role string)
 	}
 	defer tx.Rollback()
 
+	// Verify session exists before inserting a turn
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE id = ?`, sessionID).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("logstore: check session: %w", err)
+	}
+	if exists == 0 {
+		return nil, fmt.Errorf("logstore: session %q not found", sessionID)
+	}
+
 	result, err := tx.ExecContext(ctx,
 		`INSERT INTO session_turns (session_id, content, role, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, content, role, now,
