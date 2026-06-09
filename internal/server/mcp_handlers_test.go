@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 )
 
@@ -23,20 +24,26 @@ func testMCPLogger(t *testing.T) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// newMCPTestServer creates a minimal Server for testing MCP adapters.
-// Most do* methods will return errors because dependencies are nil,
-// but the arg extraction and validation paths are exercised.
+// newMCPTestServer creates a minimal Server for testing MCP adapters, with
+// an in-memory logstore so session CRUD operations work end-to-end.
 func newMCPTestServer(t *testing.T) *Server {
 	t.Helper()
+
+	sto, err := logstore.Open(":memory:")
+	if err != nil {
+		t.Fatalf("open in-memory logstore: %v", err)
+	}
+	t.Cleanup(func() { sto.Close() })
+
 	srv := &Server{
 		cfg:      minimalConfig(),
-		facts:    &conversationMockStore{},  // satisfies qdrant.FactStore, all methods return nil/0
+		facts:    &conversationMockStore{}, // satisfies qdrant.FactStore, all methods return nil/0
 		logger:   testMCPLogger(t),
+		logStore: sto,
 		indexers: indexer.NewManager(),
 	}
 	// Add a no-op indexer for "test-vault" so doStore doesn't
 	// trigger provisionVault (which would try to connect to Qdrant).
-	// nil qdrant + nil embedder is safe for Stats() and errors on Ingest().
 	idx := indexer.New("/tmp/test-vault", "test-vault", nil, nil, srv.logger)
 	if err := srv.indexers.Add("test-vault", idx, nil); err != nil {
 		t.Fatalf("add test indexer: %v", err)
@@ -84,7 +91,6 @@ func TestMCPTools_Definitions(t *testing.T) {
 		}
 	}
 
-	// Verify each tool has required fields
 	for _, tool := range tools {
 		if tool.Name == "" {
 			t.Error("found tool with empty name")
@@ -104,23 +110,13 @@ func TestMCPTools_RequiredFields(t *testing.T) {
 
 	for _, tool := range tools {
 		t.Run(tool.Name, func(t *testing.T) {
-			schema := tool.InputSchema // already map[string]interface{}
+			schema := tool.InputSchema
 
-			// Every tool with a "required" field should have non-empty required list
-			if req, has := schema["required"]; has {
-				if reqList, ok := req.([]interface{}); ok && len(reqList) > 0 {
-					t.Logf("  required: %v", reqList)
-				}
-			}
-
-			// Every tool should have "type":"object"
 			if schema["type"] != "object" {
 				t.Errorf("expected input schema type 'object', got %v", schema["type"])
 			}
-
-			// Every tool should have a "properties" map
 			if _, has := schema["properties"]; !has {
-				t.Errorf("missing properties in input schema")
+				t.Errorf("missing properties in input schema for %q", tool.Name)
 			}
 		})
 	}
@@ -144,17 +140,17 @@ func TestMCPDispatch_RoutesCorrectly(t *testing.T) {
 		wantErr  bool
 		errMsg   string
 	}{
-		{"ragamuffin_recall", true, "query is required"},            // passes arg validation
+		{"ragamuffin_recall", true, "query is required"},
 		{"ragamuffin_ask", true, "query is required"},
-		{"ragamuffin_store", true, "write access required"},         // needs auth claims
-		{"ragamuffin_draft", true, "title is required"},             // passes to doDraft
-		{"ragamuffin_facts", true, "operation is required"},
-		{"ragamuffin_audit", false, ""},                             // optional args, may succeed or fail at do*
-		{"ragamuffin_graph", true, `vault "default" not found`},     // needs real indexer
-		{"ragamuffin_stats", false, ""},                             // calls doStats
-		{"ragamuffin_session_create", true, "agent_id is required"},
+		{"ragamuffin_store", true, "content is required"},
+		{"ragamuffin_draft", true, "title is required"},
+		{"ragamuffin_facts", true, "operation is required: list or upsert"},
+		{"ragamuffin_audit", false, ""},
+		{"ragamuffin_graph", true, `vault "default" not found`},
+		{"ragamuffin_stats", false, ""},
+		{"ragamuffin_session_create", true, "session_id is required"},
 		{"ragamuffin_session_get", true, "session_id is required"},
-		{"ragamuffin_session_list", false, ""},                      // calls doListSessions
+		{"ragamuffin_session_list", false, ""},
 		{"ragamuffin_get_chunk", true, "chunk_id is required"},
 		{"ragamuffin_turn_append", true, "session_id is required"},
 	}
@@ -208,7 +204,6 @@ func TestMCPVaultContext_WithVault(t *testing.T) {
 
 func TestMCPVaultContext_EmptyVault(t *testing.T) {
 	srv := newMCPTestServer(t)
-
 	ctx := srv.mcpVaultContext(context.Background(), map[string]interface{}{})
 	vault := vaultFromContext(ctx)
 	if vault != "" {
@@ -220,7 +215,6 @@ func TestMCPVaultContext_EmptyVault(t *testing.T) {
 
 func TestMCPRecall_MissingQuery(t *testing.T) {
 	srv := newMCPTestServer(t)
-
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_recall", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing query")
@@ -232,7 +226,6 @@ func TestMCPRecall_MissingQuery(t *testing.T) {
 
 func TestMCPRecall_InvalidDetail(t *testing.T) {
 	srv := newMCPTestServer(t)
-	// mcpRecall validates detail arg before calling doRecall
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_recall", map[string]interface{}{
 		"query":  "test",
 		"detail": "l3",
@@ -260,18 +253,12 @@ func TestMCPAsk_MissingQuery(t *testing.T) {
 
 func TestMCPAsk_DefaultMode(t *testing.T) {
 	srv := newMCPTestServer(t)
-	// Make a request that would pass validation.
-	// It will fail at doAsk because no LLM is configured, but we verify
-	// that the mode defaults to "auto" before reaching doAsk.
-	// We can't directly check the default, but we can confirm it doesn't
-	// fail with "mode is required" or similar.
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_ask", map[string]interface{}{
 		"query": "test question",
 	})
 	if err == nil {
 		t.Fatal("expected error from doAsk (no LLM configured)")
 	}
-	// Should not be an arg validation error
 	if err.Error() == "query is required" {
 		t.Fatal("unexpected validation error after query was provided")
 	}
@@ -281,20 +268,14 @@ func TestMCPAsk_DefaultMode(t *testing.T) {
 
 func TestMCPStore_ArgsPassThrough(t *testing.T) {
 	srv := newMCPTestServer(t)
-	// mcpStore checks for write-auth claims before extracting args.
-	// Without auth, the check short-circuits (claims == nil → skip).
-	// Both content and source are provided, so arg extraction passes.
-	// doStore then fails because no indexer is registered for the default vault.
-	// We test the adapter directly to avoid provisionVault connecting to Qdrant.
 	_, err := srv.mcpStore(context.Background(), map[string]interface{}{
 		"content": "test content",
 		"source":  "test source",
 		"vault":   "test-vault",
 	})
 	if err == nil {
-		t.Fatal("expected error — needs indexer for the vault")
+		t.Fatal("expected error — needs embedder on indexer")
 	}
-	// Should not be a missing-arg error
 	if err.Error() == "content is required" || err.Error() == "source is required" {
 		t.Errorf("args should pass validation, got: %v", err)
 	}
@@ -331,40 +312,50 @@ func TestMCPFacts_List_DefaultLimit(t *testing.T) {
 	result, err := srv.mcpDispatch(context.Background(), "ragamuffin_facts", map[string]interface{}{
 		"operation": "list",
 	})
-	// Will likely fail at doFactsList because no facts client configured,
-	// but the point is that arg extraction succeeds with default limit.
 	if err != nil {
-		// Should not be "limit is required" — default is 100
 		if err.Error() == "limit is required" {
 			t.Error("limit should default to 100 without argument")
 		}
-		_ = result
+		return
+	}
+	resp, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map result")
+	}
+	facts, _ := resp["facts"].([]interface{})
+	if len(facts) != 0 {
+		t.Errorf("expected empty facts list, got %d facts", len(facts))
 	}
 }
 
 // ── Adapter: mcpAudit ─────────────────────────────────────────────────────────
 
-func TestMCPAudit_DefaultValues(t *testing.T) {
+func TestMCPAudit_SucceedsWithDefaults(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_audit", map[string]interface{}{})
-	if err == nil {
-		t.Fatal("expected error — audit requires LLM and facts")
+	result, err := srv.mcpDispatch(context.Background(), "ragamuffin_audit", map[string]interface{}{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should fail at doAudit, not arg validation
-	if err.Error() == "stale_days is required" || err.Error() == "checks is required" {
-		t.Error("audit args should have defaults")
+	resp, ok := result.(map[string]interface{})
+	if !ok {
+		t.Fatal("expected map result")
+	}
+	if _, has := resp["checks_run"]; !has {
+		t.Error("expected checks_run in response")
+	}
+	if _, has := resp["stale_files"]; !has {
+		t.Error("expected stale_files in response")
 	}
 }
 
 // ── Adapter: mcpGraph ─────────────────────────────────────────────────────────
 
-func TestMCPGraph_DefaultValues(t *testing.T) {
+func TestMCPGraph_DefaultVault(t *testing.T) {
 	srv := newMCPTestServer(t)
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error — needs real vault/indexer")
 	}
-	// Should fail because vault "default" is not found
 	if err.Error() != `vault "default" not found` {
 		t.Errorf("expected vault not found error, got %q", err.Error())
 	}
@@ -381,9 +372,8 @@ func TestMCPDraft_ArgsPassThrough(t *testing.T) {
 		"mode":        "direct",
 	})
 	if err == nil {
-		t.Fatal("expected error — needs vault path and git provider")
+		t.Fatal("expected error — needs vault path")
 	}
-	// Should not be "title is required" or similar validation errors
 	if err.Error() == "title is required" || err.Error() == "target_path is required" {
 		t.Error("args should pass validation with required fields")
 	}
@@ -391,14 +381,14 @@ func TestMCPDraft_ArgsPassThrough(t *testing.T) {
 
 // ── Adapter: mcpSessionCreate ─────────────────────────────────────────────────
 
-func TestMCPSessionCreate_MissingAgentID(t *testing.T) {
+func TestMCPSessionCreate_MissingArgs(t *testing.T) {
 	srv := newMCPTestServer(t)
 	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_session_create", map[string]interface{}{})
 	if err == nil {
-		t.Fatal("expected error for missing agent_id")
+		t.Fatal("expected error for missing session_id")
 	}
-	if err.Error() != "agent_id is required" {
-		t.Errorf("expected 'agent_id is required', got %q", err.Error())
+	if err.Error() != "session_id is required" {
+		t.Errorf("expected 'session_id is required', got %q", err.Error())
 	}
 }
 
@@ -421,9 +411,9 @@ func TestMCPTurnAppend_MissingRequired(t *testing.T) {
 	srv := newMCPTestServer(t)
 
 	tests := []struct {
-		name    string
-		args    map[string]interface{}
-		errMsg  string
+		name   string
+		args   map[string]interface{}
+		errMsg string
 	}{
 		{
 			"missing session_id",
@@ -467,7 +457,6 @@ func TestMCPGetChunk_MissingChunkID(t *testing.T) {
 
 func TestMCPHandler_ServeHTTP_POST(t *testing.T) {
 	srv := newMCPTestServer(t)
-	// Initialize the MCP handler as the server does
 	srv.mcpHandler = mcp.New(srv.mcpTools(), srv.mcpDispatch, srv.logger, "1.0.0")
 
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize"}`
@@ -523,7 +512,9 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	srv.mcpHandler.ServeHTTP(w, req)
 
 	var resp mcp.JSONRPCResponse
-	json.NewDecoder(w.Body).Decode(&resp)
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
 	if resp.Error != nil {
 		t.Fatalf("unexpected error: %+v", resp.Error)
 	}
@@ -536,7 +527,6 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	if !ok || len(tools) == 0 {
 		t.Fatal("expected non-empty tools list")
 	}
-	// Should have all 13 tools from the server
 	if len(tools) != 13 {
 		t.Errorf("expected 13 tools, got %d", len(tools))
 	}
