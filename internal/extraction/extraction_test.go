@@ -435,8 +435,9 @@ func TestAvgConfidence_Multiple(t *testing.T) {
 		{Confidence: 0.9},
 	}
 	expected := (0.5 + 0.7 + 0.9) / 3.0
-	if avgConfidence(facts) != expected {
-		t.Errorf("expected %f, got %f", expected, avgConfidence(facts))
+	got := avgConfidence(facts)
+	if math.Abs(got-expected) > 1e-9 {
+		t.Errorf("expected %f, got %f", expected, got)
 	}
 }
 
