@@ -434,61 +434,22 @@ func TestFactsGet_ListAll(t *testing.T) {
 	store.addPoint("fact-2", "value 2", "active")
 	s := newFactsServer(store)
 
-	// Step through handleFactsGet manually and check each step
 	req := factsGetRequest("/v1/facts")
 
-	// Step 1: read query params like handler does
-	key := req.URL.Query().Get("key")
-	prefix := req.URL.Query().Get("prefix")
-	t.Logf("debug: key=%q prefix=%q", key, prefix)
-
-	// Step 2: get collection
-	coll := s.factsCollectionFor(req.Context())
-	t.Logf("debug: collection=%q", coll)
-
-	// Step 3: build filter
-	var conditions []*pb.Condition
-	var filter *pb.Filter
-	if len(conditions) > 0 {
-		filter = &pb.Filter{Must: conditions}
-	}
-	t.Logf("debug: filter=%v", filter)
-
-	// Step 4: scroll
-	limit := 100
-	offset := req.URL.Query().Get("before")
-	pts, err := s.facts.ScrollFiltered(req.Context(), coll, filter, uint32(limit+1), offset)
-	if err != nil {
-		t.Fatalf("scroll: %v", err)
-	}
-	t.Logf("debug: ScrollFiltered returned %d points", len(pts))
-
-	// Step 5: iterate and build response
-	resp := make([]factResponse, 0, limit)
+	// Write simulation result via writeJSON to check if writeJSON is the issue
+	simW := httptest.NewRecorder()
+	c := s.factsCollectionFor(req.Context())
+	pts, _ := s.facts.ScrollFiltered(req.Context(), c, nil, 101, "")
+	simResp := make([]factResponse, 0, 100)
 	for _, p := range pts {
-		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
-		t.Logf("debug: loop key=%q prefix=%q", k, prefix)
-		if prefix != "" && !strings.HasPrefix(k, prefix) {
-			t.Logf("debug:   skipping due to prefix")
-			continue
-		}
-		if strings.HasPrefix(k, "_ragamuffin/") {
-			t.Logf("debug:   skipping internal key")
-			continue
-		}
-		if len(resp) >= limit {
-			t.Logf("debug:   hit limit")
-			break
-		}
 		if fr := pointToFact(p); fr != nil {
-			t.Logf("debug:   appending entry key=%q", k)
-			resp = append(resp, *fr)
-		} else {
-			t.Logf("debug:   pointToFact returned nil!")
+			simResp = append(simResp, *fr)
 		}
 	}
-	t.Logf("debug: response entries length=%d (before handler call)", len(resp))
+	writeJSON(simW, 200, map[string]any{"entries": simResp})
+	t.Logf("simulation via writeJSON: code=%d body=%s", simW.Code, simW.Body.String())
 
+	// Now test the handler
 	w := httptest.NewRecorder()
 	s.handleFactsGet(w, req)
 
