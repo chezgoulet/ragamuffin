@@ -1,0 +1,34 @@
+{
+  "comments": "Example OpenClaw config for a Ragamuffin-powered agent",
+  "agents": {
+    "my-agent": {
+      "personality": "reference/ragamuffin-agent",
+      "model": "litellm/claude-sonnet-4-6",
+      "tools": {
+        "allow": [
+          "exec",
+          "web_search",
+          "web_fetch",
+          "read",
+          "write",
+          "edit",
+          "memory_search",
+          "memory_get",
+          "canvas",
+          "image",
+          "image_generate",
+          "message"
+        ]
+      },
+      "env": {
+        "RAGAMUFFIN_URL": "http://ragamuffin:8000",
+        "RAGAMUFFIN_DEFAULT_VAULT": "default"
+      },
+      "channels": {
+        "telegram": {
+          "chat_ids": ["${TELEGRAM_CHAT_ID}"]
+        }
+      }
+    }
+  }
+}
