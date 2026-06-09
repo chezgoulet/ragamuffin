@@ -7,7 +7,38 @@ zero-dependency binary.
 
 1. Read [SPEC.md](SPEC.md). That's the ground truth.
 2. Read the version spec for whatever you're building (e.g., `SPEC-v0.2.md`).
-3. Run `go build ./...` and `go test ./...` to confirm a clean baseline.
+3. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the staged-branch workflow.
+4. CI handles all build verification — do not run `go build` or `go test` locally.
+
+## Branch Topology
+
+The ragamuffin repo uses a three-tier staged-branch workflow:
+
+```
+dev/*  ──(PR)──→  testing  ──(PR)──→  main
+                       │                  │
+                 :rolling image     :latest image
+                 pre-release        production
+```
+
+- **Feature branches (`dev/*`)** — branch from `testing`, PR into `testing`.
+- **`testing`** — integration/staging branch. Merges build `:rolling` Docker tag.
+- **`main`** — stable release branch. Merges trigger benchmark gauntlet and `:latest`.
+
+## CI Workflow Awareness
+
+| Workflow | Trigger | Scope |
+|---|---|---|
+| `pr-check.yml` | PR to `testing` | `go build`, `go test -short`, `go vet` |
+| `testing-push.yml` | Merge to `testing` | Build `:rolling`, deploy, smoke tests |
+| `build.yml` | Merge to `main` | Full benchmark gauntlet, `:latest`, release tag |
+
+## Review Targets
+
+- **robot reviews PRs against `testing`** — not `main`. Check that the PR
+  branches from `testing`, targets `testing`, and follows conventions.
+- **Review checklist**: `go build ./...`, `go test ./internal/... -short`,
+  convention compliance, no new external dependencies beyond allowed list.
 
 ## Project Structure
 

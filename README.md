@@ -5,6 +5,10 @@
 
 ---
 
+[![testing](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml)
+[![PR check](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/chezgoulet/ragamuffin.svg)](https://pkg.go.dev/github.com/chezgoulet/ragamuffin)
+
 **Ragamuffin** serves two roles in one binary:
 
 1. **Vault Knowledge Server** — point it at a directory, it watches for changes, indexes everything into [Qdrant](https://qdrant.tech), and serves a REST API that any agent can curl. No bridge. No translation layer.
@@ -94,6 +98,35 @@ go test ./... -run Integration -v
 > events, LLM client, embedding client, Qdrant client, rate limiting,
 > server handlers, and the indexer manager. The pruner package has no
 > integration tests — testing is via the review queue API end-to-end.
+
+### Development Workflow
+
+Ragamuffin follows a **staged-branch workflow** with three tiers:
+
+```
+  ┌──────────┐    PR    ┌──────────┐    PR    ┌──────────┐
+  │ dev/*    │ ──────→  │ testing  │ ──────→  │   main   │
+  │ branches │          │ (staging)│          │ (stable) │
+  └──────────┘          └──────────┘          └──────────┘
+       │                      │                     │
+       │ go test + vet        │ testing-push.yml    │ build.yml
+       │ (PR check)           │ Docker :rolling     │ Docker :latest
+       ▼                      ▼                     ▼
+   CI passes             Deploy for val.       Benchmark + release
+```
+
+**Tier 1 — Feature branches (`dev/*`)**
+Branch from `testing`, PR into `testing`. Every PR triggers `pr-check.yml`
+(compile, test, vet). Must pass before merge.
+
+**Tier 2 — `testing` branch**
+The integration branch. Merges trigger `testing-push.yml` which builds the
+`:rolling` Docker image and deploys it for validation. This is where changes
+are validated before they reach production.
+
+**Tier 3 — `main` branch**
+The stable release branch. Merges from `testing` trigger `build.yml` which
+runs the full benchmark gauntlet, builds `:latest`, and cuts a release tag.
 
 ### Dependency Audit
 
