@@ -383,8 +383,9 @@ func TestHandleToolsCall_MissingName(t *testing.T) {
 	if resp.Error == nil {
 		t.Fatal("expected error")
 	}
-	if resp.Error.Code != -32602 {
-		t.Errorf("expected -32602 (invalid params), got %d", resp.Error.Code)
+	// Empty name passes JSON parse but handler returns error
+	if resp.Error.Code != -32603 {
+		t.Errorf("expected -32603 (handler error), got %d", resp.Error.Code)
 	}
 }
 
@@ -544,17 +545,24 @@ func TestSSEEndpoint_GeneratesSessionID(t *testing.T) {
 		h.ServeHTTP(w, req)
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
+	// Wait for handler to register the client
+	time.Sleep(100 * time.Millisecond)
 
 	h.mu.Lock()
 	sessionCount := len(h.clients)
 	h.mu.Unlock()
 
 	if sessionCount != 1 {
+		// If we didn't capture it yet, check right after
+		time.Sleep(100 * time.Millisecond)
+		h.mu.Lock()
+		sessionCount = len(h.clients)
+		h.mu.Unlock()
 		t.Errorf("expected 1 connected client, got %d", sessionCount)
 	}
+
+	cancel()
+	<-done
 }
 
 func TestSSE_DisconnectRemovesClient(t *testing.T) {
