@@ -346,6 +346,9 @@ func (c *Client) SetPayload(ctx context.Context, collection string, points []*pb
 
 // Close shuts down the gRPC connection.
 func (c *Client) Close() error {
+	if c.conn == nil {
+		return nil
+	}
 	return c.conn.Close()
 }
 
