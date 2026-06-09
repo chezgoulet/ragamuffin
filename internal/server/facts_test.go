@@ -449,8 +449,22 @@ func TestFactsGet_ListAll(t *testing.T) {
 		t.Logf("debug: pt[%d] key=%q pointToFact=%v", i, k, fr)
 	}
 
+	// Simulate exactly what handleFactsGet does
+	req := factsGetRequest("/v1/facts")
+	coll := s.factsCollectionFor(req.Context())
+	var filter *pb.Filter  // nil, like the handler builds when no conditions
+	pts2, err := s.facts.ScrollFiltered(req.Context(), coll, filter, 101, "")
+	if err != nil {
+		t.Fatalf("scroll2: %v", err)
+	}
+	t.Logf("debug: handler-style ScrollFiltered returned %d points", len(pts2))
+	for i, p := range pts2 {
+		k, _ := qutil.GetPayloadString(p.Payload, "fact_key")
+		t.Logf("debug: handler pt[%d] key=%q", i, k)
+	}
+
 	w := httptest.NewRecorder()
-	s.handleFactsGet(w, factsGetRequest("/v1/facts"))
+	s.handleFactsGet(w, req)
 
 	t.Logf("response: code=%d body=%s", w.Code, w.Body.String())
 
