@@ -70,6 +70,64 @@ class RagamuffinClient:
             return data
         return []
 
+    def create_fact(
+        self,
+        key: str,
+        value: str,
+        vault: str,
+        source: str = "benchmark",
+        source_type: str = "conversation",
+    ) -> Dict[str, Any]:
+        """Create a fact in a vault.
+
+        Uses POST /v1/facts with vault in body (not path-based).
+        """
+        body = {
+            "key": key,
+            "value": value,
+            "vault": vault,
+            "source": source or "benchmark",
+            "source_type": source_type or "conversation",
+        }
+        data, status = self._request("POST", "/v1/facts", body=body)
+        return data if isinstance(data, dict) else {"status": str(status)}
+
+    def get_fact(
+        self,
+        key: str,
+        vault: str,
+    ) -> Dict[str, Any]:
+        """Get a single fact by key from a vault.
+
+        Uses GET /v1/facts?key=...&vault=... (query param, NOT path-based).
+        Returns the fact dict or raises PermanentError on 404.
+        """
+        path = f"/v1/facts?key={urllib.parse.quote(key)}&vault={urllib.parse.quote(vault)}"
+        data, status = self._request("GET", path)
+        return data if isinstance(data, dict) else {}
+
+    def list_facts(
+        self,
+        vault: str,
+        prefix: Optional[str] = None,
+        tag: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """List facts in a vault with optional filters.
+
+        Uses GET /v1/facts?prefix=...&vault=... (query params, not path-based).
+        """
+        params = [f"vault={urllib.parse.quote(vault)}"]
+        if prefix:
+            params.append(f"prefix={urllib.parse.quote(prefix)}")
+        if tag:
+            params.append(f"tag={urllib.parse.quote(tag)}")
+        if status:
+            params.append(f"status={urllib.parse.quote(status)}")
+        path = "/v1/facts?" + "&".join(params)
+        data, status_code = self._request("GET", path)
+        return data if isinstance(data, dict) else {}
+
     def ingest(
         self,
         content: str,
