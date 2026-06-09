@@ -25,13 +25,21 @@ type mockFactStore struct {
 	qdrant.FactStore // embed so we only implement what we need
 	name             string
 
-	mu              sync.Mutex
-	upserted        []*pb.PointStruct
-	scrollFilteredFn func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
-	getPointsFn     func(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
+	mu                sync.Mutex
+	upserted          []*pb.PointStruct
+	scrollFilteredFn  func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
+	getPointsFn       func(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
+	updateVectorsCalls []*pb.PointVectors
 }
 
 func (m *mockFactStore) Collection() string { return m.name }
+
+func (m *mockFactStore) UpdateVectors(_ context.Context, _ string, points []*pb.PointVectors) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.updateVectorsCalls = append(m.updateVectorsCalls, points...)
+	return nil
+}
 
 func (m *mockFactStore) Upsert(_ context.Context, points []*pb.PointStruct) error {
 	m.mu.Lock()

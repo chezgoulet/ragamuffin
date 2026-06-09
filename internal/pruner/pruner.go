@@ -47,6 +47,10 @@ type PrunerConfig struct {
 	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
 	ConflictThreshold     float64       // default 0.85 — cosine similarity for contradiction detection
 
+	// ReembedScanInterval controls how often the pruner scans for facts with
+	// zero vectors and re-embeds them. Default 24h. Set to 0 to disable.
+	ReembedScanInterval time.Duration
+
 	// ImportanceThreshold (0.0-1.0) — facts with importance scores above this
 	// threshold are skipped during stale scanning even if they exceed age/staleness.
 	// Default 0.0 = disabled (all stale facts are flagged regardless).
@@ -68,6 +72,7 @@ func DefaultConfig() PrunerConfig {
 		Enabled:                 false,
 		StaleScanInterval:       24 * time.Hour,
 		ConflictScanInterval:    72 * time.Hour,
+		ReembedScanInterval:     24 * time.Hour,
 		SupersedeScanInterval:  24 * time.Hour,
 		SourceStaleScanInterval: 0,
 		ExpiredScanInterval:    24 * time.Hour,
@@ -144,10 +149,11 @@ func (p *Pruner) Health() HealthReport {
 	scanDefs := map[string]struct {
 		interval time.Duration
 	}{
-		"StaleScan":       {p.cfg.StaleScanInterval},
-		"ConflictScan":    {p.cfg.ConflictScanInterval},
-		"SupersedeScan":   {p.cfg.SupersedeScanInterval},
-		"LowConfidenceScan": {0},
+		"StaleScan":          {p.cfg.StaleScanInterval},
+		"ConflictScan":       {p.cfg.ConflictScanInterval},
+		"SupersedeScan":      {p.cfg.SupersedeScanInterval},
+		"ReembedScan":        {p.cfg.ReembedScanInterval},
+		"LowConfidenceScan":  {0},
 	}
 
 	for name, def := range scanDefs {
@@ -258,7 +264,8 @@ func (p *Pruner) Run(ctx context.Context) {
 		"stale_interval", p.cfg.StaleScanInterval,
 		"conflict_interval", p.cfg.ConflictScanInterval,
 		"supersede_interval", p.cfg.SupersedeScanInterval,
-		"source_stale_interval", p.cfg.SourceStaleScanInterval)
+		"source_stale_interval", p.cfg.SourceStaleScanInterval,
+		"reembed_interval", p.cfg.ReembedScanInterval)
 
 	// Start each scan in its own goroutine
 	if p.cfg.StaleScanInterval > 0 {
@@ -275,6 +282,9 @@ func (p *Pruner) Run(ctx context.Context) {
 	}
 	if p.cfg.ExpiredScanInterval > 0 {
 		go p.runScan(ctx, "ExpiredScan", p.cfg.ExpiredScanInterval, p.expiredScan)
+	}
+	if p.cfg.ReembedScanInterval > 0 {
+		go p.runScan(ctx, "ReembedScan", p.cfg.ReembedScanInterval, p.reembedScan)
 	}
 
 	// Also run a one-time low-confidence scan

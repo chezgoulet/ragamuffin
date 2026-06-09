@@ -122,6 +122,7 @@ type Config struct {
 	PrunerLowConfidenceThreshold float64
 	PrunerConflictThreshold     float64
 	PrunerImportanceThreshold   float64
+	PrunerReembedInterval       time.Duration
 
 	// Automatic extraction from conversation turns
 	ExtractEnabled            bool
@@ -411,6 +412,7 @@ func Load() (*Config, error) {
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
+		PrunerReembedInterval:       envDuration("RAGAMUFFIN_PRUNER_REEMBED_INTERVAL", 24*time.Hour),
 		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED"),
 		ExtractWindow:             envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
 		ExtractMaxConfidence:      math.Min(envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85), 0.85),

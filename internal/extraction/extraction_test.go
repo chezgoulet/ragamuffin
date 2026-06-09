@@ -97,6 +97,7 @@ func (m *mockFactStore) Close() error { return nil }
 func (m *mockFactStore) GetVectorSize(_ context.Context, _ string) (uint64, error) { return 0, nil }
 func (m *mockFactStore) GetPoints(_ context.Context, _ string, _ []*pb.PointId) ([]*pb.RetrievedPoint, error) { return nil, nil }
 func (m *mockFactStore) SetPayload(_ context.Context, _ string, _ []*pb.PointId, _ map[string]*pb.Value) error { return nil }
+func (m *mockFactStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error { return nil }
 func (m *mockFactStore) Collection() string { return m.collectionName }
 
 // ── DefaultConfig ─────────────────────────────────────────────────────────────

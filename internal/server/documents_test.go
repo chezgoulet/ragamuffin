@@ -33,6 +33,7 @@ func (m *mockQdrantStore) DeleteFiltered(_ context.Context, collection string, f
 func (m *mockQdrantStore) Count(_ context.Context) (uint64, error) { return 0, nil }
 func (m *mockQdrantStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
 func (m *mockQdrantStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error { return nil }
+func (m *mockQdrantStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error { return nil }
 func (m *mockQdrantStore) Health(_ context.Context) error { return nil }
 
 // ── Test: extraction goroutine survives request context cancellation ──────────
