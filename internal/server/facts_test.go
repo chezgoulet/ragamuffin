@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -196,9 +198,12 @@ func matchFactsCondition(payload map[string]*pb.Value, cond *pb.Condition) bool 
 // ── Test helper ──────────────────────────────────────────────────────────
 
 func newFactsServer(store *factsMockStore) *Server {
+	ctx := context.Background()
 	return &Server{
-		cfg:   &config.Config{FactsCollection: "test_facts", FactsVectorSize: 4, AutoProvisionVaults: false},
-		facts: store,
+		cfg:         &config.Config{FactsCollection: "test_facts", FactsVectorSize: 4, AutoProvisionVaults: false},
+		facts:       store,
+		shutdownCtx: ctx,
+		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError})),
 	}
 }
 
