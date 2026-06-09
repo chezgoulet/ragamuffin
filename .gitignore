@@ -16,6 +16,10 @@ coverage.out
 *.swo
 *~
 
+# Dev artifacts
+memory/*
+!memory/.gitkeep
+
 # OS
 .DS_Store
 Thumbs.db
