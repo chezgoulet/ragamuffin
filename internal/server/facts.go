@@ -1419,7 +1419,8 @@ func timeFilter(mode string) (*qdrant.Condition, error) {
 	now := time.Now().UTC()
 	target := now
 
-	if strings.HasPrefix(mode, "active_at:") {
+	if mode != "" {
+		if strings.HasPrefix(mode, "active_at:") {
 		ts := strings.TrimPrefix(mode, "active_at:")
 		if t, err := time.Parse(time.RFC3339, ts); err == nil {
 			target = t
@@ -1427,6 +1428,9 @@ func timeFilter(mode string) (*qdrant.Condition, error) {
 			target = t
 		} else {
 			return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
+		}
+		} else {
+			return nil, fmt.Errorf("unknown time filter mode: %q", mode)
 		}
 	}
 
