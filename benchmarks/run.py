@@ -1,954 +1,450 @@
 #!/usr/bin/env python3
 """
-Ragamuffin benchmark harness v2 — resilient, /ask-based, checkpointed.
+Ragamuffin benchmark harness — CLI entry point.
 
-Usage:
-    python3 benchmarks/run.py --benchmark longmemeval --config a --max-convs 5
-    python3 benchmarks/run.py --benchmark locomo --config b --resume
-    python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 0
-
-Configs:
-  a — Pure /ask (recall + synthesize)
-  b — /ask + facts (auto_extract on ingest)
-  c — Tiered /ask
-  d — /ask + facts + fact graph (auto_extract on ingest)
+Runs accuracy benchmarks, stress tests, or classifies failures from traces.
 """
+
+from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
-import re
 import sys
 import time
-
-import requests
-
-# ── Config ──────────────────────────────────────────────────────────────────
-
-RAGAMUFFIN_URL = os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000")
-LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
-LITELLM_API_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
-
-BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BENCH_DIR, "data")
-
-PROGRESS_INTERVAL = 5   # update progress file every N questions
-
-# ── API helpers ─────────────────────────────────────────────────────────────
-
-
-def api_post(path, json_body, timeout=30):
-    url = f"{RAGAMUFFIN_URL}{path}"
-    r = requests.post(url, json=json_body, timeout=timeout)
-    if r.status_code >= 400:
-        msg = r.text[:200]
-        raise requests.HTTPError(f"POST {path} {r.status_code}: {msg}", response=r)
-    return r.json()
-
-
-def api_get(path, params=None, timeout=30):
-    url = f"{RAGAMUFFIN_URL}{path}"
-    r = requests.get(url, params=params, timeout=timeout)
-    if r.status_code >= 400:
-        msg = r.text[:200]
-        raise requests.HTTPError(f"GET {path} {r.status_code}: {msg}", response=r)
-    return r.json()
-
-
-def wait_for_indexing(vault="default", poll_sec=2, timeout_sec=300):
-    """Block until Ragamuffin finishes indexing (status != 'indexing')."""
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        health = api_get("/health")
-        idx = health.get("indexing", True)
-        if not idx:
-            return
-        time.sleep(poll_sec)
-    print(f"  [WARN] Indexing may not have completed within {timeout_sec}s", file=sys.stderr)
-
-
-def ask_in_vault(vault, query, mode="rag", top_k=10, timeout=30):
-    """POST /vault/{vault}/ask and return the answer text."""
-    body = {"query": query, "mode": mode, "top_k": top_k}
-    result = api_post(f"/vault/{vault}/ask", body, timeout=timeout)
-    return result.get("answer", "")
-
-
-def create_session(agent_id, content, vault, auto_extract=False):
-    body = {
-        "agent_id": agent_id,
-        "content": content,
-        "vault": vault,
-        "auto_extract": auto_extract,
-    }
-    return api_post("/v1/sessions", body)
-
-
-def append_turn(session_id, content, role="user", auto_extract=False):
-    body = {"content": content, "role": role, "auto_extract": auto_extract}
-    return api_post(f"/v1/sessions/{session_id}/turns", body)
-
-
-# ── Retry wrapper ───────────────────────────────────────────────────────────
-
-
-def answer_with_retry(question, vault, mode="rag", top_k=10, max_retries=5):
-    """
-    Answer a single question via /vault/{vault}/ask with exponential backoff.
-    Never raises — returns "ANSWER_FAILED" after exhausting retries.
-    """
-    for attempt in range(1, max_retries + 1):
-        try:
-            return ask_in_vault(vault, question, mode=mode, top_k=top_k)
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response else 0
-            if status == 429:
-                wait = 15 * (2 ** (attempt - 1))
-            elif status in (502, 503):
-                wait = 10 * attempt
-            else:
-                wait = 5 * attempt
-            print(f"  [WARN] Q attempt {attempt}/{max_retries} ({status}): {e}", file=sys.stderr)
-        except (requests.Timeout, ConnectionError) as e:
-            wait = 5 * attempt
-            print(f"  [WARN] Q attempt {attempt}/{max_retries} (timeout): {e}", file=sys.stderr)
-        time.sleep(wait)
-    print(f"  [ERROR] Q failed after {max_retries} attempts, skipping", file=sys.stderr)
-    return "ANSWER_FAILED"
-
-
-def ask_with_trace(question, vault, mode="rag", top_k=10, max_retries=5, question_id="", question_type=""):
-    """
-    Ask a question and return (answer, trace_dict).
-    Trace includes latency, sources, and error info.
-    """
-    start = time.time()
-    answer = "ANSWER_FAILED"
-    error = None
-    sources = []
-
-    for attempt in range(1, max_retries + 1):
-        try:
-            url = f"{RAGAMUFFIN_URL}/vault/{vault}/ask"
-            body = {"query": question, "mode": mode, "top_k": top_k}
-            r = requests.post(url, json=body, timeout=30)
-            if r.status_code >= 400:
-                raise requests.HTTPError(f"POST /ask {r.status_code}: {r.text[:200]}", response=r)
-            data = r.json()
-            answer = data.get("answer", "")
-            sources = data.get("sources", [])
-            break
-        except requests.HTTPError as e:
-            status = e.response.status_code if e.response else 0
-            error = str(e)
-            if status == 429:
-                wait = 15 * (2 ** (attempt - 1))
-            elif status in (502, 503):
-                wait = 10 * attempt
-            else:
-                wait = 5 * attempt
-            print(f"  [WARN] Q attempt {attempt}/{max_retries} ({status}): {e}", file=sys.stderr)
-        except (requests.Timeout, ConnectionError) as e:
-            error = str(e)
-            wait = 5 * attempt
-            print(f"  [WARN] Q attempt {attempt}/{max_retries} (timeout): {e}", file=sys.stderr)
-        time.sleep(wait)
-
-    elapsed = int((time.time() - start) * 1000)
-
-    trace = {
-        "question_id": question_id,
-        "question_type": question_type,
-        "question": question,
-        "ragamuffin_answer": answer,
-        "retrieved_chunks": [
-            {"source": s, "chunk_id": "", "score": 0.0}
-            for s in sources
-        ],
-        "latency_ms": elapsed,
-        "error": error,
-    }
-    return answer, trace
-
-
-# ── Data loaders ────────────────────────────────────────────────────────────
-
-
-def load_longmemeval(data_path=None):
-    """
-    Yield (conversation_id, turns, questions) for each conversation
-    in the LongMemEval "S" (shorter) setting.
-
-    500 individual JSON files in data/LongMemEval/data/S/. Each file:
-      - sessions: dict[session_id -> list[{role, content}]]
-      - question, answer, question_type, question_id, answer_session_ids
-    """
-    if data_path is None:
-        s_path = None
-        base = os.path.join(DATA_DIR, "LongMemEval", "data")
-        for candidate in [os.path.join(base, "S"),
-                          os.path.join(base, "setting_S"),
-                          os.path.join(base, "short")]:
-            if os.path.isdir(candidate):
-                s_path = candidate
-                break
-        if not s_path:
-            # Try data root
-            s_path = os.path.join(DATA_DIR, "LongMemEval")
-    else:
-        s_path = data_path
-
-    conv_files = sorted([
-        os.path.join(s_path, f)
-        for f in os.listdir(s_path)
-        if f.endswith(".json") and not f.startswith(".")
-    ])
-
-    if not conv_files:
-        print(f"  [ERROR] No JSON files found in {s_path}", file=sys.stderr)
-        return
-
-    for cf in conv_files:
-        with open(cf) as fh:
-            data = json.load(fh)
-
-        conv_id = data.get("question_id", data.get("conversation_id",
-                          os.path.splitext(os.path.basename(cf))[0]))
-
-        # Flatten sessions dict into ordered turns
-        sessions = data.get("sessions", {})
-        turns = []
-        if isinstance(sessions, dict):
-            for sk in sorted(sessions.keys()):
-                session_turns = sessions[sk]
-                if isinstance(session_turns, list):
-                    for turn in session_turns:
-                        if isinstance(turn, dict):
-                            role = turn.get("role", turn.get("speaker", "user"))
-                            content = turn.get("content", turn.get("message", turn.get("text", "")))
-                        else:
-                            role = "user"
-                            content = str(turn)
-                        turns.append({"role": role.lower(), "content": content})
-
-        # One question per conversation
-        question_text = data.get("question", "")
-        answer_text = str(data.get("answer", ""))
-        questions = [{
-            "question": question_text,
-            "answer": answer_text,
-            "type": data.get("question_type", ""),
-        }]
-
-        if not turns or not question_text:
-            continue
-        yield conv_id, turns, questions
-
-
-def load_locomo(data_path=None):
-    """
-    Yield (conversation_id, turns, questions) for each conversation
-    in the LoCoMo (Backboard) dataset.
-
-    Flat JSON array (locomo_dataset.json). Each entry has:
-      - conversation: dict with session_N keys
-      - qa: list of {question, answer, evidence, category}
-      - sample_id
-    """
-    if data_path is None:
-        data_path = os.path.join(DATA_DIR, "Backboard-Locomo-Benchmark")
-    dataset_file = os.path.join(data_path, "locomo_dataset.json")
-
-    if not os.path.exists(dataset_file):
-        # Fallback: try conversations subdirectory format
-        conv_path = os.path.join(data_path, "conversations")
-        if not os.path.isdir(conv_path):
-            conv_path = data_path
-
-        conv_dirs = sorted([
-            d for d in os.listdir(conv_path)
-            if os.path.isdir(os.path.join(conv_path, d)) and not d.startswith(".")
-        ])
-
-        for cd in conv_dirs:
-            cat_file = os.path.join(conv_path, cd, "category.json")
-            if os.path.exists(cat_file):
-                with open(cat_file) as fh:
-                    cat_data = json.load(fh)
-                if isinstance(cat_data, dict) and cat_data.get("category") in (5, "5"):
-                    continue
-
-            turns = []
-            turn_file = os.path.join(conv_path, cd, "turns.json")
-            if os.path.exists(turn_file):
-                with open(turn_file) as fh:
-                    turns = json.load(fh)
-
-            questions = []
-            qa_file = os.path.join(conv_path, cd, "qa.json")
-            if os.path.exists(qa_file):
-                with open(qa_file) as fh:
-                    questions = json.load(fh)
-
-            if not turns and not questions:
-                conv_file = os.path.join(conv_path, f"{cd}.json")
-                if os.path.exists(conv_file):
-                    with open(conv_file) as fh:
-                        data = json.load(fh)
-                    turns = data.get("turns", data.get("history", []))
-                    questions = data.get("questions", data.get("qa_pairs", []))
-
-            yield cd, turns, questions
-        return
-
-    with open(dataset_file) as fh:
-        dataset = json.load(fh)
-
-    if isinstance(dataset, dict):
-        dataset = dataset.get("data", dataset.get("conversations", [dataset]))
-
-    for entry in dataset:
-        conv_id = entry.get("sample_id", entry.get("conversation_id",
-                            entry.get("id", "")))
-
-        # Flatten conversation sessions
-        turns = []
-        speaker_order = []  # first unique speaker = user, second = assistant
-        conv = entry.get("conversation", entry.get("sessions", {}))
-        if isinstance(conv, dict):
-            for sk in sorted(conv.keys()):
-                session_turns = conv[sk]
-                if isinstance(session_turns, list):
-                    for turn in session_turns:
-                        if isinstance(turn, dict):
-                            speaker = turn.get("speaker", turn.get("role", "")).lower()
-                            message = turn.get("message", turn.get("content", turn.get("text", "")))
-                            # Map character names to user/assistant roles.
-                            # First unique speaker = user, second = assistant.
-                            known_speakers = {"speaker_a": "user", "speaker_b": "assistant",
-                                             "user": "user", "human": "user",
-                                             "assistant": "assistant", "ai": "assistant", "bot": "assistant"}
-                            if speaker in known_speakers:
-                                role = known_speakers[speaker]
-                            else:
-                                if speaker not in speaker_order:
-                                    speaker_order.append(speaker)
-                                role = "user" if speaker_order.index(speaker) == 0 else "assistant"
-                            turns.append({"role": role, "content": message})
-                        else:
-                            turns.append({"role": "user", "content": str(turn)})
-
-        # Load QA pairs — all categories valid
-        raw_qa = entry.get("qa", entry.get("questions", entry.get("qa_pairs", [])))
-        questions = []
-        if isinstance(raw_qa, list):
-            for q_item in raw_qa:
-                if isinstance(q_item, dict):
-                    questions.append({
-                        "question": q_item.get("question", q_item.get("query", "")),
-                        "answer": str(q_item.get("answer", q_item.get("ground_truth", ""))),
-                        "category": q_item.get("category", 0),
-                        "evidence": q_item.get("evidence", ""),
-                    })
-                else:
-                    questions.append({
-                        "question": str(q_item), "answer": "",
-                        "category": 0, "evidence": "",
-                    })
-
-        if not conv_id or not turns:
-            continue
-        yield conv_id, turns, questions
-
-
-# ── Ingest ──────────────────────────────────────────────────────────────────
-
-
-def ingest_conversation(conv_id, turns, vault, auto_extract=False):
-    """Ingest a conversation into Ragamuffin. Returns session_id or None."""
-    if not turns:
-        return None
-
-    first_turn = turns[0]
-    if isinstance(first_turn, dict):
-        content = first_turn.get("content", first_turn.get("text", ""))
-        role = first_turn.get("role", "user")
-    else:
-        content = str(first_turn)
-        role = "user"
-
-    full_content = f"{role.capitalize()}: {content}"
-    session = create_session(f"bench-{conv_id}", full_content, vault,
-                             auto_extract=auto_extract)
-    session_id = session.get("session_id", session.get("id", ""))
-    if not session_id:
-        return None
-
-    for turn in turns[1:]:
-        if isinstance(turn, dict):
-            content = turn.get("content", turn.get("text", ""))
-            role = turn.get("role", "user")
-        else:
-            content = str(turn)
-            role = "user"
-        if content.strip():
-            append_turn(session_id, f"{role.capitalize()}: {content}", role,
-                        auto_extract=auto_extract)
-
-    return session_id
-
-
-def ingest_document(conv_id, turns, vault, auto_extract=False):
-    """
-    Ingest a conversation as a single document via /v1/documents.
-    Used for LoCoMo: 500-700 turns as one markdown doc, not turn-by-turn
-    via sessions. Avoids SQLite journal writes and inotify storms (#526).
-    """
-    lines = []
-    for turn in turns:
-        if isinstance(turn, dict):
-            role = turn.get("role", "user").capitalize()
-            content = turn.get("content", turn.get("text", ""))
-        else:
-            role = "User"
-            content = str(turn)
-        if content.strip():
-            lines.append(f"{role}: {content}")
-    full_text = "\n\n".join(lines)
-
-    source = f"locomo/{conv_id}.md"
-    body = {
-        "content": full_text,
-        "source": source,
-        "vault": vault,
-        "tags": ["locomo", conv_id],
-    }
-    if auto_extract:
-        body["auto_extract"] = True
-
-    return api_post("/v1/documents", body, timeout=120)
-
-
-# ── Checkpoint ──────────────────────────────────────────────────────────────
-
-
-def save_checkpoint(path, results):
-    """Write incremental results to checkpoint file."""
-    tmp = path + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(results, fh, indent=2)
-    os.replace(tmp, path)
-
-
-def total_questions_estimate(conversations, current_idx):
-    """Estimate total questions across remaining conversations."""
-    total = 0
-    for _, _, questions in conversations[current_idx:]:
-        total += len(questions)
-    return total
-
-
-def write_progress(path, progress):
-    """Write lightweight progress file for operator monitoring (#528)."""
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w") as fh:
-            json.dump(progress, fh, indent=2)
-        os.replace(tmp, path)
-    except OSError:
-        pass  # non-fatal
-
-
-def load_checkpoint(path):
-    """Load checkpoint. Returns (results dict, set of completed (conv_id, q_idx))."""
-    if not os.path.exists(path):
-        return None, set()
-    with open(path) as fh:
-        results = json.load(fh)
-    completed = set()
-    # Scan completed conversations
-    for conv in results.get("per_conversation", []):
-        cid = conv.get("conversation", "")
-        for i, d in enumerate(conv.get("details", [])):
-            if d.get("answer", "") or d.get("f1") is not None:
-                completed.add((cid, i))
-    # Also scan in-progress conversation (#527)
-    in_progress = results.get("_in_progress")
-    if in_progress:
-        cid = in_progress.get("conversation", "")
-        for i, d in enumerate(in_progress.get("details", [])):
-            if d.get("answer", ""):
-                completed.add((cid, i))
-    return results, completed
-
-
-# ── Scoring ─────────────────────────────────────────────────────────────────
-
-
-def call_evaluator_llm(prompt):
-    """Call LiteLLM proxy chat/completions with the evaluator prompt."""
-    api_key = LITELLM_API_KEY or os.environ.get("OPENAI_API_KEY", "")
-    if not api_key:
-        raise RuntimeError(
-            "No API key found for evaluator LLM. "
-            "Set LITELLM_MASTER_KEY or OPENAI_API_KEY."
-        )
-
-    r = requests.post(
-        f"{LITELLM_URL}/v1/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": os.environ.get("EVALUATOR_MODEL", "gpt-4o"),
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 512,
-            "temperature": 0.0,
-        },
-        timeout=30,
+from typing import Dict, List, Optional
+
+# Ensure benchmarks package is importable
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from benchmarks.configs import Config  # noqa: E402
+from benchmarks.core.checkpoint import CheckpointManager  # noqa: E402
+from benchmarks.core.client import RagamuffinClient  # noqa: E402
+from benchmarks.core.scoring import compare_to_baseline, score_batch, score_answer  # noqa: E402
+from benchmarks.core.trace import TraceWriter, load_trace, trace_path  # noqa: E402
+from benchmarks.core.types import Conversation, IngestPlan, Result  # noqa: E402
+from benchmarks.loaders.longmemeval import LongMemEvalLoader  # noqa: E402
+from benchmarks.loaders.stress_concurrent import ConcurrentStressTest  # noqa: E402
+from benchmarks.loaders.stress_large_vault import LargeVaultStressTest  # noqa: E402
+from benchmarks.loaders.stress_malformed import MalformedInputStressTest  # noqa: E402
+
+logger = logging.getLogger("ragamuffin.benchmark")
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Ragamuffin benchmark harness",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 5
+  python3 benchmarks/run.py --benchmark longmemeval --config d --resume
+  python3 benchmarks/run.py --stress concurrent --concurrency 10 --requests 100
+  python3 benchmarks/run.py --benchmark longmemeval --config d --stress concurrent
+  python3 benchmarks/run.py --classify trace_D_20260609.jsonl --dry-run
+        """,
     )
-    r.raise_for_status()
-    return r.json()["choices"][0]["message"]["content"]
 
-
-def score_longmemeval(answer, ground_truth):
-    """Judge correctness via evaluator LLM. Returns 1.0 or 0.0."""
-    if answer == "ANSWER_FAILED" or not answer.strip():
-        return 0.0
-    ex = '\n\nExamples:'
-    ex += '\nGround truth: $12\nSystem answer: The context was not provided.\nJudgment: INCORRECT'
-    ex += '\n\nGround truth: $12\nSystem answer: You spent $12 per mug.\nJudgment: CORRECT'
-    ex += '\n\nGround truth: $12\nSystem answer: Based on the context, you purchased 5 mugs for $60, so $12 per mug.\nJudgment: CORRECT'
-    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: The provided context does not contain that information.\nJudgment: INCORRECT'
-    ex += '\n\nGround truth: When you started you led 4 engineers. Now you lead 5.\nSystem answer: When you first started, you led 4 engineers. Now you lead 5.\nJudgment: CORRECT'
-    ex += '\n\nGround truth: 25\nSystem answer: 25 new postcards.\nJudgment: CORRECT'
-    ex += '\n\nGround truth: 25\nSystem answer: Based on the context, you first mentioned 25 postcards, but later said 17. The most recent number is 17.\nJudgment: INCORRECT'
-    ex += '\n\nGround truth: 2\nSystem answer: I cannot answer this question because the context was not provided. Please include the relevant information.\nJudgment: INCORRECT'
-    ex += '\n\nGround truth: 2\nSystem answer: I cannot answer this question because the provided context is empty. No information about doctor\'s appointments in March was included.\nJudgment: INCORRECT'
-    prompt = (
-        "You are a strict grader. If the answer dodges the question, says it "
-        "cannot answer or no context provided, or fails to provide the "
-        "specific information asked for, it is INCORRECT — even if the ground "
-        "truth value appears somewhere in the answer text.\n\n"
-        "A correct answer may include conversational framing like 'Based on the context...' "
-        "or 'According to your statements...' as long as it ultimately provides "
-        "the specific requested value. The framing is fine; the value must be "
-        "correctly stated."
-        f"{ex}\n\n"
-        f"Ground truth: {ground_truth}\n"
-        f"System answer: {answer}\n"
-        "Is this correct? Reply with exactly 'CORRECT' or 'INCORRECT'."
+    # Target
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000"),
+        help="Ragamuffin server URL (default: $RAGAMUFFIN_URL or http://localhost:8000)",
     )
-    try:
-        verdict = call_evaluator_llm(prompt).strip().upper()
-        return 1.0 if "CORRECT" in verdict else 0.0
-    except Exception as e:
-        print(f"  [WARN] LLM judge failed: {e}", file=sys.stderr)
-        return 0.0
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("RAGAMUFFIN_API_KEY", ""),
+        help="API key for authenticated endpoints",
+    )
+
+    # Benchmark mode
+    parser.add_argument("--benchmark", choices=["longmemeval", "locomo"], help="Benchmark dataset to run")
+    parser.add_argument("--dataset", default="datasets/longmemeval", help="Path to benchmark dataset")
+    parser.add_argument(
+        "--config",
+        default="D",
+        help="Benchmark config label: A (baseline), B (recall+facts), C (tiered), D (full stack, default)",
+    )
+    parser.add_argument("--max-convs", type=int, default=0, help="Max conversations to process (0=all)")
+    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
+    parser.add_argument(
+        "--checkpoint-interval",
+        type=int,
+        default=50,
+        help="Save checkpoint every N questions (default: 50)",
+    )
+
+    # Stress mode
+    parser.add_argument("--stress", choices=["concurrent", "large-vault", "malformed"], help="Stress test to run")
+    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests (stress: concurrent)")
+    parser.add_argument("--requests", type=int, default=100, help="Total requests (stress: concurrent)")
+    parser.add_argument("--target-sessions", type=int, default=50, help="Target session count (stress: large-vault)")
+
+    # Classify mode
+    parser.add_argument("--classify", metavar="TRACE_FILE", help="Classify failures from a trace file")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would be filed without filing")
+
+    # Output
+    parser.add_argument("--output", help="Output directory for results (default: .benchmark_results)")
+    parser.add_argument("--baseline", default="benchmarks/baseline.json", help="Baseline JSON for regression detection")
+    parser.add_argument("--no-baseline", action="store_true", help="Skip baseline comparison")
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
+
+    return parser
 
 
-def tokenize(text):
-    """Lowercase, split on non-alpha, return list of tokens."""
-    return re.findall(r"[a-z0-9]+", text.lower())
+# ── Benchmark runner ────────────────────────────────────────────────────────────
 
 
-def token_f1(pred, ref):
-    """Token-level F1 with Porter stemming approximation."""
-    p_tokens = tokenize(pred)
-    r_tokens = tokenize(ref)
+def run_benchmark(args: argparse.Namespace) -> int:
+    """Run an accuracy benchmark."""
+    config = Config.parse(args.config)
+    if config is None:
+        logger.error("invalid config: %s (use A, B, C, or D)", args.config)
+        return 1
 
-    # Porter stemmer approximation: common suffixes
-    p_set = set()
-    r_set = set()
-    for t in p_tokens:
-        for suf in ["ing", "ed", "ly", "es", "s", "tion", "ment", "ness"]:
-            if t.endswith(suf) and len(t) > len(suf) + 2:
-                t = t[:-len(suf)]
-                break
-        p_set.add(t)
-    for t in r_tokens:
-        for suf in ["ing", "ed", "ly", "es", "s", "tion", "ment", "ness"]:
-            if t.endswith(suf) and len(t) > len(suf) + 2:
-                t = t[:-len(suf)]
-                break
-        r_set.add(t)
+    client = RagamuffinClient(
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
 
-    if not p_set and not r_set:
-        return 1.0
-    if not p_set or not r_set:
-        return 0.0
+    if not client.health():
+        logger.error("Ragamuffin is not reachable at %s", args.base_url)
+        return 1
 
-    intersection = p_set & r_set
-    precision = len(intersection) / len(p_set)
-    recall = len(intersection) / len(r_set)
-    if precision + recall == 0:
-        return 0.0
-    return 2 * precision * recall / (precision + recall)
-
-
-def score_locomo(answer, ground_truth):
-    """Token-level F1 score. Returns float 0-1."""
-    if answer == "ANSWER_FAILED":
-        return 0.0
-    return token_f1(answer, ground_truth)
-
-
-# ── Main ────────────────────────────────────────────────────────────────────
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="Ragamuffin benchmark harness")
-    parser.add_argument("--benchmark", required=True,
-                        choices=["longmemeval", "locomo"],
-                        help="Benchmark dataset")
-    parser.add_argument("--config", required=True,
-                        choices=["a", "b", "c", "d"],
-                        help="Configuration preset")
-    parser.add_argument("--max-convs", type=int, default=0,
-                        help="Max conversations (0 = all)")
-    parser.add_argument("--conversation-limit", type=int, default=None,
-                        help="Alias for --max-convs")
-    parser.add_argument("--skip-ingest", action="store_true",
-                        help="Skip ingestion, reuse existing vaults")
-    parser.add_argument("--resume", action="store_true",
-                        help="Resume from checkpoint")
-    parser.add_argument("--output", default="",
-                        help="Output path (default: auto-generated)")
-    parser.add_argument("--vault-prefix", default="",
-                        help="Prefix for vault names (default: benchmark name)")
-    parser.add_argument("--separate-vaults", action="store_true",
-                        help="One vault per conversation (default: one vault per benchmark)")
-    parser.add_argument("--path", default="",
-                        help="Path to data file or directory (overrides default data dir)")
-    parser.add_argument("--gauntlet", action="store_true",
-                        help="Run in CI gauntlet mode (Config D, all convs, trace capture)")
-    parser.add_argument("--gauntlet-output", default="",
-                        help="Output path for gauntlet results JSON")
-    parser.add_argument("--gauntlet-traces", default="",
-                        help="Output path for per-question traces JSONL")
-    parser.add_argument("--gauntlet-hyp-file", default="",
-                        help="Output path for LongMemEval hyp_file JSONL")
-    return parser.parse_args()
-
-
-def make_vault_name(args):
-    """Return a single vault name for the given benchmark/config combo.
-
-    By default all conversations in a benchmark share one vault so that
-    configs A-D can reuse the same ingested data (only the /ask parameters
-    change).  Override with --vault-prefix for per-conversation vaults.
-    """
-    if args.vault_prefix:
-        return args.vault_prefix
-    suffix = args.config.upper() if args.separate_vaults else "DATA"
-    return f"{args.benchmark}-{suffix}"
-
-
-def build_ask_mode(config):
-    """Map config letter to /ask mode parameter."""
-    if config in ("c", "d"):
-        return "tiered"
-    return "rag"
-
-
-def main():
-    args = parse_args()
-
-    # --conversation-limit is an alias for --max-convs
-    if args.conversation_limit is not None and args.max_convs == 0:
-        args.max_convs = args.conversation_limit
-
-    data_path = args.path if args.path else None
-
+    # Load dataset
     if args.benchmark == "longmemeval":
-        conversations = list(load_longmemeval(data_path))
+        loader = LongMemEvalLoader(
+            dataset_path=args.dataset,
+            config_label=config.value,
+        )
+    elif args.benchmark == "locomo":
+        logger.error("LoCoMo loader is a stub — not yet implemented")
+        return 1
     else:
-        conversations = list(load_locomo(data_path))
+        logger.error("unknown benchmark: %s", args.benchmark)
+        return 1
 
-    print(f"Loaded {args.benchmark}: {len(conversations)} conversations")
+    conversations = loader.load()
+    if not conversations:
+        logger.error("no conversations loaded from %s", args.dataset)
+        return 1
+
     if args.max_convs > 0:
         conversations = conversations[:args.max_convs]
-        print(f"  Limited to {args.max_convs}")
 
-    if args.gauntlet:
-        # Gauntlet mode always uses Config D with all conversations
-        args.config = "d"
-        args.max_convs = 0
-        if not args.gauntlet_output:
-            args.gauntlet_output = "gauntlet_results.json"
-        if not args.gauntlet_traces:
-            args.gauntlet_traces = "gauntlet_traces.jsonl"
-        if not args.gauntlet_hyp_file:
-            args.gauntlet_hyp_file = "gauntlet_hyp_file.jsonl"
+    logger.info(
+        "loaded %d conversations for config %s",
+        len(conversations),
+        config.value,
+    )
 
-    auto_extract = args.config in ("b", "d")
-    # LoCoMo uses full-context ask mode (load entire document into LLM context)
-    # LongMemEval uses the config-prescribed mode (rag/tiered)
-    if args.benchmark == "locomo":
-        ask_mode = "full"
-    else:
-        ask_mode = build_ask_mode(args.config)
+    # Setup checkpoint
+    run_id = f"{args.benchmark}_config_{config.value}_{int(time.time())}"
+    checkpoint = CheckpointManager(run_id, interval=args.checkpoint_interval)
+    checkpoint.init()
 
-    # Determine output path
-    out_path = args.output or f"results_{args.benchmark}_config{args.config.upper()}.json"
-    ckpt_path = out_path + ".checkpoint"
-
-    # Load checkpoint if resuming
-    completed_qs = set()
-    results = None
+    # Load existing results if resuming
+    all_results: List[Result] = []
     if args.resume:
-        results, completed_qs = load_checkpoint(ckpt_path)
-        if results:
-            print(f"Resumed: {len(completed_qs)} questions already completed")
-        else:
-            print("No checkpoint found, starting fresh")
+        saved = checkpoint.load()
+        if saved:
+            all_results = saved
+            logger.info("resumed with %d completed results", len(all_results))
 
-    if results is None:
-        results = {
-            "benchmark": args.benchmark,
-            "config": args.config,
-            "auto_extract": auto_extract,
-            "ask_mode": ask_mode,
-            "total_conversations": len(conversations),
-            "total_questions": 0,
-            "overall_score": 0.0,
-            "per_conversation": [],
-            "_started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        }
+    # Setup trace
+    trace_writer = TraceWriter(trace_path(run_id))
+    completed_ids = {r.question.id for r in all_results}
 
-    # Progress file path (#528)
-    progress_path = f"/tmp/benchmark_progress_{args.benchmark}_{args.config.upper()}.json"
+    # Process each conversation
+    for conv_idx, conv in enumerate(conversations):
+        plan = loader.ingest_strategy(conv, config.value)
+        questions = loader.questions(conv)
 
-    all_answers = []
-    all_ground_truths = []
-    question_count = 0
-
-    # Open trace and hyp_file for gauntlet mode
-    traces_fh = open(args.gauntlet_traces, "w") if args.gauntlet else None
-    hyp_fh = open(args.gauntlet_hyp_file, "w") if args.gauntlet else None
-
-    for idx, (conv_id, turns, questions) in enumerate(conversations):
-        vault = f"{args.vault_prefix}{conv_id}" if args.separate_vaults else make_vault_name(args)
-
-        # Check if this conversation was already completed
-        conv_done = any(
-            c.get("conversation") == conv_id
-            for c in results.get("per_conversation", [])
-        ) if args.resume else False
-
-        if conv_done:
-            # Load existing answers/gts for re-scoring
-            for c in results["per_conversation"]:
-                if c.get("conversation") == conv_id:
-                    for d in c.get("details", []):
-                        all_answers.append(d.get("answer", "ANSWER_FAILED"))
-                        all_ground_truths.append(d.get("ground_truth", ""))
-                        question_count += 1
-            print(f"[{idx+1}/{len(conversations)}] {conv_id} — skipped (already completed)")
+        if not questions:
+            logger.warning("no questions for conversation %s, skipping", conv.id)
             continue
 
-        print(f"\n[{idx+1}/{len(conversations)}] {conv_id} ({len(turns)} turns, {len(questions)} questions)")
+        # Filter to unanswered questions
+        pending = [q for q in questions if q.id not in completed_ids]
+        if not pending:
+            logger.info("conversation %s: all %d questions already answered", conv.id, len(questions))
+            continue
 
-        # Ingest — different strategies for LoCoMo vs LongMemEval
-        if not args.skip_ingest:
-            print(f"  Ingesting into vault '{vault}'...")
-            if args.benchmark == "locomo":
-                # LoCoMo: single document per conversation, full-context ask mode (#526)
-                ingest_document(conv_id, turns, vault, auto_extract=auto_extract)
-            else:
-                # LongMemEval: session-based ingest, RAG ask mode (unchanged)
-                ingest_conversation(conv_id, turns, vault, auto_extract=auto_extract)
-            wait_for_indexing(vault=vault)
-            if auto_extract:
-                time.sleep(3)
-        else:
-            print(f"  Skipping ingest (vault '{vault}' must already exist)")
+        # Ingest conversation
+        logger.info(
+            "[%d/%d] ingesting conversation %s (%d messages, %d questions)",
+            conv_idx + 1,
+            len(conversations),
+            conv.id,
+            len(conv.messages),
+            len(pending),
+        )
 
-        # Answer questions
-        conv_answers = []
-        conv_gts = []
-        conv_details = []
+        if not _ingest_conversation(client, conv, plan):
+            logger.error("ingestion failed for %s, skipping questions", conv.id)
+            continue
 
-        for q_idx, q_item in enumerate(questions):
-            if isinstance(q_item, dict):
-                question = q_item.get("question", q_item.get("query", ""))
-                ground_truth = q_item.get("answer", q_item.get("ground_truth", ""))
-            else:
-                question = str(q_item)
-                ground_truth = ""
-
-            if not question:
-                continue
-
-            # Check if this specific question was already answered
-            if (conv_id, q_idx) in completed_qs:
-                print(f"  [{q_idx+1}/{len(questions)}] Q — skipped (checkpointed)")
-                continue
-
-            print(f"  [{q_idx+1}/{len(questions)}] Q: {question[:80]}...")
-
-            q_type = q_item.get("type", q_item.get("category", "")) if isinstance(q_item, dict) else ""
-            q_id = q_item.get("question_id", q_item.get("id", f"{conv_id}-q{q_idx}")) if isinstance(q_item, dict) else f"{conv_id}-q{q_idx}"
-
-            if args.gauntlet:
-                answer, trace = ask_with_trace(
-                    question, vault, mode=ask_mode,
-                    question_id=q_id, question_type=str(q_type),
+        # Ask each question
+        for q_idx, question in enumerate(pending):
+            t0 = time.perf_counter()
+            try:
+                resp = client.ask(question.text, plan.vault, mode=config.ask_mode)
+                answer = resp.get("answer", resp.get("response", ""))
+            except Exception as e:
+                answer = ""
+                elapsed_ms = (time.perf_counter() - t0) * 1000
+                result = Result(
+                    question=question,
+                    answer="",
+                    correct=False,
+                    latency_ms=elapsed_ms,
+                    retries=0,
+                    error=str(e),
                 )
-                # Write trace immediately
-                traces_fh.write(json.dumps(trace) + "\n")
-                traces_fh.flush()
-                # Write hyp_file entry for upstream evaluate_qa.py
-                hyp_entry = {
-                    "question_id": q_id,
-                    "answer": answer,
-                    "question_type": str(q_type),
-                }
-                if isinstance(q_item, dict):
-                    hyp_entry["ground_truth"] = q_item.get("answer", q_item.get("ground_truth", ""))
-                hyp_fh.write(json.dumps(hyp_entry) + "\n")
-                hyp_fh.flush()
-                # Score with upstream evaluate_qa.py format
-                correct = None  # upstream will compute
-            else:
-                answer = answer_with_retry(question, vault, mode=ask_mode)
+                all_results.append(result)
+                trace_writer.write(result)
+                logger.warning(
+                    "question %s: error: %s",
+                    question.id,
+                    e,
+                )
+                continue
 
-            conv_answers.append(answer)
-            conv_gts.append(ground_truth)
-            all_answers.append(answer)
-            all_ground_truths.append(ground_truth)
-            question_count += 1
+            elapsed_ms = (time.perf_counter() - t0) * 1000
 
-            # Score
-            if args.benchmark == "longmemeval":
-                score = score_longmemeval(answer, ground_truth) if not args.gauntlet else 0.0
-            else:
-                score = score_locomo(answer, ground_truth) if not args.gauntlet else 0.0
+            # Score the answer
+            score = score_answer(question, answer)
+            correct = score >= 0.5
 
-            conv_details.append({
-                "question": question,
-                "answer": answer,
-                "ground_truth": ground_truth,
-                "score": round(score, 4),
-                "question_type": str(q_type),
-            })
-            print(f"    Score: {score:.3f}")
+            result = Result(
+                question=question,
+                answer=answer[:500],
+                correct=correct,
+                latency_ms=elapsed_ms,
+                retries=0,
+                sources=resp.get("sources", resp.get("chunks", [])),
+                score=score,
+            )
+            all_results.append(result)
+            trace_writer.write(result)
+            completed_ids.add(question.id)
+            trace_writer.flush()
 
-            # Checkpoint after every question (#527): save results immediately
-            # so nothing is lost if the process is killed between questions.
-            results["total_questions"] = question_count
-            results["_in_progress"] = {
-                "conversation": conv_id,
-                "details": conv_details,
-            }
-            save_checkpoint(ckpt_path, results)
+            logger.info(
+                "  [%d/%d] %s: %s (%.0fms, score=%.2f)",
+                q_idx + 1,
+                len(pending),
+                question.id,
+                "✓" if correct else "✗",
+                elapsed_ms,
+                score,
+            )
 
-            # Progress file every N questions (#528)
-            if question_count % PROGRESS_INTERVAL == 0:
-                running_scores = [d["score"] for d in conv_details if d.get("score") is not None]
-                avg_score = sum(running_scores) / len(running_scores) if running_scores else 0.0
-                total_qs = sum(len(c.get("details", [])) for c in results.get("per_conversation", []))
-                total_qs += len(conv_details)
-                progress = {
-                    "benchmark": args.benchmark,
-                    "config": args.config.upper(),
-                    "started_at": results.get("_started_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())),
-                    "questions_completed": question_count,
-                    "questions_total": total_questions_estimate(conversations, idx),
-                    "avg_score": round(avg_score, 4),
-                    "current_question": question[:100],
-                    "last_updated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                }
-                write_progress(progress_path, progress)
+            # Save checkpoint
+            if checkpoint.should_save(len(all_results)):
+                checkpoint.save(all_results)
 
-        # Compute per-conversation score
-        if conv_answers:
-            if args.benchmark == "longmemeval":
-                conv_score = sum(
-                    score_longmemeval(a, gt) for a, gt in zip(conv_answers, conv_gts)
-                ) / len(conv_answers)
-            else:
-                conv_score = sum(
-                    score_locomo(a, gt) for a, gt in zip(conv_answers, conv_gts)
-                ) / len(conv_answers)
+    # Final checkpoint
+    checkpoint.save(all_results)
+    trace_writer.close()
+
+    # Score and report
+    scoring = score_batch(all_results)
+    logger.info("=" * 60)
+    logger.info("Results: %d correct / %d total = %.1f%%", scoring["correct"], scoring["total"], scoring["accuracy"] * 100)
+    logger.info("By type: %s", json.dumps(scoring["by_type"], indent=2))
+    logger.info("=" * 60)
+
+    # Baseline comparison
+    if not args.no_baseline:
+        comparison = compare_to_baseline(all_results, args.baseline)
+        if "error" in comparison:
+            logger.warning("baseline comparison: %s", comparison["error"])
         else:
-            conv_score = 0.0
+            delta_str = f"+{comparison['delta']:.2%}" if comparison["delta"] >= 0 else f"{comparison['delta']:.2%}"
+            logger.info("Baseline delta: %s", delta_str)
+            if comparison["regression"]:
+                logger.warning("REGRESSION detected vs baseline!")
 
-        conv_result = {
-            "conversation": conv_id if conv_id else f"conv-{idx}",
-            "questions": len(conv_answers),
-            "score": round(conv_score, 4),
-            "details": conv_details,
-        }
-        results["per_conversation"].append(conv_result)
-        results.pop("_in_progress", None)
-        print(f"  Conversation score: {conv_score:.3f} ({len(conv_answers)} questions)")
+    # Write accuracy report
+    output_path = args.output or os.path.join(".benchmark_results", run_id)
+    os.makedirs(output_path, exist_ok=True)
+    report_path = os.path.join(output_path, "accuracy.json")
+    with open(report_path, "w") as f:
+        json.dump(scoring, f, indent=2)
+    logger.info("accuracy report written to %s", report_path)
 
-        # Checkpoint after each conversation (clears _in_progress)
-        results["total_questions"] = question_count
-        save_checkpoint(ckpt_path, results)
+    return 0
 
-    # Final overall score
-    if all_answers:
-        if args.benchmark == "longmemeval":
-            overall = sum(
-                score_longmemeval(a, gt) for a, gt in zip(all_answers, all_ground_truths)
-            ) / len(all_answers)
-        else:
-            overall = sum(
-                score_locomo(a, gt) for a, gt in zip(all_answers, all_ground_truths)
-            ) / len(all_answers)
+
+# ── Stress runner ───────────────────────────────────────────────────────────────
+
+
+def run_stress(args: argparse.Namespace) -> int:
+    """Run a stress test."""
+    client = RagamuffinClient(
+        base_url=args.base_url,
+        api_key=args.api_key,
+    )
+
+    if args.stress == "concurrent":
+        test = ConcurrentStressTest(
+            client=client,
+            concurrency=args.concurrency,
+            total_requests=args.requests,
+        )
+    elif args.stress == "large-vault":
+        test = LargeVaultStressTest(
+            client=client,
+            target_sessions=args.target_sessions,
+        )
+    elif args.stress == "malformed":
+        test = MalformedInputStressTest(client=client)
     else:
-        overall = 0.0
+        logger.error("unknown stress test: %s", args.stress)
+        return 1
 
-    results["total_questions"] = len(all_answers)
-    results["overall_score"] = round(overall, 4)
+    logger.info("running stress test: %s", test.name())
+    result = test.run()
 
-    # Print results
-    print(f"\n{'='*50}")
-    print(f"Benchmark:       {args.benchmark}")
-    print(f"Configuration:   {args.config.upper()}")
-    print(f"Ask mode:        {ask_mode}")
-    print(f"Auto-extract:    {auto_extract}")
-    print(f"Conversations:   {len(conversations)}")
-    print(f"Total questions: {len(all_answers)}")
-    print(f"Overall score:   {overall:.4f}")
-    print(f"{'='*50}\n")
-    print(json.dumps(results, indent=2))
+    # Report
+    logger.info("=" * 60)
+    logger.info("Stress test: %s", result.name)
+    logger.info("  Requests: %d total, %d success, %d errors",
+                result.total_requests, result.success_count, result.error_count)
+    logger.info("  Latency: p50=%.0fms p95=%.0fms p99=%.0fms",
+                result.latency_p50, result.latency_p95, result.latency_p99)
+    logger.info("  Throughput: %.1f req/s", result.throughput_rps)
+    if result.errors:
+        logger.info("  Errors (%d):", len(result.errors))
+        for e in result.errors[:5]:
+            logger.info("    - %s", e)
+    logger.info("=" * 60)
 
-    # Close gauntlet file handles
-    if traces_fh:
-        traces_fh.close()
-    if hyp_fh:
-        hyp_fh.close()
+    # Write report
+    output_path = args.output or os.path.join(
+        ".benchmark_results",
+        f"stress_{result.name}_{int(time.time())}",
+    )
+    os.makedirs(output_path, exist_ok=True)
+    report_path = os.path.join(output_path, "stress.json")
+    with open(report_path, "w") as f:
+        json.dump(result.to_dict(), f, indent=2)
+    logger.info("stress report written to %s", report_path)
 
-    # Write gauntlet output with per-type accuracy
-    if args.gauntlet:
-        per_type = {}
-        for conv in results["per_conversation"]:
-            for d in conv.get("details", []):
-                qt = d.get("question_type", "unknown")
-                if qt not in per_type:
-                    per_type[qt] = {"correct": 0, "total": 0}
-                per_type[qt]["total"] += 1
-                if d.get("score", 0) >= 0.5:
-                    per_type[qt]["correct"] += 1
-        results["per_type_accuracy"] = {
-            k: round(v["correct"] / v["total"], 4)
-            for k, v in per_type.items() if v["total"] > 0
-        }
-        results["gauntlet_mode"] = True
-        save_checkpoint(args.gauntlet_output, results)
-        print(f"\nGauntlet results written to {args.gauntlet_output}")
+    return 0
 
-    # Write final output
-    save_checkpoint(out_path, results)
-    # Remove checkpoint file on success
-    if os.path.exists(ckpt_path):
-        os.remove(ckpt_path)
-    print(f"\nResults written to {out_path}")
+
+# ── Classify runner ─────────────────────────────────────────────────────────────
+
+
+def run_classify(args: argparse.Namespace) -> int:
+    """Classify failures from a trace file."""
+    trace_file = args.classify
+    if not os.path.exists(trace_file):
+        logger.error("trace file not found: %s", trace_file)
+        return 1
+
+    results = load_trace(trace_file)
+    if not results:
+        logger.error("no results loaded from %s", trace_file)
+        return 1
+
+    failures = [r for r in results if not r.correct]
+    logger.info("Loaded %d results, %d failures", len(results), len(failures))
+
+    # Classify by error type
+    by_type: Dict[str, int] = {}
+    for f in failures:
+        error_type = f.error or "incorrect_answer"
+        by_type[error_type] = by_type.get(error_type, 0) + 1
+
+    logger.info("Failure breakdown:")
+    for error_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
+        logger.info("  %s: %d", error_type, count)
+
+    # File GitHub issues (unless dry-run)
+    if not args.dry_run:
+        try:
+            from benchmarks.classify_failures import file_issues  # noqa: F811
+
+            filed = file_issues(failures, trace_file, dry_run=False)
+            logger.info("Filed %d GitHub issues", len(filed))
+        except ImportError:
+            logger.warning("classify_failures.file_issues not found, skipping issue filing")
+            return 0
+        except Exception as e:
+            logger.error("failed to file issues: %s", e)
+            return 1
+    else:
+        logger.info("Dry run: would file issues for %d failure patterns", len(by_type))
+
+    output_path = args.output or os.path.join(".benchmark_results", f"classify_{int(time.time())}")
+    os.makedirs(output_path, exist_ok=True)
+    classify_path = os.path.join(output_path, "failures.json")
+    with open(classify_path, "w") as f:
+        json.dump({"total_failures": len(failures), "by_type": by_type}, f, indent=2)
+    logger.info("classification written to %s", classify_path)
+
+    return 0
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────────────
+
+
+def _ingest_conversation(client: RagamuffinClient, conv: Conversation, plan: IngestPlan) -> bool:
+    """Ingest all messages from a conversation into the target vault."""
+    try:
+        for msg in conv.messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if not content:
+                continue
+            client.ingest(
+                content=content,
+                source=f"{conv.id}/{role}",
+                vault=plan.vault,
+                tags={
+                    "benchmark": "longmemeval",
+                    "conversation": conv.id,
+                    "role": role,
+                },
+            )
+        return True
+    except Exception as e:
+        logger.error("ingest failed for %s: %s", conv.id, e)
+        return False
+
+
+# ── Entry point ─────────────────────────────────────────────────────────────────
+
+
+def main() -> int:
+    args = build_parser().parse_args()
+
+    # Setup logging
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    if args.classify:
+        return run_classify(args)
+    if args.stress:
+        return run_stress(args)
+    if args.benchmark:
+        return run_benchmark(args)
+
+    # No mode specified
+    logger.error("no mode specified. Use --benchmark, --stress, or --classify.")
+    return 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

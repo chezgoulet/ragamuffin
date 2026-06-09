@@ -237,5 +237,54 @@ def main():
         )
 
 
+# ── file_issues (called by run.py --classify) ──────────────────────────────
+
+
+def file_issues(results, trace_file, dry_run=False):
+    """Create GitHub issues from benchmark results for failures.
+
+    Called by ``run.py --classify``.  Wraps ``classify()`` with minimal
+    comparison / result structure derived from the trace data alone.
+    """
+    compare = {
+        "accuracy": 0,
+        "regressions": {},
+    }
+    result_summary = {
+        "total_conversations": 0,
+        "per_conversation": [],
+    }
+    traces = [
+        {
+            "question_id": r.question.id,
+            "question_type": r.question.question_type,
+            "ragamuffin_answer": r.answer,
+            "latency_ms": r.latency_ms,
+            "error": r.error,
+        }
+        for r in results
+    ]
+
+    issues = classify(traces, compare, result_summary, repo="chezgoulet/ragamuffin", run_id="local")
+
+    if dry_run or not issues:
+        return issues
+
+    token = os.environ.get("GITHUB_TOKEN")
+    if not token:
+        print("GITHUB_TOKEN not set, skipping issue creation", file=sys.stderr)
+        return issues
+
+    for issue in issues:
+        create_github_issue(
+            title=issue["title"],
+            body=issue["body"],
+            labels=issue["labels"],
+            repo=os.environ.get("GITHUB_REPOSITORY", "chezgoulet/ragamuffin"),
+            token=token,
+        )
+    return issues
+
+
 if __name__ == "__main__":
     main()
