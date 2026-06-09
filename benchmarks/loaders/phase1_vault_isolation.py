@@ -1,15 +1,13 @@
 """Phase 1 Benchmark: Vault Isolation for Facts.
 
 Tests that facts written to one vault are not visible from another vault.
-Depends on RAGAMUFFIN_FACTS_MODE set to "vault" (requires #553).
 
-When vault-scoped facts mode is active:
-- /vault/{name}/v1/facts writes to per-vault Qdrant collection
-- Facts created in vault-a should not appear when querying vault-b
+The benchmark client now uses vault-prefixed routes
+(/vault/{name}/v1/facts) which route to per-vault Qdrant
+collections under both RAGAMUFFIN_FACTS_MODE="vault" and
+RAGAMUFFIN_FACTS_MODE="both".
 
-This benchmark is a no-op if running against an instance without
-vault-scoped facts mode (#553). It detects the mode and reports
-accordingly.
+Facts created in vault-a should not appear when querying vault-b.
 """
 
 from __future__ import annotations
