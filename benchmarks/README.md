@@ -48,22 +48,133 @@ contribution of each pipeline stage.
 
 ## Usage
 
+### Config D (Primary Target)
+
+Config D is the full-stack configuration that uses all Ragamuffin features.
+Run it for the most comprehensive evaluation.
+
 ```bash
-# Full sweep — all configs, both datasets
+# LongMemEval — 5 conversations for quick validation
+python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 5
+
+# Full dataset (all conversations)
+python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 0
+
+# LoCoMo — 5 conversations
+python3 benchmarks/run.py --benchmark locomo --config d --max-convs 5
+```
+
+### Full Sweep
+
+```bash
+# All configs, both datasets
 bash benchmarks/run_all.sh
 
 # Quick smoke test — Config A, LongMemEval only
 bash benchmarks/run_all.sh --quick
-
-# Single benchmark run
-python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 5
-
-# Resume from checkpoint
-python3 benchmarks/run.py --benchmark locomo --config b --resume
-
-# Full dataset (all conversations)
-python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 0
 ```
+
+### Resuming
+
+If a run is interrupted, resume from the last checkpoint:
+
+```bash
+python3 benchmarks/run.py --benchmark longmemeval --config d --resume
+```
+
+Checkpoint files are written to `data/<benchmark>/<config>_progress.json`.
+Each question is saved as it completes, so resume is safe at any point.
+
+### Other Configs
+
+```bash
+python3 benchmarks/run.py --benchmark longmemeval --config a --max-convs 5
+python3 benchmarks/run.py --benchmark longmemeval --config b --max-convs 5
+python3 benchmarks/run.py --benchmark locomo --config c --max-convs 5
+```
+
+## Trace Format
+
+Each run produces a JSONL trace file in `.benchmark_traces/<run_id>.jsonl`.
+Every line is a single question result with this structure:
+
+```json
+{
+  "question_id": "lme_042",
+  "benchmark": "longmemeval",
+  "config": "D",
+  "question_type": "extraction",
+  "question": "What URL did the team decide on for the production database?",
+  "ground_truth": "postgres://prod.internal:5432/primary",
+  "ragamuffin_answer": "The team selected postgres://prod.internal:5432/primary",
+  "correct": true,
+  "latency_ms": 2847,
+  "retries": 0,
+  "error": null,
+  "sources": [
+    "session_042/summary.md",
+    "session_042/turn_015.md"
+  ],
+  "vault": "longmemeval_d"
+}
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `question_id` | string | Unique question identifier from the dataset |
+| `benchmark` | string | `longmemeval` or `locomo` |
+| `config` | string | Config label (A, B, C, or D) |
+| `question_type` | string | Ability dimension (extraction, multi_session, temporal, knowledge_update, abstention) |
+| `question` | string | The question text sent to Ragamuffin |
+| `ground_truth` | string | Expected answer from the dataset |
+| `ragamuffin_answer` | string | What Ragamuffin returned |
+| `correct` | boolean | Whether the answer matched ground truth (via judge or exact match) |
+| `latency_ms` | int | End-to-end latency in milliseconds |
+| `retries` | int | Number of retries (429/502/timeout) before success or failure |
+| `error` | string or null | Error message if the question failed entirely; null on success |
+| `sources` | array of strings | Source files/chunks Ragamuffin cited in its answer |
+| `vault` | string | The vault name used for this run |
+
+Use `benchmarks/core/trace.py` to load and analyze trace files:
+
+```python
+from benchmarks.core.trace import load_trace
+
+results = load_trace(".benchmark_traces/run_2026-06-08.jsonl")
+for r in results:
+    print(r.question_id, r.correct, r.latency_ms)
+```
+
+## Baseline
+
+`benchmarks/baseline.json` stores the reference accuracy for regressions:
+
+```json
+{
+  "overall_accuracy": 0.72,
+  "per_type_accuracy": {
+    "extraction": 0.81,
+    "multi_session": 0.68,
+    "temporal": 0.74,
+    "knowledge_update": 0.70,
+    "abstention": 0.65
+  },
+  "baseline_updated_at": "2026-06-01T12:00:00Z",
+  "baseline_commit": "a1b2c3d4e5f6..."
+}
+```
+
+### Updating
+
+The baseline is updated when a release version is cut (merge to `main`):
+
+1. Run the full benchmark suite: `bash benchmarks/run_all.sh`
+2. Update baseline.json with the new accuracy values from RESULTS.md
+3. Commit and tag with the release version
+
+The baseline is not updated per-PR. It's a release-level reference point.
+Benchmark gauntlet CI (`build.yml`) compares new results against this
+baseline and flags regressions.
 
 ## Vault Strategy
 
