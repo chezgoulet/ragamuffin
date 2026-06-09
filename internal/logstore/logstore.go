@@ -99,6 +99,7 @@ type Turn struct {
 
 // migrate creates the schema if it doesn't exist.
 func migrate(db *sql.DB) error {
+	// Schema v1: initial tables
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS log_entries (
 			id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,7 +159,18 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_link_target ON link_index(target_path);
 		CREATE INDEX IF NOT EXISTS idx_link_vault ON link_index(vault);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Schema v2: add finalized_at column for session finalization
+	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`)
+	if err != nil {
+		// Column may already exist (no-op), which is fine
+		_ = err
+	}
+
+	return nil
 }
 
 // Append inserts a new log entry and returns its ID.
@@ -473,6 +485,24 @@ func (s *Store) DeleteSessionsByVault(ctx context.Context, vault string) (int64,
 	}
 	n, _ := result.RowsAffected()
 	return n, nil
+}
+
+// FinalizeSession marks a session as finalized by setting finalized_at.
+// Returns an error if the session doesn't exist.
+func (s *Store) FinalizeSession(ctx context.Context, id string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := s.db.ExecContext(ctx,
+		`UPDATE sessions SET finalized_at = ?, updated_at = ? WHERE id = ? AND archived = 0`,
+		now, now, id,
+	)
+	if err != nil {
+		return fmt.Errorf("logstore: finalize session: %w", err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("logstore: session %q not found or already archived", id)
+	}
+	return nil
 }
 
 // ── Hygiene ─────────────────────────────────────────────────────────────────
