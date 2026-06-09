@@ -21,9 +21,8 @@ import (
 // ── Fact Data Model ──────────────────────────────────────────────────────
 
 // Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
-// Vector dimension is set by RAGAMUFFIN_FACTS_VECTOR_SIZE (default 4).
-// Facts use zero vectors (no semantic search), but the dimension must match
-// what the Qdrant collection was created with.
+// Vector size defaults to 4 — a sentinel for payload-only storage (no embeddings).
+// The cost of 4-dim vectors is negligible while satisfying Qdrant's vector requirement.
 //
 // v0.5 extends the payload with lifecycle fields:
 //   - source, source_type, confidence, ttl_days — client-supplied, optional
@@ -142,19 +141,6 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 		return false, err
 	}
 	return len(points) > 0, nil
-}
-
-// zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
-// configured facts vector dimension. Facts are payload-only (no semantic search),
-// but Qdrant requires vectors to match the collection's configured dimension.
-func (s *Server) zeroFactVector() *qdrant.Vectors {
-	return &qdrant.Vectors{
-		VectorsOptions: &qdrant.Vectors_Vector{
-			Vector: &qdrant.Vector{
-				Data: make([]float32, s.cfg.FactsVectorSize),
-			},
-		},
-	}
 }
 
 // computeExpiresAt returns an ISO8601 timestamp for (now + ttl_days), or "" if 0.
@@ -337,7 +323,13 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{
+					Data: []float32{0, 0, 0, 0},
+				},
+			},
+		},
 	}
 
 	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
@@ -651,7 +643,13 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{
+					Data: []float32{0, 0, 0, 0},
+				},
+			},
+		},
 	}
 
 	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
@@ -1182,7 +1180,13 @@ func (s *Server) migrateFacts() {
 			point := &qdrant.PointStruct{
 				Id: p.Id,
 				Payload: payload,
-				Vectors: s.zeroFactVector(),
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{
+							Data: []float32{0, 0, 0, 0},
+						},
+					},
+				},
 			}
 
 			if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
@@ -1214,7 +1218,11 @@ func (s *Server) migrateFacts() {
 			"status":     "active",
 			"created_at": time.Now().UTC().Format(time.RFC3339),
 		}),
-		Vectors: s.zeroFactVector(),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{Data: []float32{0, 0, 0, 0}},
+			},
+		},
 	}
 	if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{sentinelPoint}); err != nil {
 		s.logger.Warn("facts migration: failed to write sentinel", "error", err)

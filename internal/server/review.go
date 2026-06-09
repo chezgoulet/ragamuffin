@@ -344,7 +344,13 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 					},
 				},
 				Payload: payload,
-				Vectors: s.zeroFactVector(),
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{
+							Data: []float32{0, 0, 0, 0},
+						},
+					},
+				},
 			}
 			if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{oldPoint}); err != nil {
 				s.log(r.Context()).Error("review supersede: failed to update old fact", "error", err)
@@ -425,7 +431,13 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{
+					Data: []float32{0, 0, 0, 0},
+				},
+			},
+		},
 	}
 
 	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
@@ -507,7 +519,13 @@ func (s *Server) reviewSupersedeCreate(r *http.Request, newKey, newValue string,
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: &qdrant.Vectors{
+			VectorsOptions: &qdrant.Vectors_Vector{
+				Vector: &qdrant.Vector{
+					Data: []float32{0, 0, 0, 0},
+				},
+			},
+		},
 	}
 
 	if err := s.facts.Upsert(r.Context(), []*qdrant.PointStruct{point}); err != nil {
