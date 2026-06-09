@@ -458,8 +458,10 @@ func TestEmitter_Nil(t *testing.T) {
 	// Calling Emit on nil should not panic
 	var e *Emitter
 	e.Emit("test", nil)
-	e.EmitSync(context.Background(), "test", nil)
-	e.Close()
+	err := e.EmitSync(context.Background(), "test", nil)
+	if err != nil {
+		t.Errorf("expected nil error, got %v", err)
+	}
 }
 
 func TestEmitter_NoWebhook(t *testing.T) {
