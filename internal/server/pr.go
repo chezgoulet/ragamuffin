@@ -1,3 +1,9 @@
+// pr.go — createPR helper for the /draft endpoint.
+//
+// The draft handler accepts ?mode=pr to create a PR instead of writing a local
+// file. createPR delegates to the configured GitProvider, using the first repo
+// from the GitRepos config list and the configured GitBaseBranch.
+
 package server
 
 import (
