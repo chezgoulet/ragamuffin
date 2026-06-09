@@ -91,7 +91,7 @@ func TestParseGitHubPush(t *testing.T) {
 	}{
 		{"newfile.md", "def456/newfile.md"},
 		{"README.md", "def456/README.md"},
-		{"src/main.go", "def456/src/main.go"},
+		{"src/main.go", "def456/src%2Fmain.go"},
 	}
 	for i, e := range expected {
 		if event.Files[i].Path != e.path {
