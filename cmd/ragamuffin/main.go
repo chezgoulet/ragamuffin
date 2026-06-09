@@ -172,7 +172,7 @@ func main() {
 			defer drv.Close()
 
 			// Create indexer (shared infrastructure, not driver-owned)
-			idx := indexer.New(vc.Path, drv.QdrantClient(), ec, vlog)
+			idx := indexer.New(vc.Path, name, drv.QdrantClient(), ec, vlog)
 			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
 			idx.OnFileEvent(func(action, path string) {
 				switch action {
@@ -254,7 +254,7 @@ func main() {
 		defer drv.Close()
 
 		// Create indexer
-		idx := indexer.New(cfg.VaultPath, drv.QdrantClient(), ec, logger)
+		idx := indexer.New(cfg.VaultPath, "default", drv.QdrantClient(), ec, logger)
 		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
 		idx.OnFileEvent(func(action, path string) {
 			switch action {
@@ -291,6 +291,15 @@ func main() {
 		<-initialDone
 		logger.Info("initial indexing complete")
 
+	}
+
+	// ── Wire link index writer to all indexers ─────────────────────────────
+	// Only if logStore is available (it always is at this point).
+	if logStore != nil {
+		idxManager.ForEach(func(name string, idx *indexer.Indexer) {
+			idx.SetLinkWriter(logStore)
+		})
+		logger.Info("link index writer wired to all vaults")
 	}
 
 	// ── Initialize git provider (optional) ───────────────────────────────────

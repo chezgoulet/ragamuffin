@@ -625,6 +625,63 @@ else
   fi
 fi
 
+# ── Link Index Smoke Tests ─────────────────────────────────────────────────────
+
+# 1. Get outbound links (empty result expected for unknown path)
+RESP=$(curl -s "$BASE/v1/links?path=unknown.md" 2>/dev/null)
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'links' in d; assert d['path']=='unknown.md'; assert isinstance(d['links'], list)" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/links returns valid structure for unknown path"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/links unexpected response: $(echo $RESP | head -c 100)"
+fi
+
+# 2. Backlinks (empty result expected for unknown path)
+RESP=$(curl -s "$BASE/v1/links/backlinks?path=unknown.md" 2>/dev/null)
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'backlinks' in d; assert d['path']=='unknown.md'" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/links/backlinks returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/links/backlinks unexpected response: $(echo $RESP | head -c 100)"
+fi
+
+# 3. Link graph (valid structure for unknown path)
+RESP=$(curl -s "$BASE/v1/links/graph?path=unknown.md&depth=2" 2>/dev/null)
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'nodes' in d; assert 'edges' in d; assert d['depth']==5" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/links/graph returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/links/graph unexpected response: $(echo $RESP | head -c 100)"
+fi
+
+# 4. Link endpoint requires path param (400)
+RESP=$(curl -s "$BASE/v1/links" 2>/dev/null)
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d.get('error') is not None and 'path' in d.get('message','')" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/links without path returns 400"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/links without path unexpected response: $(echo $RESP | head -c 100)"
+fi
+
+# 5. Graph endpoint caps depth at 5
+RESP=$(curl -s "$BASE/v1/links/graph?path=unknown.md&depth=20" 2>/dev/null)
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['depth']==5" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/links/graph depth capped at 5"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/links/graph depth cap unexpected: $(echo $RESP | head -c 100)"
+fi
+
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
   exit 1
