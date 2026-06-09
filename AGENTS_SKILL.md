@@ -20,6 +20,18 @@ curl -s http://ragamuffin:8000/health | jq .
 curl -s http://ragamuffin:8000/stats | jq .
 ```
 
+### Repo Workflow
+
+When contributing to the ragamuffin repo:
+
+- **Branch from `testing`** — all feature branches (`dev/*`) branch from
+  and PR into `testing`. Never PR directly to `main`.
+- **CI checks** — every PR triggers `pr-check.yml` (compile, test, vet).
+  Must pass before merge.
+- **Tag semantics** — `chezgoulet/ragamuffin:rolling` tracks `testing`
+  (pre-release), `:latest` tracks `main` (production, benchmarked).
+- **Review** — robot reviews PRs against `testing`, not `main`.
+
 ## Agent Memory Mode (v0.5)
 
 When your harness is configured with the `memory-ragamuffin` plugin, you

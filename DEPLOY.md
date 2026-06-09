@@ -19,6 +19,55 @@ curl -X POST http://localhost:8000/recall \
   -d '{"query":"what do we know about this project?"}'
 ```
 
+## Deployment Model
+
+Ragamuffin uses a **two-track Docker tagging model** that mirrors its
+staged-branch CI pipeline:
+
+| Tag | Source Branch | When Updated | Stability |
+|---|---|---|---|
+| `:rolling` | `testing` | Every merge to `testing` | Pre-release — validate in staging |
+| `:latest` | `main` | Every merge to `main` | Production — benchmarked and released |
+
+### Rolling Deployments (`:rolling`)
+
+Every merge to `testing` triggers `testing-push.yml`, which builds and pushes
+`chezgoulet/ragamuffin:rolling`. This tag is meant for:
+
+- **Staging validation** — deploy on the host, run smoke tests
+- **Agent preview** — let agents use the latest before it hits production
+- **Integration testing** — verify new features with the full stack
+
+To deploy the rolling tag:
+
+```bash
+docker compose pull ragamuffin
+# Update your .env or docker-compose to tag: rolling
+docker compose up -d ragamuffin
+```
+
+### Production Releases (`:latest`)
+
+Merges to `main` trigger `build.yml`, which runs the full benchmark gauntlet.
+If benchmarks pass, the image is promoted to `chezgoulet/ragamuffin:latest`.
+This tag is meant for:
+
+- **Production deployments** — the stable, benchmarked release
+- **CI base images** — other pipelines that depend on ragamuffin
+
+### Tag Lifecycle
+
+```
+testing ──(merge)──→ testing-push.yml ──→ :rolling
+   │
+   └──(PR merge)──→ build.yml ──→ :latest + git tag vX.Y.Z
+                        │
+                        └── benchmark gauntlet ──→ pass → promote
+```
+
+Version tags (`v0.9.0-rc.1`, `v0.9.0`) are applied to `main` commits only.
+The `:rolling` tag tracks `testing` tip without versioning.
+
 ## Configuration
 
 Full variable reference: [SPEC.md](SPEC.md#configuration).
