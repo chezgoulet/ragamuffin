@@ -131,6 +131,11 @@ type Config struct {
 	ExtractConcurrency        int
 	ExtractPerSessionCooldown int
 
+	// Procedural memory extraction from session finalization
+	ProceduralEnabled          bool
+	ProceduralMinSteps         int
+	ProceduralDedupThreshold   float64
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath        string          // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows     int             // 0 = unlimited
@@ -412,6 +417,9 @@ func Load() (*Config, error) {
 		ExtractDedupThreshold:     envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
 		ExtractConcurrency:        envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
 		ExtractPerSessionCooldown: envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),
+		ProceduralEnabled:          envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
+		ProceduralMinSteps:         envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
+		ProceduralDedupThreshold:   envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),

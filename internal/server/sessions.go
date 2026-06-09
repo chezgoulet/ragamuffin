@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/procedural"
 )
 
 // ── Request/Response types ─────────────────────────────────────────────────────
@@ -217,25 +218,37 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleSessionByID routes to get (GET), append turn (POST), or delete (DELETE).
+// handleSessionByID routes to get (GET), append turn (POST), delete (DELETE),
+// or finalize (POST /v1/sessions/{id}/finalize).
 func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
-	// Extract session ID from path: /v1/sessions/{id} or /v1/sessions/{id}/turns
+	// Extract session ID from path: /v1/sessions/{id} or /v1/sessions/{id}/turns or /v1/sessions/{id}/finalize
 	path := strings.TrimPrefix(r.URL.Path, "/v1/sessions/")
 	parts := strings.SplitN(path, "/", 2)
 	sessionID := parts[0]
-	isTurn := len(parts) > 1 && parts[1] == "turns"
+	subPath := ""
+	if len(parts) > 1 {
+		subPath = parts[1]
+	}
 
 	if sessionID == "" {
 		writeError(w, 400, "INVALID_REQUEST", "session ID is required")
 		return
 	}
 
-	if isTurn {
+	switch subPath {
+	case "turns":
 		if r.Method != http.MethodPost {
 			writeError(w, 405, "INVALID_REQUEST", "method not allowed; use POST for turns")
 			return
 		}
 		s.handleTurnAppend(w, r, sessionID)
+		return
+	case "finalize":
+		if r.Method != http.MethodPost {
+			writeError(w, 405, "INVALID_REQUEST", "method not allowed; use POST for finalize")
+			return
+		}
+		s.handleSessionFinalize(w, r, sessionID)
 		return
 	}
 
@@ -524,5 +537,127 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request, ses
 		"status": "deleted",
 		"id":     sessionID,
 	})
+}
+
+// ── Session Finalize ───────────────────────────────────────────────────────────
+
+func (s *Server) handleSessionFinalize(w http.ResponseWriter, r *http.Request, sessionID string) {
+	if s.logStore == nil {
+		writeError(w, 503, "UNAVAILABLE", "session store not available")
+		return
+	}
+
+	// Mark session as finalized in logstore
+	if err := s.logStore.FinalizeSession(r.Context(), sessionID); err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("session %q not found", sessionID))
+			return
+		}
+		s.logger.Error("session finalize failed", "error", err)
+		writeError(w, 500, "INTERNAL", "failed to finalize session")
+		return
+	}
+
+	extracting := false
+	if r.URL.Query().Get("extract_procedures") == "true" && s.cfg.ProceduralEnabled {
+		extracting = true
+		go s.extractProcedures(s.shutdownCtx, sessionID)
+	}
+
+	writeJSON(w, 200, map[string]interface{}{
+		"status":              "finalized",
+		"id":                  sessionID,
+		"extracting_procedures": extracting,
+	})
+}
+
+// extractProcedures loads a session's turns, extracts procedures,
+// deduplicates against existing procedure facts, and writes them.
+// Runs in a background goroutine — errors are logged, not returned.
+func (s *Server) extractProcedures(ctx context.Context, sessionID string) {
+	// Load session metadata and all turns (0 = no limit)
+	sess, turns, err := s.logStore.GetSession(ctx, sessionID, 0)
+	if err != nil {
+		s.logger.Warn("extract procedures: get session failed", "session_id", sessionID, "error", err)
+		return
+	}
+
+	if len(turns) == 0 {
+		s.logger.Debug("extract procedures: no turns", "session_id", sessionID)
+		return
+	}
+
+	// Convert logstore turns to procedural turns
+	procTurns := make([]procedural.Turn, len(turns))
+	for i, t := range turns {
+		procTurns[i] = procedural.Turn{
+			Content: t.Content,
+			Role:    t.Role,
+		}
+	}
+
+	// Extract procedures
+	minSteps := s.cfg.ProceduralMinSteps
+	if minSteps <= 0 {
+		minSteps = procedural.DefaultMinSteps
+	}
+	procs := procedural.Extract(procTurns, minSteps)
+	if len(procs) == 0 {
+		s.logger.Debug("extract procedures: no procedures extracted", "session_id", sessionID)
+		return
+	}
+
+	// Get per-vault fact client and collection name
+	vaultName := sess.Vault
+	factsQc := s.indexers.GetFactClient(vaultName)
+	if factsQc == nil {
+		factsQc = s.facts
+	}
+	collection := s.cfg.FactsCollectionFor(vaultName)
+	vectorSize := s.cfg.FactsVectorSize
+	threshold := s.cfg.ProceduralDedupThreshold
+
+	if factsQc == nil {
+		s.logger.Warn("extract procedures: no facts client available", "vault", vaultName)
+		return
+	}
+
+	created := 0
+	updated := 0
+
+	for _, proc := range procs {
+		// Dedup
+		result, err := procedural.Dedup(ctx, factsQc, collection, proc, threshold)
+		if err != nil {
+			s.logger.Warn("extract procedures: dedup failed", "name", proc.Name, "error", err)
+			continue
+		}
+
+		if result.ShouldUpdate {
+			// Update existing procedure
+			proc.SourceSession = sessionID
+			if _, err := procedural.Update(ctx, factsQc, proc, vectorSize); err != nil {
+				s.logger.Warn("extract procedures: update failed", "name", proc.Name, "error", err)
+				continue
+			}
+			updated++
+		} else {
+			// Write new procedure
+			proc.SourceSession = sessionID
+			if err := procedural.Write(ctx, factsQc, proc, vectorSize); err != nil {
+				s.logger.Warn("extract procedures: write failed", "name", proc.Name, "error", err)
+				continue
+			}
+			created++
+		}
+	}
+
+	s.logger.Info("extract procedures complete",
+		"session_id", sessionID,
+		"vault", vaultName,
+		"procedures_extracted", len(procs),
+		"created", created,
+		"updated", updated,
+	)
 }
 
