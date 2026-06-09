@@ -71,6 +71,12 @@ type Config struct {
 	FactsCollection  string
 	FactsVectorSize  uint64
 
+	// FactsMode controls which /v1/facts routes are registered.
+	// "vault"  — only vault-prefixed /vault/{name}/v1/facts (default for multi-tenant)
+	// "global" — only bare /v1/facts (default for single-tenant)
+	// "both"   — both, as separate namespaces
+	FactsMode string
+
 	// Optional — Watcher
 	WatchInterval string
 	WatcherMode   string
@@ -116,6 +122,7 @@ type Config struct {
 	PrunerLowConfidenceThreshold float64
 	PrunerConflictThreshold     float64
 	PrunerImportanceThreshold   float64
+	PrunerReembedInterval       time.Duration
 
 	// Automatic extraction from conversation turns
 	ExtractEnabled            bool
@@ -124,6 +131,11 @@ type Config struct {
 	ExtractDedupThreshold     float64
 	ExtractConcurrency        int
 	ExtractPerSessionCooldown int
+
+	// Procedural memory extraction from session finalization
+	ProceduralEnabled          bool
+	ProceduralMinSteps         int
+	ProceduralDedupThreshold   float64
 
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath        string          // explicit path for log.db; empty = heuristic
@@ -360,6 +372,7 @@ func Load() (*Config, error) {
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
+		FactsMode:        envOrDefault("RAGAMUFFIN_FACTS_MODE", ""),
 		FactsVectorSize:  uint64(envInt("RAGAMUFFIN_FACTS_VECTOR_SIZE", envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536))),
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
@@ -399,12 +412,16 @@ func Load() (*Config, error) {
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
 		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
+		PrunerReembedInterval:       envDuration("RAGAMUFFIN_PRUNER_REEMBED_INTERVAL", 24*time.Hour),
 		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED"),
 		ExtractWindow:             envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
 		ExtractMaxConfidence:      math.Min(envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85), 0.85),
 		ExtractDedupThreshold:     envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
 		ExtractConcurrency:        envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
 		ExtractPerSessionCooldown: envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),
+		ProceduralEnabled:          envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
+		ProceduralMinSteps:         envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
+		ProceduralDedupThreshold:   envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
@@ -550,6 +567,23 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 		cfg.VaultPath = vaultPath
+	}
+
+	// Resolve FactsMode default based on tenancy if not explicitly set
+	if cfg.FactsMode == "" {
+		if cfg.IsMultiTenant() {
+			cfg.FactsMode = "vault"
+		} else {
+			cfg.FactsMode = "global"
+		}
+	}
+
+	// Validate FactsMode
+	switch cfg.FactsMode {
+	case "vault", "global", "both":
+		// valid
+	default:
+		return nil, fmt.Errorf("invalid RAGAMUFFIN_FACTS_MODE %q: must be \"vault\", \"global\", or \"both\"", cfg.FactsMode)
 	}
 
 	return cfg, nil

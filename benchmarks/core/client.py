@@ -58,14 +58,13 @@ class RagamuffinClient:
             return False
 
     def list_vaults(self) -> List[str]:
-        """List available vaults."""
+        """List available vault names."""
         data, _ = self._request("GET", "/vaults")
         if isinstance(data, dict):
             vaults = data.get("vaults", data.get("names", []))
-            if not vaults and "vaults" not in data:
-                # /vaults returns array in some versions
-                vaults = []
-            return list(vaults)
+            if isinstance(vaults, list):
+                return [v["name"] if isinstance(v, dict) else v for v in vaults]
+            return []
         if isinstance(data, list):
             return data
         return []
@@ -77,19 +76,24 @@ class RagamuffinClient:
         vault: str,
         source: str = "benchmark",
         source_type: str = "conversation",
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Create a fact in a vault.
 
-        Uses POST /v1/facts with vault in body (not path-based).
+        Uses vault-prefixed POST /vault/{name}/v1/facts for
+        correct routing to the per-vault facts collection.
+        Accepts optional list of tag strings.
         """
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts"
         body = {
             "key": key,
             "value": value,
-            "vault": vault,
             "source": source or "benchmark",
             "source_type": source_type or "conversation",
         }
-        data, status = self._request("POST", "/v1/facts", body=body)
+        if tags:
+            body["tags"] = tags
+        data, status = self._request("POST", path, body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
 
     def get_fact(
@@ -99,10 +103,10 @@ class RagamuffinClient:
     ) -> Dict[str, Any]:
         """Get a single fact by key from a vault.
 
-        Uses GET /v1/facts?key=...&vault=... (query param, NOT path-based).
+        Uses vault-prefixed GET /vault/{name}/v1/facts?key=...
         Returns the fact dict or raises PermanentError on 404.
         """
-        path = f"/v1/facts?key={urllib.parse.quote(key)}&vault={urllib.parse.quote(vault)}"
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts?key={urllib.parse.quote(key)}"
         data, status = self._request("GET", path)
         return data if isinstance(data, dict) else {}
 
@@ -115,16 +119,18 @@ class RagamuffinClient:
     ) -> Dict[str, Any]:
         """List facts in a vault with optional filters.
 
-        Uses GET /v1/facts?prefix=...&vault=... (query params, not path-based).
+        Uses vault-prefixed GET /vault/{name}/v1/facts?prefix=...
         """
-        params = [f"vault={urllib.parse.quote(vault)}"]
+        params = []
         if prefix:
             params.append(f"prefix={urllib.parse.quote(prefix)}")
         if tag:
             params.append(f"tag={urllib.parse.quote(tag)}")
         if status:
             params.append(f"status={urllib.parse.quote(status)}")
-        path = "/v1/facts?" + "&".join(params)
+        path = f"/vault/{urllib.parse.quote(vault)}/v1/facts"
+        if params:
+            path += "?" + "&".join(params)
         data, status_code = self._request("GET", path)
         return data if isinstance(data, dict) else {}
 
@@ -133,17 +139,53 @@ class RagamuffinClient:
         content: str,
         source: str,
         vault: str,
-        tags: Optional[Dict[str, str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Ingest content into a vault."""
+        """Ingest content into a vault. Tags must be a list of strings."""
         body = {
             "content": content,
             "source": source,
             "vault": vault,
-            "tags": tags or {},
         }
+        if tags:
+            body["tags"] = tags
         data, status = self._request("POST", "/v1/ingest", body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
+
+    def recall(
+        self,
+        query: str,
+        vault: str,
+        top_k: int = 5,
+        score_threshold: float = 0.0,
+        detail: str = "l2",
+    ) -> Dict[str, Any]:
+        """Recall chunks matching a query from a vault."""
+        path = f"/vault/{vault}/recall"
+        body = {
+            "query": query,
+            "top_k": top_k,
+            "score_threshold": score_threshold,
+            "detail": detail,
+        }
+        data, _ = self._request("POST", path, body=body)
+        return data if isinstance(data, dict) else {"results": []}
+
+    def batch_recall(
+        self,
+        queries: List[str],
+        vault: str,
+        top_k: int = 3,
+    ) -> Dict[str, Any]:
+        """Submit multiple recall queries in a single batch request."""
+        path = f"/vault/{vault}/v1/batch/recall"
+        query_objects = [
+            {"query": q, "vault": vault, "top_k": top_k}
+            for q in queries
+        ]
+        body = {"queries": query_objects}
+        data, _ = self._request("POST", path, body=body)
+        return data if isinstance(data, dict) else {}
 
     def ask(
         self,

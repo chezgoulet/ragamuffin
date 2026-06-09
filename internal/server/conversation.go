@@ -193,11 +193,14 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 			payload["expires_at_unix"] = qutil.Nv(float64(now.AddDate(0, 0, f.TTLDays).Unix()))
 		}
 
-		// Embed the fact value for semantic search — was previously zero-filled
+			// Embed the fact value for semantic search. EmbedSingle now retries on
+		// transient errors (rate limit, network blip) before returning. If it still
+		// fails after retries, fall back to zero vector — the fact is stored with
+		// metadata but invisible to semantic search until the pruner's ReembedScan
+		// fixes it on the next cycle.
 		vec, err := s.embedder.EmbedSingle(r.Context(), f.Value)
 		if err != nil {
 			s.log(r.Context()).Error("failed to embed conversation fact", "key", key, "error", err)
-			// Fall back to zero vector so the fact is at least stored with metadata
 			vec = make([]float32, s.cfg.FactsVectorSize)
 		}
 

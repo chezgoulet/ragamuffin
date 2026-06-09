@@ -175,11 +175,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/snapshot", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/snapshot", s.handleVaultSnapshot))))
 		mux.HandleFunc("/vault/{name}/reindex", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/reindex", s.handleReindex))))
 		mux.HandleFunc("/vault/{name}/v1/batch/recall", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/recall", s.handleBatchRecall))))
+		mux.HandleFunc("/vault/{name}/v1/links", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultLinks))))
+		mux.HandleFunc("/vault/{name}/v1/links/backlinks", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultBacklinks))))
+		mux.HandleFunc("/vault/{name}/v1/links/graph", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultLinkGraph))))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
-		// Single-tenant routes — bare endpoints + /vault/{name} routes (#536)
+		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
 
 		// /vault/{name} routes (same set as multi-tenant, validated against single vault name)
@@ -196,28 +199,53 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		vaultChain("/v1/snapshot", s.handleVaultSnapshot)
 		vaultChain("/reindex", s.handleReindex)
 		vaultChain("/v1/batch/recall", s.handleBatchRecall)
+		vaultChain("/v1/links", s.handleVaultLinks)
+		vaultChain("/v1/links/backlinks", s.handleVaultBacklinks)
+		vaultChain("/v1/links/graph", s.handleVaultLinkGraph)
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraph))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 
-		// Bare endpoints (keep existing v0.1–v0.3 behavior)
-		mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleBatchRecall))))
-		mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
-		mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
-		mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
-		mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
-
-		// Pruner endpoints (auto-tune, config)
-		mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
-		mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
-		mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
-		mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
 	}
 
-	// Facts
-	mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
-	mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	// Bare endpoints (keep existing v0.1–v0.3 behavior)
+	mux.HandleFunc("/v1/batch/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleBatchRecall))))
+	mux.HandleFunc("/recall", s.withRequestID(s.withQdrant(s.withRateLimit("/recall", s.handleRecall))))
+	mux.HandleFunc("/ask", s.withRequestID(s.withQdrant(s.withRateLimit("/ask", s.handleAsk))))
+	mux.HandleFunc("/draft", s.withRequestID(s.withQdrant(s.withRateLimit("/draft", s.handleDraft))))
+	mux.HandleFunc("/audit", s.withRequestID(s.withQdrant(s.withRateLimit("/audit", s.handleAudit))))
+
+	// Pruner endpoints (auto-tune, config)
+	mux.HandleFunc("/v1/pruner/auto-tune", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/auto-tune", s.handlePrunerAutoTune))))
+	mux.HandleFunc("/v1/pruner/config", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/pruner/config", s.handlePrunerConfig))))
+	mux.HandleFunc("/reindex", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleReindex))))
+	mux.HandleFunc("/v1/refresh", s.withRequestID(s.withQdrant(s.withRateLimit("/reindex", s.handleRefresh))))
+
+	// Facts — registration depends on FactsMode
+	switch s.cfg.FactsMode {
+	case "global":
+		// Only bare /v1/facts (default single-tenant behavior)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	case "both":
+		// Both bare and vault-prefixed (already registered above)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	case "vault":
+		// Only vault-prefixed (already registered above) — no bare /v1/facts
+		// The vault-prefixed routes are registered in the IsMultiTenant() block above
+		// or via vaultChain() in the single-tenant block.
+	default:
+		// Default: register bare (backward compat)
+		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
+		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
+	}
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
+
+	// Link index — always registered (bare endpoints)
+	mux.HandleFunc("/v1/links", s.withRequestID(s.withRateLimit("/v1/links", s.handleLinks)))
+	mux.HandleFunc("/v1/links/backlinks", s.withRequestID(s.withRateLimit("/v1/links", s.handleBacklinks)))
+	mux.HandleFunc("/v1/links/graph", s.withRequestID(s.withRateLimit("/v1/links", s.handleLinkGraph)))
 
 	// Chunk retrieval
 	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunkGet))))

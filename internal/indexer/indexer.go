@@ -15,6 +15,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/chunker"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/indexutil"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -30,6 +31,7 @@ type FileEventCallback func(action, path string)
 // Indexer processes file events and maintains the Qdrant index.
 type Indexer struct {
 	vaultPath     string
+	vaultName     string
 	qdrant        qdrant.FactStore
 	embedder      embedding.Embedder
 	logger        *slog.Logger
@@ -48,18 +50,33 @@ type Indexer struct {
 
 	// Optional callback for file change events
 	onFileEvent FileEventCallback
+
+	// Link index enrichment
+	linkWriter logstore.LinkIndexWriter
+	knownPaths []string // cached vault-relative paths for path_ref matching
 }
 
 // New creates an Indexer.
-func New(vaultPath string, qc qdrant.FactStore, ec embedding.Embedder, logger *slog.Logger) *Indexer {
+func New(vaultPath, vaultName string, qc qdrant.FactStore, ec embedding.Embedder, logger *slog.Logger) *Indexer {
 	return &Indexer{
 		vaultPath:  vaultPath,
+		vaultName:  vaultName,
 		qdrant:     qc,
 		embedder:   ec,
 		logger:     logger,
 		knownFiles: make(map[string]struct{}),
 		reindexCh:  make(chan struct{}, 1),
 	}
+}
+
+// SetLinkWriter injects the link index writer for link persistence.
+// Links are enrichment, not primary data — writer can be nil.
+func (idx *Indexer) SetLinkWriter(w logstore.LinkIndexWriter) {
+	idx.linkWriter = w
+}
+// VaultName returns the logical vault name this indexer belongs to.
+func (idx *Indexer) VaultName() string {
+	return idx.vaultName
 }
 
 // OnFileEvent registers a callback for file change events.
@@ -173,6 +190,12 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 		return nil
 	})
 
+	// Build known paths cache for link extraction
+	idx.mu.Lock()
+	idx.knownPaths = make([]string, len(files))
+	copy(idx.knownPaths, files)
+	idx.mu.Unlock()
+
 	total := len(files)
 	idx.mu.Lock()
 	idx.totalFiles = total
@@ -221,7 +244,35 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		idx.logger.Warn("indexer: failed to delete old chunks", "path", relPath, "error", err)
 	}
 
-	chunks := chunker.ChunkFile(string(content), relPath, filepath.Ext(relPath), modTime,
+	// Delete stale links for this source before extracting fresh ones
+	if idx.linkWriter != nil {
+		if err := idx.linkWriter.DeleteLinksBySource(ctx, relPath, idx.vaultName); err != nil {
+			idx.logger.Warn("indexer: failed to delete stale links", "path", relPath, "error", err)
+		}
+	}
+
+	// Extract structural links (wikilinks, path refs) from raw text
+	rawText := string(content)
+	idx.mu.RLock()
+	kp := idx.knownPaths
+	idx.mu.RUnlock()
+	var extractedLinks []logstore.LinkRecord
+	if idx.linkWriter != nil {
+		links := ExtractLinks(rawText, relPath, kp, nil)
+		if len(links) > 0 {
+			extractedLinks = make([]logstore.LinkRecord, len(links))
+			for i, l := range links {
+				extractedLinks[i] = logstore.LinkRecord{
+					SourcePath: relPath,
+					TargetPath: l.Target,
+					LinkType:   l.LinkType,
+					Context:    l.Context,
+				}
+			}
+		}
+	}
+
+	chunks := chunker.ChunkFile(rawText, relPath, filepath.Ext(relPath), modTime,
 		chunker.Options{MaxTokens: idx.chunkMaxTokens})
 	if len(chunks) == 0 {
 		return nil
@@ -280,6 +331,13 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		}
 	}
 
+	// Write extracted links after chunk upsert succeeds
+	if idx.linkWriter != nil && len(extractedLinks) > 0 {
+		if err := idx.linkWriter.WriteLinks(ctx, idx.vaultName, extractedLinks); err != nil {
+			idx.logger.Warn("indexer: failed to write links", "path", relPath, "error", err)
+		}
+	}
+
 	idx.mu.Lock()
 	if _, seen := idx.knownFiles[relPath]; !seen {
 		idx.knownFiles[relPath] = struct{}{}
@@ -287,6 +345,19 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	}
 	idx.chunkCount += len(chunks)
 	idx.lastIndexed = time.Now()
+	// Update knownPaths on incremental index — non-fatal if stale
+	if idx.linkWriter != nil {
+		found := false
+		for _, p := range idx.knownPaths {
+			if p == relPath {
+				found = true
+				break
+			}
+		}
+		if !found {
+			idx.knownPaths = append(idx.knownPaths, relPath)
+		}
+	}
 	idx.mu.Unlock()
 
 	return nil

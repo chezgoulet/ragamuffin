@@ -356,6 +356,18 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if answer != "" {
 		resp["answer"] = answer
 	}
+
+	// Enrich results with link index data (?enrich_links=true)
+	if enrichLinksEnabled(r) {
+		vault := vaultFromContext(r.Context())
+		enriched, err := s.enrichChunksWithLinks(ctx, out, vault)
+		if err == nil {
+			resp["results"] = enriched
+		} else {
+			s.log(ctx).Warn("links: enrichment failed", "error", err)
+		}
+	}
+
 	writeJSON(w, 200, resp)
 }
 

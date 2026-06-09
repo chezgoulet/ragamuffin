@@ -20,7 +20,7 @@ func newTestServer() *Server {
 	}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	idxm.Add("default", indexer.New("/test/vault", "default", nil, nil, nil), nil)
 	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, slog.Default(), nil, nil)
 }
 
@@ -189,7 +189,7 @@ func TestHandleAsk_MissingQuery(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	idxm.Add("default", indexer.New("/test/vault", "default", nil, nil, nil), nil)
 	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, slog.Default(), nil, nil)
 	body := bytes.NewBufferString(`{"top_k": 8}`)
 	req := httptest.NewRequest("POST", "/ask", body)
@@ -205,7 +205,7 @@ func TestHandleAsk_InvalidJSON(t *testing.T) {
 	cfg := &config.Config{LLMProvider: "test", LLMAPIKey: "test"}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", nil, nil, nil), nil)
+	idxm.Add("default", indexer.New("/test/vault", "default", nil, nil, nil), nil)
 	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, slog.Default(), nil, nil)
 	body := bytes.NewBufferString(`bad`)
 	req := httptest.NewRequest("POST", "/ask", body)
@@ -427,8 +427,8 @@ func TestHandleVaults_MultiTenant(t *testing.T) {
 	}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("docs", indexer.New("/tmp/docs", nil, nil, nil), nil)
-	idxm.Add("code", indexer.New("/tmp/code", nil, nil, nil), nil)
+	idxm.Add("docs", indexer.New("/tmp/docs", "docs", nil, nil, nil), nil)
+	idxm.Add("code", indexer.New("/tmp/code", "code", nil, nil, nil), nil)
 	srv := New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, slog.Default(), nil, nil)
 	req := httptest.NewRequest("GET", "/vaults", nil)
 	w := httptest.NewRecorder()

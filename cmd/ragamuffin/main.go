@@ -121,7 +121,11 @@ func main() {
 
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
-	emitter := events.NewEmitter(cfg.EventWebhookURL, cfg.VaultPath, logger, logStore, eventBroker, cfg.EventWebhookEvents)
+	emitterSource := cfg.VaultPath
+	if emitterSource == "" {
+		emitterSource = "ragamuffin"
+	}
+	emitter := events.NewEmitter(cfg.EventWebhookURL, emitterSource, logger, logStore, eventBroker, cfg.EventWebhookEvents)
 	if cfg.EventWebhookURL != "" {
 		logger.Info("event webhook configured", "url", cfg.EventWebhookURL)
 	}
@@ -172,7 +176,7 @@ func main() {
 			defer drv.Close()
 
 			// Create indexer (shared infrastructure, not driver-owned)
-			idx := indexer.New(vc.Path, drv.QdrantClient(), ec, vlog)
+			idx := indexer.New(vc.Path, name, drv.QdrantClient(), ec, vlog)
 			idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
 			idx.OnFileEvent(func(action, path string) {
 				switch action {
@@ -254,7 +258,7 @@ func main() {
 		defer drv.Close()
 
 		// Create indexer
-		idx := indexer.New(cfg.VaultPath, drv.QdrantClient(), ec, logger)
+		idx := indexer.New(cfg.VaultPath, "default", drv.QdrantClient(), ec, logger)
 		idx.SetChunkMaxTokens(cfg.ChunkMaxTokens)
 		idx.OnFileEvent(func(action, path string) {
 			switch action {
@@ -293,6 +297,15 @@ func main() {
 
 	}
 
+	// ── Wire link index writer to all indexers ─────────────────────────────
+	// Only if logStore is available (it always is at this point).
+	if logStore != nil {
+		idxManager.ForEach(func(name string, idx *indexer.Indexer) {
+			idx.SetLinkWriter(logStore)
+		})
+		logger.Info("link index writer wired to all vaults")
+	}
+
 	// ── Initialize git provider (optional) ───────────────────────────────────
 	var gp git.Provider
 	if cfg.HasGit() {
@@ -321,6 +334,7 @@ func main() {
 	prunerCfg.ConflictThreshold = cfg.PrunerConflictThreshold
 	prunerCfg.LowConfidenceThreshold = cfg.PrunerLowConfidenceThreshold
 	prunerCfg.ImportanceThreshold = cfg.PrunerImportanceThreshold
+	prunerCfg.ReembedScanInterval = cfg.PrunerReembedInterval
 	prunerCfg.LogScanFn = func(scanName string, dur time.Duration, flagged int, errStr string) {
 		body := fmt.Sprintf("scan=%s duration=%s facts_flagged=%d", scanName, dur, flagged)
 		if errStr != "" {

@@ -11,6 +11,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 )
@@ -96,6 +97,13 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Emit vault.file.changed event
+	s.emitter.Emit(events.TypeFileChanged, events.FileChangedData{
+		Path:   req.Source,
+		Action: "created",
+		Size:   int64(len(req.Content)),
+	})
+
 	// Get updated chunk count
 	_, chunkCount, _, _, _, _ := idx.Stats()
 
@@ -175,7 +183,7 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 
 	// Create indexer (share server-wide embedder, or the per-vault one if configured)
 	ec := s.embeddingFor(ctx)
-	idx := indexer.New(vaultPath, qc, ec, s.log(ctx).With("vault", name))
+	idx := indexer.New(vaultPath, name, qc, ec, s.log(ctx).With("vault", name))
 	idx.SetChunkMaxTokens(s.cfg.ChunkMaxTokens)
 
 	// Register with manager

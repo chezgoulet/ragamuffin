@@ -61,6 +61,7 @@ func (s *factGraphTestStore) DeleteBySource(_ context.Context, _ string) error {
 func (s *factGraphTestStore) DeleteFiltered(_ context.Context, _ string, _ *pb.Filter) error { return nil }
 func (s *factGraphTestStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
 func (s *factGraphTestStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
+func (s *factGraphTestStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error { return nil }
 func (s *factGraphTestStore) Health(_ context.Context) error { return nil }
 
 func factGraphMatchesFilter(pt *pb.RetrievedPoint, filter *pb.Filter) bool {
