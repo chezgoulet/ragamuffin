@@ -2,7 +2,6 @@ package logstore
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
 )
@@ -173,9 +172,10 @@ func (s *Store) GetInboundLinks(ctx context.Context, path, vault string) ([]Inbo
 func (s *Store) GetLinkGraph(ctx context.Context, seedPath string, depth, vault string) (*LinkGraph, error) {
 	maxDepth := 5 // server cap
 	if depth != "" {
-		if d := 0; fmt.Sscanf(depth, "%d", &d) == nil && d > 0 {
-			if d < maxDepth {
-				maxDepth = d
+		var parsed int
+		if _, err := fmt.Sscanf(depth, "%d", &parsed); err == nil && parsed > 0 {
+			if parsed < maxDepth {
+				maxDepth = parsed
 			}
 		}
 	}
