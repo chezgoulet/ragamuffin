@@ -203,7 +203,7 @@ func newFactsServer(store *factsMockStore) *Server {
 		cfg:         &config.Config{FactsCollection: "test_facts", FactsVectorSize: 4, AutoProvisionVaults: false},
 		facts:       store,
 		shutdownCtx: ctx,
-		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError})),
+		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})),
 	}
 }
 
