@@ -21,13 +21,15 @@ curl -X POST http://localhost:8000/recall \
 
 ## Deployment Model
 
-Ragamuffin uses a **two-track Docker tagging model** that mirrors its
-staged-branch CI pipeline:
+Ragamuffin uses a **staged-branch Docker tagging model**. Every branch level
+produces a Docker tag, matching the CI pipeline described in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 | Tag | Source Branch | When Updated | Stability |
 |---|---|---|---|
 | `:rolling` | `testing` | Every merge to `testing` | Pre-release — validate in staging |
 | `:latest` | `main` | Every merge to `main` | Production — benchmarked and released |
+| `vX.Y.Z` | `main` tag | Every release to `main` | Versioned — stable, auditable |
 
 ### Rolling Deployments (`:rolling`)
 
@@ -42,15 +44,43 @@ To deploy the rolling tag:
 
 ```bash
 docker compose pull ragamuffin
-# Update your .env or docker-compose to tag: rolling
 docker compose up -d ragamuffin
 ```
+
+### Pinning to a Specific Version
+
+For production stability, pin to a specific version tag instead of `:rolling`:
+
+```yaml
+# docker-compose.yml
+services:
+  ragamuffin:
+    image: chezgoulet/ragamuffin:v0.9.0
+```
+
+Or override at deploy time:
+
+```bash
+docker compose pull ragamuffin
+TAG=v0.9.0 docker compose up -d ragamuffin
+```
+
+Where your `docker-compose.yml` uses one:
+
+```yaml
+services:
+  ragamuffin:
+    image: chezgoulet/ragamuffin:${TAG:-rolling}
+```
+
+This pattern lets you default to `:rolling` for staging and pin to `v0.9.0`
+for production, with the same Compose file.
 
 ### Production Releases (`:latest`)
 
 Merges to `main` trigger `build.yml`, which runs the full benchmark gauntlet.
-If benchmarks pass, the image is promoted to `chezgoulet/ragamuffin:latest`.
-This tag is meant for:
+If benchmarks pass, the image is promoted to `chezgoulet/ragamuffin:latest`
+and a version tag (`vX.Y.Z`) is applied. This tag is meant for:
 
 - **Production deployments** — the stable, benchmarked release
 - **CI base images** — other pipelines that depend on ragamuffin
@@ -67,6 +97,41 @@ testing ──(merge)──→ testing-push.yml ──→ :rolling
 
 Version tags (`v0.9.0-rc.1`, `v0.9.0`) are applied to `main` commits only.
 The `:rolling` tag tracks `testing` tip without versioning.
+
+### Updating a Running Deployment
+
+```bash
+# 1. Pull the latest tag you want
+docker compose pull ragamuffin
+
+# 2. Recreate the container with the new image
+docker compose up -d ragamuffin
+
+# 3. Verify
+curl http://localhost:8000/health
+curl http://localhost:8000/version
+```
+
+To update Qdrant separately:
+
+```bash
+docker compose pull qdrant
+docker compose up -d qdrant
+```
+
+> **Downgrade caution:** Rolling back to an older image may cause issues if
+> Qdrant collection schemas have changed. Check CHANGELOG.md for migration
+> notes before downgrading past a breaking release.
+
+### Which Tag Should I Use?
+
+| Situation | Tag |
+|---|---|
+| Staging / smoke tests | `:rolling` |
+| Production — I want the latest stable | `:latest` |
+| Production — I want a specific release | `v0.9.0` |
+| Agent preview of what's cooking | `:rolling` |
+| CI pipeline base image | `:latest` |
 
 ## Configuration
 

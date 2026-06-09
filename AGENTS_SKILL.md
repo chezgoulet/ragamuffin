@@ -1,6 +1,5 @@
-# Agent Skill: Ragamuffin Vault
+# Agent Skill: Ragamuffin
 
-Know an agent that needs to read, search, and write to a knowledge base?
 Ragamuffin is a REST API that turns a directory of files into a queryable
 vector store — and in v0.6, it's also the memory backend that powers your
 agent's persistent, isolated cross-session recall.
@@ -13,16 +12,22 @@ Two modes:
 ## Quickstart
 
 ```bash
-# Discovery — check the vault is alive
+# Discovery — check the service is alive
 curl -s http://ragamuffin:8000/health | jq .
 
 # Quick info
 curl -s http://ragamuffin:8000/stats | jq .
+
+# Search the knowledge base
+curl -s http://ragamuffin:8000/recall \
+  -H "Content-Type: application/json" \
+  -d '{"query":"deployment process","top_k":5}'
 ```
 
 ### Repo Workflow
 
-When contributing to the ragamuffin repo:
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
+architecture. The key points for agents:
 
 - **Branch from `testing`** — all feature branches (`dev/*`) branch from
   and PR into `testing`. Never PR directly to `main`.
@@ -68,7 +73,7 @@ endpoint), because the harness authenticates and authorizes the request.
 
 - Write structured facts → `POST /v1/facts` (for small, persistent data)
 - Write log entries → `POST /v1/logs` (for what you did, when)
-- Read shared vaults → `POST /recall` with `source_filter`
+- Search shared knowledge → `POST /recall` with `source_filter`
 - Create and manage sessions → `POST /v1/sessions`
 
 ### Hybrid mode: don't swap your slot, just add tools
@@ -158,7 +163,7 @@ curl -s http://ragamuffin:8000/ask \
 
 ### Write-Back — `/draft`
 
-Agents contribute to the vault. Two modes:
+Agents contribute to the knowledge base. Two modes:
 
 **Direct** — writes immediately to the filesystem:
 ```bash
@@ -242,6 +247,18 @@ curl -s "http://ragamuffin:8000/v1/facts?limit=20&before=<next_token>"
 Facts are versioned. A `version` integer field auto-increments on update.
 Set the `version` field explicitly to enable optimistic concurrency control.
 
+### Write-Back for Agent Observations — `POST /v1/ingest`
+
+Index content into an agent vault without touching the filesystem. Use this
+to persist observations, analysis results, or any signal that doesn't belong
+in a markdown file:
+
+```bash
+curl -s -X POST http://ragamuffin:8000/v1/ingest \
+  -H "Content-Type: application/json" \
+  -d '{"vault": "agent::dev", "documents": [{"id": "obs-001", "text": "Found 3 npm vulns in the auth service", "metadata": {"source": "scout"}}]}'
+```
+
 ### Structured Logging — `/v1/logs`
 
 Append-only log stream. Every entry has an agent, type, body, optional
@@ -277,7 +294,7 @@ curl -s "http://ragamuffin:8000/v1/sessions/<session_id>"
 
 ### Snapshot — `/v1/snapshot`
 
-Download the entire vault as a gzipped tarball:
+Download the entire knowledge base as a gzipped tarball:
 ```bash
 curl -s -O http://ragamuffin:8000/v1/snapshot
 ```
@@ -316,7 +333,7 @@ curl -s "http://ragamuffin:8000/v1/review"
 curl -s "http://ragamuffin:8000/v1/review?reason=stale"
 
 # Filter by source key
-curl -s "http://ragamuffin:8000/v1/review?key=db/url"
+curl -s "http://ragamuffin:8000/v1/review?key=***"
 
 # Paginate
 curl -s "http://ragamuffin:8000/v1/review?limit=20&before=<next_token>"
@@ -380,22 +397,22 @@ Events follow Server-Sent Events protocol. Auto-reconnect compatible.
 ### Before answering a question
 
 1. Check `/stats` to see what's indexed
-2. Use `/recall` with the question as query to find relevant chunks
-3. For complex questions, use `/ask` to synthesize
+2. Use `POST /recall` with the question as query to find relevant chunks
+3. For complex questions, use `POST /ask` to synthesize
 
 ### After learning something new
 
-1. For prose (markdown docs) → use `/draft` with `mode: "direct"`
-2. For structured data (configs, URLs) → use POST `/v1/facts`
-3. For a record of what you did → use POST `/v1/logs`
-4. For session context → use POST `/v1/sessions`
+1. For prose (markdown docs) → use `POST /draft` with `mode: "direct"`
+2. For structured data (configs, URLs) → use `POST /v1/facts`
+3. For a record of what you did → use `POST /v1/logs`
+4. For session context → use `POST /v1/sessions`
 
 ### Periodic maintenance
 
-1. Call `/audit` to check for stale files
+1. Call `POST /audit` to check for stale files
 2. Call `/v1/review/stats` to check fact health
-3. Call `/v1/snapshot` to back up the vault
-4. For git-backed vaults, use `/draft` with `mode: "pr"` for human review
+3. Call `/v1/snapshot` to back up
+4. For git-backed vaults, use `POST /draft` with `mode: "pr"` for human review
 
 ### Fact quality management
 

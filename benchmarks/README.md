@@ -93,10 +93,49 @@ python3 benchmarks/run.py --benchmark longmemeval --config b --max-convs 5
 python3 benchmarks/run.py --benchmark locomo --config c --max-convs 5
 ```
 
-## Trace Format
+## Output Structure
 
-Each run produces a JSONL trace file in `.benchmark_traces/<run_id>.jsonl`.
-Every line is a single question result with this structure:
+Each run produces artifacts in two places:
+
+### Trace Directory: `results/<run_timestamp>/`
+
+Every run creates a `results/` directory with one JSONL trace file per
+dataset+config combination:
+
+```
+results/
+└── 2026-06-08T14-30-00/
+    ├── longmemeval_A.jsonl
+    ├── longmemeval_B.jsonl
+    ├── longmemeval_C.jsonl
+    ├── longmemeval_D.jsonl
+    ├── locomo_A.jsonl
+    ├── locomo_B.jsonl
+    ├── locomo_C.jsonl
+    ├── locomo_D.jsonl
+    └── run_metadata.json
+```
+
+`run_metadata.json` captures the run parameters:
+
+```json
+{
+  "run_id": "2026-06-08T14-30-00",
+  "started_at": "2026-06-08T14:30:00Z",
+  "completion_time": "2026-06-08T16:15:00Z",
+  "ragamuffin_version": "v0.9.0-rc.1",
+  "configs": ["A", "B", "C", "D"],
+  "benchmarks": ["longmemeval", "locomo"],
+  "max_convs": 0,
+  "total_questions": 0,
+  "results_summary": {},
+  "errors": []
+}
+```
+
+### Trace Format (JSONL)
+
+Each line in a trace file represents one question result:
 
 ```json
 {
@@ -135,19 +174,60 @@ Every line is a single question result with this structure:
 | `sources` | array of strings | Source files/chunks Ragamuffin cited in its answer |
 | `vault` | string | The vault name used for this run |
 
-Use `benchmarks/core/trace.py` to load and analyze trace files:
+### Aggregated Results: `benchmarks/RESULTS.md`
+
+After a full sweep, aggregated accuracy scores are written to
+`benchmarks/RESULTS.md`. Each run appends a section with:
+- Overall accuracy per config+dataset combination
+- Per-ability breakdown for LongMemEval (extraction, multi-session, etc.)
+- Token F1 scores for LoCoMo
+- Latency statistics (p50, p95, p99)
+
+Compare against published SOTA scores from the respective papers.
+
+Use `benchmarks/core/trace.py` to load and analyze trace files programmatically:
 
 ```python
 from benchmarks.core.trace import load_trace
 
-results = load_trace(".benchmark_traces/run_2026-06-08.jsonl")
+results = load_trace("results/2026-06-08T14-30-00/longmemeval_D.jsonl")
 for r in results:
     print(r.question_id, r.correct, r.latency_ms)
 ```
 
-## Baseline
+## Interpreting Results
 
-`benchmarks/baseline.json` stores the reference accuracy for regressions:
+### LongMemEval Scores
+
+Scores are reported as **accuracy** — the fraction of questions answered
+correctly, broken down by ability dimension:
+
+| Dimension | What it measures | Target (Config D) |
+|---|---|---|
+| Extraction | Finding specific facts in long contexts | ≥ 0.80 |
+| Multi-session reasoning | Synthesizing across multiple conversations | ≥ 0.65 |
+| Temporal reasoning | Understanding event ordering and timing | ≥ 0.72 |
+| Knowledge updates | Tracking fact revisions and contradictions | ≥ 0.68 |
+| Abstention | Knowing when information isn't present | ≥ 0.60 |
+
+**Overall accuracy** should be ≥ 0.70 for a production release.
+
+### LoCoMo Scores
+
+LoCoMo uses **Token F1** — token-level precision/recall on the intersection
+of ground-truth and predicted answers. Scores range 0.0–1.0, with 1.0 being
+a perfect token-level match. Target (Config D): ≥ 0.65.
+
+### Latency
+
+Latency is reported in milliseconds as p50, p95, and p99 across all questions
+in a run. High p95/p99 spread suggests timeout or retry issues. Target p50 for
+Config D: < 5000ms.
+
+## Baseline Comparison
+
+`benchmarks/baseline.json` stores the reference accuracy for regression
+detection. Its structure:
 
 ```json
 {
@@ -164,17 +244,33 @@ for r in results:
 }
 ```
 
-### Updating
+### How the baseline is used
+
+1. **Benchmark gauntlet CI** (`build.yml`) runs the full sweep on merge to `main`
+2. Results are compared against `baseline.json` for each dimension
+3. **Regressions** (> 3 percentage point drop in any dimension) flag the run for
+   review and can block the release PR
+4. **Improvements** update the baseline for the next release
+
+### Updating the baseline
 
 The baseline is updated when a release version is cut (merge to `main`):
 
 1. Run the full benchmark suite: `bash benchmarks/run_all.sh`
-2. Update baseline.json with the new accuracy values from RESULTS.md
-3. Commit and tag with the release version
+2. Verify results in `benchmarks/RESULTS.md` — look for regressions or anomalies
+3. Update `baseline.json` with the new accuracy values
+4. Commit and tag with the release version (e.g. `v0.9.0`)
 
 The baseline is not updated per-PR. It's a release-level reference point.
-Benchmark gauntlet CI (`build.yml`) compares new results against this
-baseline and flags regressions.
+
+### Interpreting baseline drift
+
+| Delta | Meaning |
+|---|---|
+| +0.03 to +0.10 | Improvement — new features are helping recall |
+| -0.03 to +0.03 | Noise — within normal variance across runs |
+| -0.03 to -0.10 | Minor regression — investigate. May be acceptable if tradeoff is clear |
+| < -0.10 | Significant regression — likely blocks release. Investigate before promoting |
 
 ## Vault Strategy
 
@@ -186,12 +282,6 @@ real-world deployment where an agent's knowledge accumulates in one vault.
 (per `agent::<conversation_id>` convention) to isolate sessions more cleanly.
 This is not yet implemented — see PR #571 for status. When writing downstream
 tooling, consider both the shared-vault and per-conversation-vault patterns.
-
-## Results
-
-Results are written to `benchmarks/RESULTS.md`. Each run appends a section
-with accuracy/Token F1 scores per config and a per-ability breakdown for
-LongMemEval. Compare against published SOTA scores from the respective papers.
 
 ## Environment Variables
 

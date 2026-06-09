@@ -6,6 +6,7 @@
 ---
 
 [![testing](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml)
+[![build](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml)
 [![PR check](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml)
 [![Go Reference](https://pkg.go.dev/badge/github.com/chezgoulet/ragamuffin.svg)](https://pkg.go.dev/github.com/chezgoulet/ragamuffin)
 
@@ -99,20 +100,20 @@ go test ./... -run Integration -v
 > server handlers, and the indexer manager. The pruner package has no
 > integration tests — testing is via the review queue API end-to-end.
 
-### Development Workflow
+## Branch Workflow
 
-Ragamuffin follows a **staged-branch workflow** with three tiers:
+Ragamuffin uses a **staged-branch workflow** with three tiers:
 
 ```
-  ┌──────────┐    PR    ┌──────────┐    PR    ┌──────────┐
-  │ dev/*    │ ──────→  │ testing  │ ──────→  │   main   │
-  │ branches │          │ (staging)│          │ (stable) │
-  └──────────┘          └──────────┘          └──────────┘
-       │                      │                     │
-       │ go test + vet        │ testing-push.yml    │ build.yml
-       │ (PR check)           │ Docker :rolling     │ Docker :latest
-       ▼                      ▼                     ▼
-   CI passes             Deploy for val.       Benchmark + release
+┌──────────┐    PR    ┌──────────┐    PR    ┌──────────┐
+│  dev/*    │ ──────→  │ testing  │ ──────→  │   main   │
+│ branches  │          │ (staging)│          │ (stable) │
+└──────────┘          └──────────┘          └──────────┘
+     │                      │                     │
+     │ go test + vet        │ testing-push.yml    │ build.yml
+     │ (PR check)           │ Docker :rolling     │ Docker :latest+version tag
+     ▼                      ▼                     ▼
+ CI passes             Deploy for val.      Benchmark + release
 ```
 
 **Tier 1 — Feature branches (`dev/*`)**
@@ -120,13 +121,25 @@ Branch from `testing`, PR into `testing`. Every PR triggers `pr-check.yml`
 (compile, test, vet). Must pass before merge.
 
 **Tier 2 — `testing` branch**
-The integration branch. Merges trigger `testing-push.yml` which builds the
-`:rolling` Docker image and deploys it for validation. This is where changes
-are validated before they reach production.
+The integration branch. Merges trigger `testing-push.yml` which builds and
+pushes the `:rolling` Docker tag. This is where changes validate before
+reaching production.
 
 **Tier 3 — `main` branch**
 The stable release branch. Merges from `testing` trigger `build.yml` which
-runs the full benchmark gauntlet, builds `:latest`, and cuts a release tag.
+runs the full benchmark gauntlet, builds `:latest`, and cuts a git tag.
+Only release PRs from testing to main land here.
+
+> See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
+> walkthrough and [CONTRIBUTING.md](CONTRIBUTING.md) for how to open a PR.
+
+## CI Badges
+
+| Badge | Workflow | What It Guards |
+|---|---|---|
+| [![testing](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/testing-push.yml) | `testing-push.yml` | Merge to `testing` builds and pushes `:rolling` Docker image |
+| [![build](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml) | `build.yml` | Release build — full benchmark gauntlet, `:latest` + version tag |
+| [![PR check](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/pr-check.yml) | `pr-check.yml` | Every PR: compile, test, vet — must pass before merge |
 
 ### Dependency Audit
 
@@ -1462,639 +1475,21 @@ Replace `{NAME}` with the uppercase vault name (e.g. `RAGAMUFFIN_VAULT_DOCS_CHUN
 | Env Var | Description |
 |---|---|
 | `RAGAMUFFIN_VAULT_{NAME}_LLM_PROVIDER` | LLM provider name |
-| `RAGAMUFFIN_VAULT_{NAME}_LLM_ENDPOINT` | LLM API endpoint |
-| `RAGAMUFFIN_VAULT_{NAME}_LLM_API_KEY` | LLM API key |
-| `RAGAMUFFIN_VAULT_{NAME}_LLM_MODEL` | LLM model name |
-| `RAGAMUFFIN_VAULT_{NAME}_LLM_TIMEOUT` | LLM request timeout |
 
-**Audit overrides:**
-| Env Var | Description |
-|---|---|
-| `RAGAMUFFIN_VAULT_{NAME}_AUDIT_ENTITY_EXTRACTION` | Enable entity extraction audit (true/false) |
-| `RAGAMUFFIN_VAULT_{NAME}_AUDIT_ENTITY_LLM` | LLM model for entity extraction |
-
-### Authentication
-
-Four modes controlled by `RAGAMUFFIN_AUTH_MODE`:
-
-| Mode | Description |
-|---|---|
-| `none` | No authentication (default) |
-| `api_key` | Static API keys from environment variables |
-| `jwt` | JWT tokens validated via JWKS endpoint |
-| `oidc` | OpenID Connect with discovery flow |
-
-**API Key mode:**
-- `RAGAMUFFIN_AUTH_READ_KEY` — global read key
-- `RAGAMUFFIN_AUTH_WRITE_KEY` — global write key
-- `RAGAMUFFIN_AUTH_READ_KEY_{VAULT}` — per-vault scoped read key
-- `RAGAMUFFIN_AUTH_WRITE_KEY_{VAULT}` — per-vault scoped write key
-
-**JWT mode:**
-- `RAGAMUFFIN_AUTH_JWT_ISSUER` — expected JWT issuer
-- `RAGAMUFFIN_AUTH_JWT_AUDIENCE` — expected audience
-- `RAGAMUFFIN_AUTH_JWT_JWKS_URL` — JWKS endpoint for key discovery
-
-JWT must include a `ragamuffin` claim with an `access` field (`read` or `read_write`).
-
-**OIDC mode:**
-- `RAGAMUFFIN_AUTH_OIDC_ISSUER` — OIDC provider issuer URL (required)
-- `RAGAMUFFIN_AUTH_OIDC_CLIENT_ID` — OIDC client ID for audience validation
-
-**Per-vault auth keys:** Keys can be scoped to a specific vault by appending `_{VAULT_NAME}`
-to the env var name. For example, `RAGAMUFFIN_AUTH_READ_KEY_DOCS=my-key` sets a read-only
-key that only works on the `docs` vault.
-
-**Auto-provisioning:**
-- `RAGAMUFFIN_AUTO_PROVISION_VAULTS` — when `true`, first ingest to a non-existent vault automatically creates it (default: `false`)
-
-> **Auth exemptions:** The `/events` (SSE) and `/mcp` (SSE + JSON-RPC)
-> endpoints do not require authentication. SSE clients need to connect
-> before obtaining tokens, and MCP uses protocol-level auth via
-> `ragamuffin_store`/`ragamuffin_draft` tool calls rather than HTTP
-> headers. All other endpoints require auth when a mode other than
-> `none` is set.
-
-### Web UI (v0.4)
-
-Ragamuffin ships an embedded web UI served at the root path:
-- `GET /` — SPA dashboard with Search, Browse, Audit, and Graph pages
-- `GET /static/*` — Static assets (CSS, JS)
-
-API routes take priority over static file serving.
-
----
-
-## Harness Integration (v0.6)
-
-Ragamuffin ships as the memory backend for both OpenClaw and Hermes agents.
-The adapters are reference implementations — any harness with a pluggable memory
-backend can adopt the same API contract.
-
-### OpenClaw — `plugins.slots.memory = "memory-ragamuffin"`
-
-Configure in `openclaw.json`:
-
-```json5
-{
-  plugins: {
-    slots: {
-      memory: "memory-ragamuffin",
-    },
-    entries: {
-      "memory-ragamuffin": {
-        enabled: true,
-        config: {
-          endpoint: "http://ragamuffin:8000",
-          vaultPrefix: "agent::",
-          autoRecall: true,
-          autoCapture: true,
-        },
-      },
-    },
-  },
-}
-```
-
-That's it. Restart OpenClaw and every agent's memory is automatically
-Ragamuffin-backed — per-agent Qdrant isolation, session persistence,
-and cross-agent recall. Agents write zero code.
-
-**Don't want to swap slots yet?** See [Hybrid: Ragamuffin as cross-harness
-bridge](#hybrid-pattern-3-ragamuffin-as-cross-harness-bridge) — you can add
-Ragamuffin as agent tools alongside your existing memory backend with zero
-migration.
-
-### Hermes — `memory.provider: "ragamuffin"`
-
-Configure in `config.yaml`:
-
-```yaml
-memory:
-  provider: ragamuffin
-  ragamuffin:
-    endpoint: "http://ragamuffin:8000"
-    vault_prefix: "agent::"
-```
-
-Hermes discovers the plugin from `plugins/memory/ragamuffin/`. The adapter
-implements the `MemoryProvider` ABC — `initialize`, `prefetch`, `sync_turn`,
-`get_tool_schemas`, `on_session_end`, `shutdown`.
-
-### Lifecycle mapping
-
-Both adapters implement the same mapping from harness hooks to Ragamuffin API calls:
-
-| Harness hook | Ragamuffin API call |
-|---|---|
-| Plugin load / agent start | `POST /v1/ingest` — auto-provisions vault on first ingest |
-| Pre-turn recall | `POST /vault/{name}/recall` — semantic search against agent vault |
-| Post-turn persist | `POST /v1/ingest` — index the completed turn |
-| Session end | `POST /v1/ingest` — index a session summary artifact |
-| Cross-agent recall | `POST /vault/agent::robot/recall` — query another agent's vault |
-
-### Writing an adapter for another harness
-
-See [docs/integration/memory-provider-api.md](docs/integration/memory-provider-api.md)
-for the full HTTP contract, OpenAPI spec, error handling guide, and agent identity
-conventions. The adapters are ~200 lines each — the contract is the hard part.
-
----
-
-## Rate Limits
-
-Per-endpoint rate limiting via environemnt variables. Disabled by default; enable with `RAGAMUFFIN_RATE_LIMIT_ENABLED=true`.
-
-| Endpoint | Env Var | Default (req/min) |
-|---|---|---|
-| `/recall` | `RAGAMUFFIN_RATE_LIMIT_RECALL` | 60 |
-| `/ask` | `RAGAMUFFIN_RATE_LIMIT_ASK` | 10 |
-| `/draft` | `RAGAMUFFIN_RATE_LIMIT_DRAFT` | 30 |
-| `/audit` | `RAGAMUFFIN_RATE_LIMIT_AUDIT` | 5 |
-| `/v1/facts` | `RAGAMUFFIN_RATE_LIMIT_FACTS` | 30 |
-| `/v1/logs` | `RAGAMUFFIN_RATE_LIMIT_LOGS` | 60 |
-| `/v1/snapshot` | `RAGAMUFFIN_RATE_LIMIT_SNAPSHOT` | 5 |
-| `/v1/ingest` | `RAGAMUFFIN_RATE_LIMIT_INGEST` | 30 |
-| `/v1/review` | `RAGAMUFFIN_RATE_LIMIT_REVIEW` | 30 |
-| `/reindex` | `RAGAMUFFIN_RATE_LIMIT_REINDEX` | 30 |
-
-When rate-limited, responds with `429 Too Many Requests` with a `Retry-After`
-header set to the number of seconds to wait (integer, not a date string).
-
----
-
-## Storage
-
-### Qdrant Collections
-
-| Collection | Env Var | Default | Vector Size | Purpose |
-|---|---|---|---|---|
-| Main index | `RAGAMUFFIN_QDRANT_COLLECTION` | `ragamuffin` | 1536 (default) | File chunk embeddings for /recall |
-| Facts | `RAGAMUFFIN_FACTS_COLLECTION` | `ragamuffin_facts` | 4 (configurable) | Structured key-value facts; conversation and document facts use embeddings |
-
-The facts collection uses a 4-dim zero vector `[0,0,0,0]` by default for direct
-`POST /v1/facts` writes (payload-only storage). Conversation facts extracted via
-`auto_extract` use actual embeddings from the configured embedding client for
-semantic search. See [Fact Extraction](#fact-extraction).
-
-### SQLite Database
-
-Ragamuffin creates a SQLite database at `<vault>/.ragamuffin/logs.db` for the structured log
-store. Uses WAL mode and `synchronous=NORMAL` for concurrent access. Pure Go —
-uses `modernc.org/sqlite`, no CGo dependency.
-
-### Request Body Limits
-
-| Endpoint | Limit |
-|---|---|
-| `/recall`, `/ask`, `/audit` | 64 KB |
-| `/v1/facts` (POST) | 256 KB |
-| `/v1/logs` (POST) | 64 KB |
-| `/v1/ingest` (POST) | 10 MB |
-| `/draft` | 10 MB |
-
----
-
-## Fact Lifecycle (v0.6)
-
-Ragamuffin's pruner subsystem manages the life cycle of structured facts:
-what's current, what's stale, what contradicts itself, and what's been
-superseded. Facts pass through four states:
-
-| State | Meaning | Transition
-|---|---|---|
-| `active` | Current, trusted fact | Default on creation; may be flagged by pruner or manually via review |
-| `needs_review` | Flagged by pruner — stale, low-confidence, or potentially conflicted | Pruner scans auto-set this; resolved via review queue |
-| `superseded` | Replaced by newer information | Manually set via review; original value retained for audit trail |
-| `rejected` | Determined to be incorrect | Manually set via review; preserved for debugging |
-
-All state transitions preserve the original fact data. Facts are never deleted —
-their state determines whether they appear in queries and searches.
-
-### Pruner Scans
-
-The pruner runs three scan types on independent configurable intervals.
-Each scan reads facts, flags candidates, and updates their status to
-`needs_review`. The pruner never deletes or modifies fact values — it marks
-facts for human (or agent) review.
-
-| Scan | What it does | Default interval |
-|---|---|---|
-| **StaleScan** | Flags facts past their `expires_at` | 24h |
-| **LowConfidenceScan** | Flags facts with `confidence` below the configured threshold | 24h |
-| **ConflictScan** | Compares fact values for the same or similar keys, flags semantic overlaps | 72h |
-| **SupersedeScan** | Cross-references fact sources against vault files; flags if source has been superseded | 24h |
-
-### Review Queue
-
-Facts flagged by the pruner are surfaced through the review queue — a set of
-REST endpoints for listing, inspecting, and resolving flagged items.
-
-#### `GET /v1/review` — List items needing attention
-
-```bash
-curl -s 'http://localhost:8000/v1/review?reason=stale&limit=20'
-```
-
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `reason` | string | — | Filter: `stale`, `conflict`, `superseded`, `low_confidence` |
-| `tag` | string | — | Filter by fact tag |
-| `source_type` | string | — | Filter by source type |
-| `min_confidence` | float | 0.0 | Minimum confidence threshold |
-| `limit` | int | 100 | Max results per page |
-| `before` | string | — | Cursor pagination from previous response |
-
-**Response:**
-
-```json
-{
-  "entries": [
-    {
-      "key": "deployment/url",
-      "value": "https://old-app.example.com",
-      "confidence": 0.7,
-      "expires_at": "2026-05-01T00:00:00Z",
-      "review_reasons": [
-        {"type": "stale", "detail": "fact expired at 2026-05-01T00:00:00Z"}
-      ],
-      "status": "needs_review",
-      "updated_at": "2026-04-01T12:00:00Z"
-    }
-  ],
-  "next_token": "uuid-for-next-page"
-}
-```
-
-#### `POST /v1/review` — Resolve a flagged item
-
-```bash
-curl -s -X POST 'http://localhost:8000/v1/review?key=deployment/url' \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"confirm"}'
-```
-
-| Parameter | Description |
-|---|---|
-| `key` | Fact key to resolve **(query param, required)** |
-| `action` | Action to take: `confirm`, `supersede`, `reject`, `reclassify` **(required)** |
-| `new_value` | New fact value (for `supersede`) |
-| `new_tags` | Updated tags (for `reclassify`) |
-
-| Action | Effect |
-|---|---|
-| `confirm` | Status → `active`, confidence boosted by configured amount |
-| `supersede` | Old fact → `superseded` status; new fact created from `new_value` |
-| `reject` | Status → `rejected`, original value preserved |
-| `reclassify` | Tags updated to `new_tags`, status → `active` |
-
-**Response:**
-
-```json
-{
-  "key": "deployment/url",
-  "status": "active",
-  "action": "confirm",
-  "confidence": 0.8
-}
-```
-
-#### `GET /v1/review/stats` — Review queue summary
-
-```bash
-curl -s http://localhost:8000/v1/review/stats
-```
-
-**Response:**
-
-```json
-{
-  "total_needs_review": 12,
-  "by_reason": {
-    "stale": 5,
-    "low_confidence": 4,
-    "conflict": 2,
-    "superseded": 1
-  },
-  "by_source_type": {
-    "agent": 8,
-    "vault": 4
-  },
-  "oldest_item": "2026-05-01T00:00:00Z",
-  "avg_pending_days": 14.3
-}
-```
-
-### Fact Lifecycle Configuration
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_PRUNER_ENABLED` | `false` | Master switch for all pruner scans |
-| `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | `24h` | How often stale scan runs |
-| `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past `expires_at` to flag as stale |
-| `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | `72h` | How often conflict scan runs |
-| `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Number of fact pairs to compare per cycle |
-| `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | `24h` | How often supersede scan runs |
-| `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Facts below this confidence are flagged |
-
----
-
-## Configuration
-
-### Required
-
-| Env Var | Description |
-|---|---|
-| `RAGAMUFFIN_VAULT_PATH` | Path to the knowledge base directory |
-| `RAGAMUFFIN_QDRANT_URL` | Qdrant gRPC endpoint (e.g. `http://localhost:6334`) |
-| `RAGAMUFFIN_EMBEDDING_API_KEY` | API key for the embedding service (optional unless indexing or /recall is needed) |
-
-### Embedding
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_EMBEDDING_PROVIDER` | `openai` | Embedding API provider |
-| `RAGAMUFFIN_EMBEDDING_MODEL` | `text-embedding-3-small` | Model name |
-| `RAGAMUFFIN_EMBEDDING_BASE_URL` | `https://api.openai.com/v1` | API base URL (for proxies) |
-| `RAGAMUFFIN_EMBEDDING_DIMS` | `1536` | Output dimensions |
-| `RAGAMUFFIN_EMBEDDING_TIMEOUT` | `30s` | Embedding request timeout (Go duration) |
-| `RAGAMUFFIN_CHUNK_VECTOR_SIZE` | `0` (uses `EMBEDDING_DIMS`) | Vector dimension for chunk/doc collections. Set separately when chunk and fact vectors differ. |
-
-### LLM
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_LLM_PROVIDER` | — | LLM provider (e.g. `openai`) |
-| `RAGAMUFFIN_LLM_BASE_URL` | `https://api.deepseek.com` | API base URL without `/v1` — the LLM client appends `/v1/chat/completions` internally. For LiteLLM proxy use `http://litellm:4000`. See [URL convention](#url-conventions). |
-| `RAGAMUFFIN_LLM_MODEL` | — | Model name (e.g. `gpt-4o`, `deepseek-chat`, `deepseek-v4-flash`) |
-| `RAGAMUFFIN_LLM_API_KEY` | — | LLM API key |
-| `RAGAMUFFIN_LLM_TIMEOUT` | `120s` | LLM request timeout (Go duration) |
-
-### URL Conventions
-
-Ragamuffin has two API clients with **opposite base URL conventions** — this is by design after normalization.
-
-| Client | Appends to base URL | Example `RAGAMUFFIN_*_BASE_URL` |
-|---|---|---|
-| **Embedding** | `/embeddings` | `https://api.openai.com/v1` (include `/v1`) |
-| **LLM** | `/v1/chat/completions` | `https://api.deepseek.com` (omit `/v1`) |
-
-For a LiteLLM proxy (`http://litellm:4000`), set:
-- `RAGAMUFFIN_EMBEDDING_BASE_URL=http://litellm:4000/v1` (LiteLLM proxies `/v1/embeddings`)
-- `RAGAMUFFIN_LLM_BASE_URL=http://litellm:4000` (LiteLLM handles `/v1/chat/completions`)
-
-### Extraction
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_EXTRACT_ENABLED` | `false` | Master switch for automatic fact extraction from documents and conversations |
-| `RAGAMUFFIN_EXTRACT_WINDOW` | `10` | Number of preceding turns to include as context for conversation extraction |
-| `RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE` | `0.85` | Hard ceiling for extracted fact confidence (0.0–1.0) |
-| `RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD` | `0.85` | Cosine similarity threshold for duplicate fact detection |
-| `RAGAMUFFIN_EXTRACT_CONCURRENCY` | `2` | Max concurrent extractions |
-| `RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN` | `30` | Seconds between extractions for the same session |
-
-### Qdrant
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_QDRANT_COLLECTION` | `ragamuffin` | Main index collection name |
-| `RAGAMUFFIN_FACTS_COLLECTION` | `ragamuffin_facts` | Facts collection name |
-| `RAGAMUFFIN_FACTS_VECTOR_SIZE` | `4` | Facts collection vector dimensionality |
-
-### Watcher
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_WATCH_INTERVAL` | `60s` | Poll interval (poll mode) |
-| `RAGAMUFFIN_WATCHER_MODE` | `poll` | `poll` or `inotify` (Linux only) |
-
-### Chunking
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_CHUNK_MAX_TOKENS` | `2000` | Max tokens per chunk (0 = no limit) |
-
-### Git
-
-| Env Var | Description |
-|---|---|
-| `RAGAMUFFIN_GIT_PROVIDER_ENABLED` | Enable PR mode (`true`/`false`) |
-| `RAGAMUFFIN_GIT_PROVIDER` | `github` (default) |
-| `RAGAMUFFIN_GIT_TOKEN` | Git provider access token |
-| `RAGAMUFFIN_GIT_BASE_BRANCH` | `main` (default) |
-| `RAGAMUFFIN_GIT_BASE_URL` | API base URL (for self-hosted) |
-| `RAGAMUFFIN_GIT_REPOS` | Repository list |
-
-### Events (v0.4)
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_EVENT_WEBHOOK_URL` | — | Webhook URL for CloudEvents v1.0 (empty = disabled) |
-
-When configured, Ragamuffin emits CloudEvents v1.0 structured JSON via HTTP POST
-with `Content-Type: application/cloudevents+json`. Delivery is fire-and-forget (async).
-
-| Event Type | When |
-|---|---|
-| `vault.file.changed` | File created or modified (after successful index) |
-| `vault.file.deleted` | File deleted from index |
-| `ragamuffin.started` | Server boot, before listen |
-
-### Server
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_HOST` | `0.0.0.0` | HTTP listen host |
-| `RAGAMUFFIN_PORT` | `8000` | HTTP listen port |
-| `RAGAMUFFIN_LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
-| `RAGAMUFFIN_LOGSTORE_PATH` | — | Explicit path for `log.db` (default: heuristic next to vault) |
-| `RAGAMUFFIN_LOGSTORE_MAX_ROWS` | `100000` | Max rows in the SQLite log store (0 = unlimited) |
-
-All handlers are wrapped in a panic recovery middleware that logs stack traces
-via slog and returns JSON 500 errors instead of silent connection drops.
-
-### Log Store
-
-Ragamuffin stores operation logs (`POST /v1/logs`) in a local SQLite database.
-The database path is resolved heuristically (next to the vault directory) unless
-`RAGAMUFFIN_LOGSTORE_PATH` is explicitly set. The log store uses SQLite in WAL
-mode for concurrent access safety.
-
-### Snapshot Restore
-
-When Ragamuffin starts, it runs a restore-from-snapshot detection pass.
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD` | `0.1` | Max allowed file-count mismatch between snapshot and Qdrant (0.0–1.0). Exceeding this triggers a full reindex. |
-
-All handlers are wrapped in a panic recovery middleware that logs stack traces
-via slog and returns JSON 500 errors instead of silent connection drops.
-
-### Pruner (Fact Lifecycle Management)
-
-The Pruner runs scheduled background scans on the facts collection to manage
-fact lifecycle. Each scan type can be configured independently.
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_PRUNER_ENABLED` | `false` | Master switch for all scans |
-| `RAGAMUFFIN_PRUNER_STALE_INTERVAL` | `24h` | Stale scan interval (0 = disabled) |
-| `RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL` | `72h` | Conflict scan interval (0 = disabled) |
-| `RAGAMUFFIN_PRUNER_SUPERSEDE_INTERVAL` | `24h` | Supersede scan interval (0 = disabled) |
-| `RAGAMUFFIN_PRUNER_SOURCE_STALE_INTERVAL` | `0` (disabled) | Source stale scan interval — reindexes facts tied to stale source files (0 = disabled) |
-| `RAGAMUFFIN_PRUNER_STALE_DAYS` | `90` | Days past TTL expiry before a fact is flagged stale |
-| `RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE` | `50` | Pairs per conflict scan cycle |
-| `RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD` | `0.5` | Below this → flagged `needs_review` |
-| `RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD` | `0.0` | Importance floor — facts below this are not superseded (0.0 = disabled) |
-
-**Scan types:**
-
-| Scan | What it does |
-|---|---|
-| **StaleScan** | Queries facts with `status=active AND ttl_days>0 AND expires_at_unix<now`, marks them `needs_review` |
-| **ConflictScan** | Samples active facts, embeds values, compares cosine similarity (threshold 0.85). High-similarity pairs with different values are flagged |
-| **SupersedeScan** | Two sub-scans: cross-reference (facts with `supersedes` field pointing to an active target → target marked `superseded`) and key-pattern (`org/v2/x` vs `org/v1/x` → lower version marked `superseded`) |
-| **LowConfidenceScan** | One-time scan at startup: marks active facts with confidence < threshold as `needs_review` |
-
-### Tuning
-
-| Env Var | Default | Description |
-|---|---|---|
-| `RAGAMUFFIN_AUDIT_SAMPLE_SIZE` | `50` | Default sample size for audit checks |
-| `RAGAMUFFIN_AUTO_THRESHOLD` | `0.75` | Auto-mode RAG→full fallback threshold |
-| `RAGAMUFFIN_RATE_LIMIT_ENABLED` | `false` | Enable per-endpoint rate limiting |
-
----
-
-## Error Codes
-
-All endpoints return errors in a uniform format:
-
-```json
-{
-  "error": true,
-  "code": "ERROR_CODE",
-  "message": "Human-readable description"
-}
-```
-
-### Client Errors (4xx)
-
-| Code | Description | HTTP Status |
-|---|---|---|
-| `INVALID_REQUEST` | Malformed request — missing fields, invalid JSON, wrong method | 400 |
-| `INVALID_INPUT` | Required fields missing or invalid | 400 |
-| `INVALID_DATA` | Corrupt or unparseable stored data | 400 |
-| `INVALID_ACTION` | Invalid review queue action | 400 |
-| `MISSING_KEY` | Required key parameter missing | 400 |
-| `MISSING_KEYS` | Required keys array missing | 400 |
-| `MISSING_ACTION` | Review action field missing | 400 |
-| `KEY_TOO_LONG` | Fact key exceeds 1024 bytes | 400 |
-| `VALUE_TOO_LARGE` | Fact value exceeds 64 KB | 400 |
-| `TAG_TOO_LONG` | Tag string exceeds 256 bytes | 400 |
-| `TOO_MANY_TAGS` | Tag array exceeds 50 entries | 400 |
-| `AGENT_TOO_LONG` | Agent name exceeds 256 bytes | 400 |
-| `TYPE_TOO_LONG` | Log type exceeds 256 bytes | 400 |
-| `EMPTY_TAG` | Empty tag provided | 400 |
-| `BODY_TOO_LARGE` | Request body exceeds endpoint limit | 413 |
-| `METHOD_NOT_ALLOWED` | Wrong HTTP method for endpoint | 405 |
-| `FORBIDDEN` | Insufficient access permissions | 403 |
-| `NOT_FOUND` | Endpoint doesn't exist | 404 |
-| `CONFLICT` | Resource already exists or is in progress | 409 |
-| `INVALID_SUPERSEDE` | Supersede requires new value | 400 |
-| `INVALID_SINCE` | Invalid `since` timestamp format | 400 |
-| `INVALID_UNTIL` | Invalid `until` timestamp format | 400 |
-| `INVALID_TIMESTAMP` | Invalid timestamp value | 400 |
-| `TOO_MANY_KEYS` | Too many keys in batch request | 400 |
-
-### Server Errors (5xx)
-
-| Code | Description | HTTP Status |
-|---|---|---|
-| `INTERNAL` | Unexpected server error | 500 |
-| `UPSERT_FAILED` | Failed to create or update a fact | 500 |
-| `SCROLL_FAILED` | Failed to query facts from Qdrant | 500 |
-| `DELETE_FAILED` | Failed to delete a fact | 500 |
-| `READ_FAILED` | Failed to read a fact | 500 |
-| `QUERY_FAILED` | Failed to query logs or review queue | 500 |
-| `ENTRY_NOT_FOUND` | Requested entry not found | 404 |
-| `APPEND_FAILED` | Failed to append log entry to SQLite | 500 |
-| `EMBEDDING_API_ERROR` | Embedding API returned an error | 502 |
-| `LLM_API_ERROR` | LLM API returned an error | 502 |
-| `QDRANT_UNREACHABLE` | Qdrant is unreachable or returned an error | 502 |
-| `INGEST_FAILED` | Failed to index content | 500 |
-| `GIT_NOT_CONFIGURED` | Git operations requested but not configured | 400 |
-| `RETRIEVAL_ERROR` | Failed to retrieve data from storage | 500 |
-| `SERVICE_UNAVAILABLE` | Service temporarily unavailable | 503 |
-| `SUPERSEDE_CREATE_FAILED` | Failed to create superseding fact | 500 |
-| `SERVICE_UNAVAILABLE` | LLM not configured or unreachable | 503 |
-| `GIT_NOT_CONFIGURED` | PR mode requires git provider config | 400 |
-| `GIT_PROVIDER_ERROR` | Git provider returned an error | 502 |
-
-### Rate Limiting
-
-When rate-limited (requires `RAGAMUFFIN_RATE_LIMIT_ENABLED=true`), the server
-responds with HTTP `429 Too Many Requests` and a `Retry-After` header indicating
-seconds until the rate window resets.
-
----
-
-## Architecture
-
-```mermaid
-flowchart LR
-    A["Agent<br/>(curl / MCP)"]
-    R["Ragamuffin<br/>(Go binary)"]
-    Q["Qdrant<br/>(vector)"]
-
-    A <-->|HTTP| R
-    R <-->|index / search| Q
-
-    subgraph R [Ragamuffin]
-        SQL[(SQLite / logs)]
-        FS[(Filesys / vault)]
-    end
-```
-
-- **All endpoints return JSON** with a uniform error format: `{"error": true, "code": "ERROR_CODE", "message": "..."}`
-- **MCP is a bolt-on** — the REST API is the primary interface. MCP mirrors REST tools.
-- **No bridge needed** — agents talk HTTP directly. Ragamuffin manages indexing, chunking, embedding, and storage.
-- **LLM is optional** — `/recall` and facts/logs work without it. `/ask` and semantic conflict audit require it.
-
----
-
-## Design
-
-- **Go.** Single static binary. No runtime, no pip, no `asyncio.create_task` at module level.
-- **REST-first.** MCP is a bolt-on. The curl test is the test that matters.
-- **Optional everything.** Only Qdrant and an embedding API are mandatory. LLM? Optional. Git? Optional. Auth? Trust the proxy.
-- **Write-back built in.** Agents learn things. The vault should grow.
-- **Structured data, too.** Facts (key-value) and logs (append-only) extend the vault beyond flat files.
-
----
-
-## Status
-
-Active development. v0.6 adds OIDC auth, per-vault fact isolation,
-embeddings auto-detect, versioned supersede, snapshot restore detection,
-Qdrant reconnection, webhook event emitters, session CRUD, and SSE events.
-
-### Release History
-
-| Version | Highlights |
-|---|---|
-| v0.6 | OIDC-native auth with discovery flow, per-vault fact isolation (dedicated Qdrant collections), configurable embedding dimensions with auto-detect probe, versioned supersede with integer version field, restore-from-snapshot detection, graceful Qdrant lifecycle with reconnection loop, webhook event emitters for fact lifecycle, fact-to-chunk bridge with source stale scan, sessions API (CRUD), SSE event stream, full documentation update |
-| v0.5 | Fact lifecycle management (Pruner: stale, conflict, supersede scans), review queue API (`GET/POST /v1/review`, `GET /v1/review/stats`), fact update endpoints (`PUT/PATCH /v1/facts`), agent memory backend (per-agent Qdrant collections, session ingest, vault provisioning, cross-agent recall, OpenClaw + Hermes plugin adapters), SSE streaming, lint pass, test infrastructure |
-| v0.4 | Multi-tenancy, authentication (API key + JWT), knowledge graph, CloudEvents, LLM timeout config, embedded web UI, built-in web dashboard |
-| v0.3.4 | ldflags for `/version`, panic recovery middleware, LLM base URL normalization, CountFiles sync from Qdrant on restart |
-| v0.3.3 | Tags fix for facts POST (`qdrant.NewValue` 2-value return), deployment fixes |
-| v0.3.2 | (skipped — build failure) |
-| v0.3.1 | UUID point IDs, Qdrant gRPC port (6334), healthcheck improvements |
-| v0.3.0 | Facts endpoint, Logs endpoint, Snapshot endpoint, code-review fixes batch |
-
-Named with affection by [Christopher Goulet](https://github.com/chezgoulet).
-
----
-
-*"The monkey paw used curl. It was super effective!"*
+## How to Contribute
+
+Ragamuffin is open source and part of the ChezGoulet House. Contributions
+are welcome — whether you're an operator fixing a sharp edge, an agent
+submitting a bug report, or an external contributor adding a feature.
+
+- **Staged-branch workflow** — all development starts from `testing`.
+  Branch from it, PR into it. See [CONTRIBUTING.md](CONTRIBUTING.md) for
+  the full guide.
+- **Dogfooding first** — every rough edge is an issue. If something's hard
+  to use, confusing, or broken, file it. That's product feedback, not overhead.
+- **PR conventions** — title format `<type>: description (#NNN)`, branch
+  naming `dev/<issue-N>-<short-desc>`, body must close issues.
+- **See [CONTRIBUTING.md](CONTRIBUTING.md)** for the full contributor guide
+  including PR requirements, testing expectations, and code review process.
+
+[Read output capped at 50KB for this call. Use offset=1455 to continue.]</text>
