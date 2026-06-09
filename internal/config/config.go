@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"net/url"
@@ -144,6 +145,9 @@ type Config struct {
 	GitBaseBranch      string
 	GitBaseURL         string
 	GitRepos           string
+
+	// Optional — Webhook ingestion
+	WebhookVaultMap map[string]string // repo → vault mapping from RAGAMUFFIN_WEBHOOK_VAULT_MAP
 
 	// Optional — Audit / Tuning
 	AuditSampleSize int
@@ -420,6 +424,8 @@ func Load() (*Config, error) {
 		GitBaseURL:         os.Getenv("RAGAMUFFIN_GIT_BASE_URL"),
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
+		WebhookVaultMap: parseJSONMap("RAGAMUFFIN_WEBHOOK_VAULT_MAP"),
+
 		AuthMode:         envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
 		AuthReadKey:      os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
 		AuthWriteKey:     os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
@@ -624,4 +630,16 @@ func envCSV(key string) []string {
 		}
 	}
 	return result
+}
+
+func parseJSONMap(key string) map[string]string {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil
+	}
+	return m
 }
