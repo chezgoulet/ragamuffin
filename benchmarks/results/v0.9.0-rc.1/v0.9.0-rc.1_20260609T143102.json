@@ -1,0 +1,285 @@
+{
+  "run_id": "v0.9.0-rc.1_20260609T143102",
+  "target": "http://ragamuffin:8000",
+  "timestamp": "2026-06-09T14:31:02.654125+00:00",
+  "tests": {
+    "server_version": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        5
+      ],
+      "errors": []
+    },
+    "server_health": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        384
+      ],
+      "errors": []
+    },
+    "vault_create": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=400"
+      ]
+    },
+    "vault_list": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        ""
+      ]
+    },
+    "ingest_conversation": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=400"
+      ]
+    },
+    "fact_write": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=404"
+      ]
+    },
+    "fact_read": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=404"
+      ]
+    },
+    "fact_write2": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=404"
+      ]
+    },
+    "fact_review": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        2
+      ],
+      "errors": [
+        "status=404"
+      ]
+    },
+    "ask_synthesis": {
+      "total": 3,
+      "passed": 0,
+      "latencies": [
+        2,
+        4,
+        2
+      ],
+      "errors": [
+        "status=400",
+        "status=400",
+        "status=400"
+      ]
+    },
+    "recall": {
+      "total": 3,
+      "passed": 0,
+      "latencies": [
+        2,
+        3,
+        3
+      ],
+      "errors": [
+        "status=400",
+        "status=400",
+        "status=400"
+      ]
+    },
+    "concurrent_stress": {
+      "total": 60,
+      "passed": 0,
+      "latencies": [
+        3,
+        9,
+        8,
+        12,
+        9,
+        11,
+        15,
+        11,
+        18,
+        17,
+        14,
+        23,
+        21,
+        10,
+        13,
+        19,
+        23,
+        27,
+        29,
+        24,
+        20,
+        19,
+        18,
+        12,
+        25,
+        28,
+        19,
+        19,
+        9,
+        23,
+        9,
+        22,
+        14,
+        11,
+        24,
+        19,
+        19,
+        11,
+        15,
+        14,
+        18,
+        20,
+        10,
+        18,
+        23,
+        42,
+        10,
+        19,
+        7,
+        9,
+        8,
+        8,
+        20,
+        10,
+        7,
+        10,
+        6,
+        9,
+        4,
+        3
+      ],
+      "errors": [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ]
+    },
+    "malformed_empty body": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        2,
+        2
+      ],
+      "errors": []
+    },
+    "malformed_garbage body": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        2,
+        2
+      ],
+      "errors": []
+    },
+    "malformed_negative number": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        2,
+        2
+      ],
+      "errors": []
+    },
+    "malformed_huge nested": {
+      "total": 2,
+      "passed": 2,
+      "latencies": [
+        2,
+        1
+      ],
+      "errors": []
+    }
+  }
+}

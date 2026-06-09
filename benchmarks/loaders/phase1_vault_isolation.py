@@ -69,7 +69,7 @@ def run_phase1_vault_isolation(
     logger.info("Checking vault isolation: vault_b should NOT see vault_a's fact")
     try:
         data_b = client.list_facts(vault=vault_b, prefix=prefix)
-        facts_b = data_b.get("facts", data_b.get("results", data_b.get("data", [])))
+        facts_b = data_b.get("entries", data_b.get("facts", data_b.get("results", data_b.get("data", []))))
         b_keys = [f.get("key", "") for f in (facts_b if isinstance(facts_b, list) else [])]
         leaked = vault_a_fact_key in b_keys
 
@@ -100,7 +100,7 @@ def run_phase1_vault_isolation(
     logger.info("Checking vault isolation: vault_a should NOT see vault_b's fact")
     try:
         data_a = client.list_facts(vault=vault_a, prefix=prefix)
-        facts_a = data_a.get("facts", data_a.get("results", data_a.get("data", [])))
+        facts_a = data_a.get("entries", data_a.get("facts", data_a.get("results", data_a.get("data", []))))
         a_keys = [f.get("key", "") for f in (facts_a if isinstance(facts_a, list) else [])]
         leaked = vault_b_fact_key in a_keys
 

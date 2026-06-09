@@ -137,15 +137,16 @@ class RagamuffinClient:
         content: str,
         source: str,
         vault: str,
-        tags: Optional[Dict[str, str]] = None,
+        tags: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Ingest content into a vault."""
+        """Ingest content into a vault. Tags must be a list of strings."""
         body = {
             "content": content,
             "source": source,
             "vault": vault,
-            "tags": tags or {},
         }
+        if tags:
+            body["tags"] = tags
         data, status = self._request("POST", "/v1/ingest", body=body)
         return data if isinstance(data, dict) else {"status": str(status)}
 

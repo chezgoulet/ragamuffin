@@ -69,7 +69,7 @@ assistant: Cockroach Labs (CockroachDB), PlanetScale (Vitess), SingleStore, and 
     try:
         data = client.list_facts(vault=vault, prefix="")
         elapsed = (time.perf_counter() - t0) * 1000
-        facts = data.get("facts", data.get("results", data.get("data", [])))
+        facts = data.get("entries", data.get("facts", data.get("results", data.get("data", []))))
         fact_count = len(facts) if isinstance(facts, list) else 0
 
         # Also check via prefix search for our conversation

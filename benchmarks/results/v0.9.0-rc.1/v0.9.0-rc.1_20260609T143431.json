@@ -1,0 +1,198 @@
+{
+  "run_id": "v0.9.0-rc.1_20260609T143431",
+  "target": "http://ragamuffin:8000",
+  "version_info": {
+    "build_date": "2026-06-09T09:18:58-04:00",
+    "commit": "64168a3c5c7448723b3862347e02b52bee6467c0",
+    "go_version": "go1.25.11",
+    "version": "64168a3c5c7448723b3862347e02b52bee6467c0"
+  },
+  "timestamp": "2026-06-09T14:34:31.088705+00:00",
+  "tests": {
+    "server_version": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        4
+      ],
+      "errors": []
+    },
+    "server_health": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        519
+      ],
+      "errors": []
+    },
+    "vault_create": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "ingest": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        325
+      ],
+      "errors": []
+    },
+    "ingest2": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        189
+      ],
+      "errors": []
+    },
+    "fact_write": {
+      "total": 4,
+      "passed": 4,
+      "latencies": [
+        11,
+        6,
+        5,
+        5
+      ],
+      "errors": []
+    },
+    "fact_read": {
+      "total": 1,
+      "passed": 0,
+      "latencies": [
+        3
+      ],
+      "errors": [
+        ""
+      ]
+    },
+    "ask_synthesis": {
+      "total": 5,
+      "passed": 5,
+      "latencies": [
+        1218,
+        1641,
+        1426,
+        1471,
+        1140
+      ],
+      "errors": []
+    },
+    "recall": {
+      "total": 5,
+      "passed": 5,
+      "latencies": [
+        221,
+        258,
+        161,
+        191,
+        130
+      ],
+      "errors": []
+    },
+    "concurrent_stress": {
+      "total": 45,
+      "passed": 45,
+      "latencies": [
+        144,
+        146,
+        156,
+        179,
+        149,
+        189,
+        199,
+        179,
+        191,
+        212,
+        230,
+        227,
+        248,
+        229,
+        183,
+        141,
+        201,
+        170,
+        152,
+        194,
+        180,
+        171,
+        204,
+        229,
+        195,
+        442,
+        275,
+        337,
+        154,
+        185,
+        204,
+        158,
+        200,
+        167,
+        178,
+        167,
+        187,
+        144,
+        278,
+        241,
+        158,
+        427,
+        1195,
+        159,
+        5737
+      ],
+      "errors": []
+    },
+    "malformed_empty_body_ingest": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "malformed_empty_body_ask": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "malformed_garbage_ingest": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "malformed_garbage_ask": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "malformed_huge_nested_ingest": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    },
+    "malformed_huge_nested_ask": {
+      "total": 1,
+      "passed": 1,
+      "latencies": [
+        2
+      ],
+      "errors": []
+    }
+  }
+}

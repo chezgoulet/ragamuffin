@@ -44,6 +44,7 @@ def run_phase1_fact_lifecycle(
             vault=vault,
             source="benchmark-lifecycle",
             source_type="test",
+            tags=["benchmark-lifecycle", "test:fact-lifecycle"],
         )
         elapsed = (time.perf_counter() - t0) * 1000
         created = resp.get("id", resp.get("key", ""))
@@ -97,6 +98,7 @@ def run_phase1_fact_lifecycle(
             vault=vault,
             source="benchmark-lifecycle-update",
             source_type="test",
+            tags=["benchmark-lifecycle", "test:fact-lifecycle"],
         )
         elapsed = (time.perf_counter() - t0) * 1000
         results.append({
@@ -120,7 +122,7 @@ def run_phase1_fact_lifecycle(
     try:
         data = client.list_facts(vault=vault, prefix=prefix)
         elapsed = (time.perf_counter() - t0) * 1000
-        facts = data.get("facts", data.get("results", data.get("data", [])))
+        facts = data.get("entries", data.get("facts", data.get("results", data.get("data", []))))
         count = len(facts) if isinstance(facts, list) else (1 if isinstance(facts, dict) else 0)
         passed = count >= 1
         results.append({
@@ -150,6 +152,7 @@ def run_phase1_fact_lifecycle(
             vault=vault,
             source="benchmark-lifecycle",
             source_type="test",
+            tags=["benchmark-lifecycle", "test:fact-lifecycle"],
         )
 
         # Read graph for tokyo-guide
@@ -179,9 +182,9 @@ def run_phase1_fact_lifecycle(
     logger.info("Test 6: List facts by source tag")
     t0 = time.perf_counter()
     try:
-        data = client.list_facts(vault=vault, tag="source:benchmark-lifecycle")
+        data = client.list_facts(vault=vault, tag="benchmark-lifecycle")
         elapsed = (time.perf_counter() - t0) * 1000
-        facts = data.get("facts", data.get("results", data.get("data", [])))
+        facts = data.get("entries", data.get("facts", data.get("results", data.get("data", []))))
         count = len(facts) if isinstance(facts, list) else (1 if isinstance(facts, dict) else 0)
         results.append({
             "test": "list_facts_tag",

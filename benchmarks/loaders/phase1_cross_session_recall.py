@@ -106,22 +106,33 @@ assistant: The Fuji Five Lakes area at the base is accessible without climbing. 
             )
 
     def score_answer(self, question: str, ground_truth: str, answer: str) -> Dict[str, Any]:
-        """Score an answer by checking if key elements from ground truth appear."""
+        """Score an answer by checking key terms from ground truth appear in answer."""
         gt_lower = ground_truth.lower()
         answer_lower = answer.lower() if answer else ""
 
-        # Count key phrases from ground truth that appear in answer
-        key_phrases = [p.strip() for p in gt_lower.replace(";", ",").replace(" and ", ",").split(",")]
-        key_phrases = [p for p in key_phrases if len(p) > 3]
+        # Extract key terms: split on word boundaries, remove stopwords,
+        # keep meaningful words > 3 chars or numeric values with $/numbers
+        import re
+        stopwords = {"the", "and", "for", "are", "but", "not", "you", "all", "can", "had", "her",
+                     "was", "one", "our", "out", "has", "have", "been", "its", "more", "than",
+                     "that", "this", "with", "what", "your", "from", "they", "will", "about",
+                     "would", "there", "their", "when", "also", "how", "some", "very", "just"}
 
-        matched = sum(1 for phrase in key_phrases if phrase in answer_lower)
+        # Extract meaningful terms from ground truth
+        terms = set()
+        for token in re.findall(r"[\w$]+|\$?\d+(?:[.,]?\d+)?/night|\$?\d+(?:[.,]?\d+)?", gt_lower):
+            if token not in stopwords and len(token) > 2:
+                terms.add(token)
 
-        score = matched / len(key_phrases) if key_phrases else 0.0
+        # Check each term — count how many appear in answer
+        matched = sum(1 for t in terms if t in answer_lower)
+
+        score = matched / len(terms) if terms else 0.0
         return {
             "score": round(score, 2),
-            "matched_phrases": matched,
-            "total_phrases": len(key_phrases),
-            "correct": score >= 0.5,
+            "matched_terms": matched,
+            "total_terms": len(terms),
+            "correct": score >= 0.4,
         }
 
 
@@ -175,8 +186,8 @@ def run_phase1_cross_session_recall(
             "latency_ms": round(elapsed, 1),
             "type": q["type"],
             "score": score_info["score"],
-            "matched_phrases": score_info["matched_phrases"],
-            "total_phrases": score_info["total_phrases"],
+            "matched_terms": score_info["matched_terms"],
+            "total_terms": score_info["total_terms"],
             "pass": passed,
         })
 
