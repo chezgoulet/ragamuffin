@@ -156,6 +156,8 @@ class TestVaultProvisioning:
 
     def test_vault_created(self):
         provider = make_provider(vault_prefix="agent::")
+        # GET /vaults returns empty list — triggers creation
+        provider._requests.get.return_value = make_mock_response(200, {"vaults": []})
         provider._requests.post.return_value = make_mock_response(201, {
             "name": "agent::dev", "created": True, "collection": "agent::dev"
         })
@@ -169,18 +171,21 @@ class TestVaultProvisioning:
         call_kwargs = provider._requests.post.call_args[1]
         assert call_kwargs["json"] == {
             "name": "agent::dev",
-            "label": "Agent: dev",
+            "path": "/tmp/vault-agent::dev",
         }
 
     def test_vault_already_exists(self):
         provider = make_provider()
-        provider._requests.post.return_value = make_mock_response(200, {
-            "name": "agent::dev", "created": False, "collection": "agent::dev"
+        # GET /vaults returns list with our vault — no creation needed
+        provider._requests.get.return_value = make_mock_response(200, {
+            "vaults": [{"name": "agent::dev"}]
         })
         provider.initialize("sess_001", agent_identity="dev")
 
         assert provider._available is True
         assert provider._vault_ready is True
+        # POST should NOT be called — vault already exists
+        provider._requests.post.assert_not_called()
 
     def test_vault_provisioning_failure(self):
         """Server returns error; plugin should gracefully degrade."""
@@ -209,6 +214,8 @@ class TestVaultProvisioning:
 
     def test_auth_token_in_headers(self):
         provider = make_provider(auth_token="sk-secret-999")
+        # GET /vaults returns empty — triggers POST
+        provider._requests.get.return_value = make_mock_response(200, {"vaults": []})
         provider._requests.post.return_value = make_mock_response(201, {
             "name": "agent::dev", "created": True, "collection": "agent::dev"
         })
@@ -322,11 +329,12 @@ class TestPrefetch:
         if provider._prefetch_thread:
             provider._prefetch_thread.join(timeout=2.0)
 
+        # Vault is in URL path, not JSON body; params are top_k/score_threshold
+        assert "/vault/agent::test/recall" in provider._requests.post.call_args[0][0]
         call_kwargs = provider._requests.post.call_args[1]
-        assert call_kwargs["json"]["vault"] == "agent::test"
         assert call_kwargs["json"]["query"] == "what did we decide"
-        assert call_kwargs["json"]["limit"] == 5
-        assert call_kwargs["json"]["min_score"] == 0.3
+        assert call_kwargs["json"]["top_k"] == 5
+        assert call_kwargs["json"]["score_threshold"] == 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -350,13 +358,11 @@ class TestSyncTurn:
             provider._sync_thread.join(timeout=2.0)
 
         call_kwargs = provider._requests.post.call_args[1]
-        docs = call_kwargs["json"]["documents"]
-        assert len(docs) == 1
-        assert docs[0]["id"] == "sess_abc-turn-1"
-        assert "hello" in docs[0]["text"]
-        assert "hi there" in docs[0]["text"]
-        assert docs[0]["metadata"]["agent"] == "dev"
-        assert docs[0]["metadata"]["turn"] == 1
+        payload = call_kwargs["json"]
+        assert payload["vault"] == "agent::dev"
+        assert "hello" in payload["content"]
+        assert "hi there" in payload["content"]
+        assert payload["source"] == "session_turn"
 
     def test_sync_increments_turn_counter(self):
         provider = make_provider()
@@ -399,11 +405,10 @@ class TestSessionEnd:
         provider.on_session_end(messages)
 
         call_kwargs = provider._requests.post.call_args[1]
-        docs = call_kwargs["json"]["documents"]
-        assert len(docs) == 1
-        assert "summary" in docs[0]["id"].lower()
-        assert docs[0]["metadata"]["source"] == "session_summary"
-        assert "Qdrant isolation" in docs[0]["text"] or "physical" in docs[0]["text"]
+        payload = call_kwargs["json"]
+        assert payload["source"] == "session_summary"
+        assert "Qdrant isolation" in payload["content"] or "physical" in payload["content"]
+        assert payload["vault"] == "agent::dev"
 
     def test_on_session_end_no_messages(self):
         provider = make_provider()
@@ -463,8 +468,9 @@ class TestToolCall:
             "query": "last scan results",
         })
 
-        call_kwargs = provider._requests.post.call_args[1]
-        assert call_kwargs["json"]["vault"] == "agent::robot"
+        # Vault is in URL path, not JSON body
+        call_args = provider._requests.post.call_args[0][0]
+        assert "/vault/agent::robot/recall" in call_args
 
     def test_recall_with_empty_query_returns_error(self):
         provider = make_provider()
@@ -624,6 +630,8 @@ class TestLifecycle:
     def test_initialize_to_shutdown(self):
         """End-to-end lifecycle: init → prefetch → sync → shutdown."""
         provider = make_provider(vault_prefix="agent::")
+        # GET /vaults returns empty — triggers POST to create
+        provider._requests.get.return_value = make_mock_response(200, {"vaults": []})
         provider._requests.post.return_value = make_mock_response(201, {
             "name": "agent::dev", "created": True, "collection": "agent::dev",
         })

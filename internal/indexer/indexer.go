@@ -329,6 +329,9 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 		if err != nil {
 			return fmt.Errorf("embed batch: %w", err)
 		}
+		if len(vectors) != len(batch) {
+			return fmt.Errorf("embed batch: got %d vectors for %d texts", len(vectors), len(batch))
+		}
 
 		points := make([]*pb.PointStruct, len(batch))
 		for j, c := range batch {
