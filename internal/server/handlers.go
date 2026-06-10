@@ -89,6 +89,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ── Per-vault stats ──
+	vaults := make(map[string]map[string]any)
+	for _, name := range s.indexers.VaultNames() {
+		vs := s.indexers.Stats(name)
+		vaults[name] = map[string]any{
+			"chunk_count":  vs.ChunkCount,
+			"file_count":   vs.FileCount,
+			"last_indexed": vs.LastIndexed.Format(time.RFC3339),
+			"indexing":     vs.Indexing,
+		}
+	}
+	if len(vaults) > 0 {
+		resp["vaults"] = vaults
+	}
+
 	writeJSON(w, 200, resp)
 }
 
