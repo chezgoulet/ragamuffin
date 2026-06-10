@@ -672,13 +672,20 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			if r.Score > topScore {
 				topScore = r.Score
 			}
-			if src, ok := r.Payload["source_file"]; ok {
-				sv := src.GetStringValue()
+			src := ""
+			if s, ok := r.Payload["source_file"]; ok {
+				sv := s.GetStringValue()
 				if !seenSources[sv] {
 					sources = append(sources, sv)
 					seenSources[sv] = true
 				}
+				src = sv
 			}
+			ci := int64(0)
+			if c, ok := r.Payload["chunk_index"]; ok {
+				ci = c.GetIntegerValue()
+			}
+			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", src, ci, r.Score))
 			if text, ok := r.Payload["text"]; ok {
 				b.WriteString(text.GetStringValue())
 				b.WriteString("\n\n")
@@ -736,6 +743,15 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 						sourceSet[sv] = true
 					}
 				}
+				var chunkSrc string
+				if s, ok := r.Payload["source_file"]; ok {
+					chunkSrc = s.GetStringValue()
+				}
+				chunkIdx := int64(0)
+				if c, ok := r.Payload["chunk_index"]; ok {
+					chunkIdx = c.GetIntegerValue()
+				}
+				b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d]\n", chunkSrc, chunkIdx))
 				if text, ok := r.Payload["text"]; ok {
 					b.WriteString(text.GetStringValue())
 					b.WriteString("\n\n")
