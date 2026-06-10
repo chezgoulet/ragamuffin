@@ -64,7 +64,11 @@ func (c *Client) Synthesize(ctx context.Context, query, context string) (string,
 		"Using the following context from a knowledge base, answer the question. "+
 			"Be concise and cite specific sources when possible. "+
 			"If multiple sources provide conflicting information about the same topic, "+
-			"prefer the information from the later chunk (higher chunk number or more recently stated).\n\n"+
+			"prefer the information from the later chunk (higher chunk number or more recently stated). "+
+			"If facts include temporal metadata (Valid from / Valid until), use it to determine "+
+			"which fact was active at the time of the question. "+
+			"If the question asks about a specific time period, only use facts whose validity range "+
+			"overlaps with that period.\n\n"+
 			"Context:\n%s\n\nQuestion: %s",
 		context, query,
 	)

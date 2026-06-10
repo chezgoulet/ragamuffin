@@ -15,6 +15,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
@@ -761,7 +762,52 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		contextText = b.String()
 	}
 
+	// ── Fact retrieval for temporal context ──
+	if s.facts != nil && contextText != "" {
+		factText := s.appendFactContext(ctx, query, topK)
+		if factText != "" {
+			contextText += "\n" + factText
+		}
+	}
+
 	return contextText, sources, modeUsed, nil
+}
+
+// appendFactContext retrieves facts relevant to a query and returns a formatted
+// context block with temporal metadata (valid_from, valid_until).
+func (s *Server) appendFactContext(ctx context.Context, query string, topK int) string {
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
+	if err != nil {
+		return ""
+	}
+
+	factResults, err := s.factsQdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
+	if err != nil || len(factResults) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n── Facts ──\n\n")
+	for _, fr := range factResults {
+		payload := fr.GetPayload()
+		key, _ := qutil.GetPayloadString(payload, "fact_key")
+		value, _ := qutil.GetPayloadString(payload, "fact_value")
+		validFrom, _ := qutil.GetPayloadString(payload, "valid_from")
+		validUntil, _ := qutil.GetPayloadString(payload, "valid_until")
+		createdAt, _ := qutil.GetPayloadString(payload, "created_at")
+
+		b.WriteString(fmt.Sprintf("[Fact: %s | Created: %s", key, createdAt))
+		if validFrom != "" {
+			b.WriteString(fmt.Sprintf(" | Valid from: %s", validFrom))
+		}
+		if validUntil != "" {
+			b.WriteString(fmt.Sprintf(" | Valid until: %s", validUntil))
+		}
+		b.WriteString(fmt.Sprintf(" | Score: %.3f]\n", fr.GetScore()))
+		b.WriteString(value)
+		b.WriteString("\n\n")
+	}
+	return b.String()
 }
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
