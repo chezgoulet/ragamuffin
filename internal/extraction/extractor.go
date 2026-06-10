@@ -425,7 +425,7 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 
 	// Compare against existing fact vectors (stored in Qdrant points)
 	for _, pt := range points {
-		existingVec := getPointVector(pt)
+		existingVec := qdrant.GetPointVector(pt)
 		if existingVec == nil {
 			// Skip points with missing vectors
 			continue
@@ -449,22 +449,6 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 }
 
 // cosineSimilarity computes the cosine of the angle between two vectors.
-// getPointVector extracts the stored vector from a Qdrant RetrievedPoint.
-// Returns nil if the point has no vector data.
-func getPointVector(pt *pb.RetrievedPoint) []float32 {
-	if pt == nil {
-		return nil
-	}
-	vectors := pt.GetVectors()
-	if vectors == nil {
-		return nil
-	}
-	v := vectors.GetVector()
-	if v == nil {
-		return nil
-	}
-	return v.GetData()
-}
 
 func cosineSimilarity(a, b []float32) float32 {
 	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {

@@ -622,8 +622,8 @@ func (s *Server) ensureFactIndexes() {
 
 				for _, pt := range points {
 					total++
-					vec := getPointVector(pt)
-					if vec == nil || isZeroVector(vec) {
+					vec := qdrant.GetPointVector(pt)
+					if vec == nil || qdrant.IsZeroVector(vec) {
 						// Re-embed this fact
 						val := pt.GetPayload()["fact_value"]
 						if val == nil {
@@ -682,32 +682,6 @@ func (s *Server) ensureFactIndexes() {
 			}
 		}()
 	}
-}
-
-// isZeroVector returns true if all elements of the vector are zero.
-func isZeroVector(vec []float32) bool {
-	for _, v := range vec {
-		if v != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// getPointVector extracts the vector data from a RetrievedPoint.
-func getPointVector(pt *pb.RetrievedPoint) []float32 {
-	if pt == nil {
-		return nil
-	}
-	vecs := pt.GetVectors()
-	if vecs == nil {
-		return nil
-	}
-	vec := vecs.GetVector()
-	if vec == nil {
-		return nil
-	}
-	return vec.GetData()
 }
 
 // withVault wraps a handler to validate vault access. Extracts the vault name
