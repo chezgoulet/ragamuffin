@@ -103,5 +103,3 @@ func (p *Pruner) reembedScan(ctx context.Context) {
 		p.logger.Debug("reembedScan: no zero-vector facts found", "total_scanned", len(facts))
 	}
 }
-
-
