@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -669,14 +670,14 @@ func TestBuildExtractionPrompt_Empty(t *testing.T) {
 // ── getPointVector ────────────────────────────────────────────────────────────
 
 func TestGetPointVector_Nil(t *testing.T) {
-	if v := getPointVector(nil); v != nil {
+	if v := qdrant.GetPointVector(nil); v != nil {
 		t.Error("expected nil for nil point")
 	}
 }
 
 func TestGetPointVector_NoVectors(t *testing.T) {
 	pt := &pb.RetrievedPoint{}
-	if v := getPointVector(pt); v != nil {
+	if v := qdrant.GetPointVector(pt); v != nil {
 		t.Error("expected nil for point without vectors")
 	}
 }
@@ -691,7 +692,7 @@ func TestGetPointVector_HasVector(t *testing.T) {
 			},
 		},
 	}
-	v := getPointVector(pt)
+	v := qdrant.GetPointVector(pt)
 	if v == nil {
 		t.Fatal("expected non-nil vector")
 	}
