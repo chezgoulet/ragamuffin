@@ -21,6 +21,8 @@ logger = logging.getLogger("ragamuffin.benchmark")
 
 DEFAULT_BASE_URL = os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000")
 HTTP_TIMEOUT = int(os.environ.get("RAGAMUFFIN_HTTP_TIMEOUT", "30"))
+INGEST_TIMEOUT = int(os.environ.get("RAGAMUFFIN_INGEST_TIMEOUT", "")) or HTTP_TIMEOUT or 120
+ASK_TIMEOUT = int(os.environ.get("RAGAMUFFIN_ASK_TIMEOUT", "")) or HTTP_TIMEOUT or 30
 MAX_RETRIES = int(os.environ.get("RAGAMUFFIN_MAX_RETRIES", "3"))
 
 
@@ -37,12 +39,16 @@ class RagamuffinClient:
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: int = HTTP_TIMEOUT,
+        timeout: Optional[int] = None,
+        ingest_timeout: Optional[int] = None,
+        ask_timeout: Optional[int] = None,
         max_retries: int = MAX_RETRIES,
         api_key: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = int(timeout or HTTP_TIMEOUT)
+        self.ingest_timeout = int(ingest_timeout or INGEST_TIMEOUT)
+        self.ask_timeout = int(ask_timeout or ASK_TIMEOUT)
         self.max_retries = max_retries
         self.api_key = api_key or os.environ.get("RAGAMUFFIN_API_KEY", "")
         self.litellm_key = os.environ.get("LITELLM_API_KEY", "")
@@ -140,8 +146,12 @@ class RagamuffinClient:
         source: str,
         vault: str,
         tags: Optional[List[str]] = None,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Ingest content into a vault. Tags must be a list of strings."""
+        """Ingest content into a vault. Tags must be a list of strings.
+
+        Uses ingest_timeout (default 120s) unless timeout kwarg is provided.
+        """
         body = {
             "content": content,
             "source": source,
@@ -149,7 +159,8 @@ class RagamuffinClient:
         }
         if tags:
             body["tags"] = tags
-        data, status = self._request("POST", "/v1/ingest", body=body)
+        effective = timeout if timeout is not None else self.ingest_timeout
+        data, status = self._request("POST", "/v1/ingest", body=body, timeout=effective)
         return data if isinstance(data, dict) else {"status": str(status)}
 
     def recall(
@@ -192,11 +203,16 @@ class RagamuffinClient:
         query: str,
         vault: str,
         mode: str = "rag",
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Ask a question against a vault."""
+        """Ask a question against a vault.
+
+        Uses ask_timeout (default 30s) unless timeout kwarg is provided.
+        """
         path = f"/vault/{vault}/ask"
         body = {"query": query, "mode": mode}
-        data, _ = self._request("POST", path, body=body)
+        effective = timeout if timeout is not None else self.ask_timeout
+        data, _ = self._request("POST", path, body=body, timeout=effective)
         return data if isinstance(data, dict) else {"answer": str(data)}
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -206,11 +222,15 @@ class RagamuffinClient:
         method: str,
         path: str,
         body: Optional[Dict] = None,
+        timeout: Optional[int] = None,
     ) -> tuple[Any, int]:
         """Make an HTTP request with retry logic.
 
+        Falls back to self.timeout if no per-method timeout given.
         Returns (parsed_json_body, status_code).
         """
+
+        effective_timeout = timeout if timeout is not None else self.timeout
 
         def do_request() -> tuple[Any, int]:
             url = self.base_url + path
@@ -230,7 +250,7 @@ class RagamuffinClient:
             )
 
             try:
-                resp = urllib.request.urlopen(req, timeout=self.timeout)
+                resp = urllib.request.urlopen(req, timeout=effective_timeout)
                 status = resp.status
                 raw = resp.read()
                 result = json.loads(raw.decode()) if raw.strip() else {}

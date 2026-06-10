@@ -490,7 +490,11 @@ def main():
     log("╚" + "═" * 53 + "╝")
     log("")
 
-    client = RagamuffinClient(base_url=BASE_URL)
+    client = RagamuffinClient(
+        base_url=BASE_URL,
+        ingest_timeout=120,
+        ask_timeout=30,
+    )
     if not client.health():
         log("FATAL: Server unreachable at " + BASE_URL)
         return 1
