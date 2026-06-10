@@ -149,6 +149,7 @@ func (s *Server) Recovery(next http.Handler) http.Handler {
 // RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Instance-wide routes (always registered)
+	mux.HandleFunc("/v1/briefing", s.withRequestID(s.withRateLimit("/v1/briefing", s.handleBriefing)))
 	mux.HandleFunc("/health", s.withRequestID(s.handleHealth))
 	mux.HandleFunc("/stats", s.withRequestID(s.withQdrant(s.handleStats)))
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
@@ -179,6 +180,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/links/backlinks", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultBacklinks))))
 		mux.HandleFunc("/vault/{name}/v1/links/graph", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultLinkGraph))))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
+		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.handleBriefing))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
@@ -203,6 +205,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		vaultChain("/v1/links/backlinks", s.handleVaultBacklinks)
 		vaultChain("/v1/links/graph", s.handleVaultLinkGraph)
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraph))))
+		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.requireVaultName(vaultName, s.handleBriefing)))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 
