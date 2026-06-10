@@ -711,8 +711,8 @@ Ragamuffin is honest about what it doesn't do well. These are known gaps, not su
 </p>
 
 <div class="limitation">
-  <h4>🧠 No native semantic fact search</h4>
-  <p>Facts are stored with zero vectors — they can only be found by exact key match, prefix, or tags. There's no "find facts related to this concept" that doesn't go through an LLM. A future version may add fact embedding, but it's a deliberate trade-off: fact search is fast and simple because facts don't use vector space.</p>
+  <h4>🧠 Semantic fact search (v1.0)</h4>
+  <p>Facts are embedded on upsert using the same embedding model as document chunks (default 1536-dim). You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters: <code>?query="arch linux"&amp;status=active</code>. Facts and chunks also appear together in <code>/v1/hybrid?query="..."</code> — one query returns both, ranked by score. This shipped in v1.0; before that, facts used zero vectors and were only searchable by key/prefix/tag.</p>
 </div>
 
 <div class="limitation">
@@ -748,8 +748,8 @@ Ragamuffin is approaching v1.0. The roadmap focuses on three areas:
 </div>
 
 <div class="info-box">
-  <div class="title">🧠 Fact embedding</div>
-  <p>Long-term: embed fact values so they participate in semantic search alongside document chunks. This would unify the recall experience — one query returns both relevant documents and relevant facts, ranked by the same relevance metric.</p>
+  <div class="title">🧠 Fact embedding (v1.0 — shipped)</div>
+  <p>Fact values are now embedded on upsert using the same embedding model as document chunks. You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters. Facts and chunks appear together in <code>/v1/hybrid?query="..."</code>. Existing zero-vector facts are re-embedded at startup. Shipped in v1.0.</p>
 </div>
 
 <div class="info-box">
