@@ -878,7 +878,7 @@ Key is hashed (SHA-256) → deterministic UUID is used as the Qdrant point ID. R
 # Exact key lookup
 curl -s "http://localhost:8000/v1/facts?key=deployment/url"
 
-# Search by text fragment (full-text / substring match on fact_key)
+# Search by exact prefix match on fact_key
 curl -s "http://localhost:8000/v1/facts?prefix=deploy"
 
 # Filter by tag
@@ -892,16 +892,14 @@ curl -s "http://localhost:8000/v1/facts?limit=20&before=<next_token>"
 | Param | Description | Default |
 |---|---|---|
 | `key` | Exact fact_key match | — |
-| `prefix` | Full-text/substring match on fact_key (see note) | — |
+| `prefix` | Exact prefix match on fact_key | — |
 | `tag` | Exact tag keyword filter | — |
 | `status` | Filter by lifecycle status (active, needs_review, superseded, rejected) | — |
 | `limit` | Max results per page (1–1000) | 100 |
 | `before` | Cursor from previous response `next_token` | — |
 
-> ⚠️ `prefix=` performs Qdrant full-text/substring matching, not true prefix matching.
-> A query for `prefix=user/` will also match `prefix=superuser/settings` due to Qdrant's
-> tokenizer behavior. For exact prefix filtering, a Qdrant payload index with a keyword
-> tokenizer would be needed.
+> `prefix=` performs Go-level prefix matching via `strings.HasPrefix`. It searches on
+> the fact key, not the value. For tag-based filtering use `tag=`. For exact key lookup use `key=`.
 
 **Response:**
 ```json
@@ -1047,11 +1045,132 @@ curl -s "http://localhost:8000/v1/facts/deployment%2Furl/graph"
 }
 ```
 
+### Fact Lifecycle
+
+Facts in Ragamuffin pass through a lifecycle governed by the **pruner** — a
+background subsystem that periodically scans all facts and flags candidates
+for review. The review queue is how agents inspect and resolve these flags.
+
+#### Lifecycle States
+
+| State | Meaning | Transition
+|---|---|---|
+| `active` | Normal, trusted fact. Visible in normal queries. | Written by `POST /v1/facts`; restored by `POST /v1/review` action=`confirm` |
+| `needs_review` | Flagged by the pruner — needs human or agent inspection. | Set by pruner scans; resolved via `POST /v1/review` |
+| `superseded` | Replaced by a newer fact. Retained for audit trail but excluded from normal queries. | Set when `POST /v1/facts` includes `supersedes` pointing here, or via `POST /v1/review` action=`supersede` |
+| `rejected` | Reviewed and determined incorrect. Excluded from normal queries. | Set by `POST /v1/review` action=`reject` |
+
+#### What the Pruner Scans For
+
+The pruner runs scheduled scans that flag facts as `needs_review`. Each scan
+type can be configured, tuned, or disabled independently.
+
+| Scan Type | What It Checks | Config Threshold |
+|---|---|---|
+| `StaleScan` | Facts whose `expires_at` has passed | `pruner_stale_scan_threshold_days` (age at which to check expiry) |
+| `ContradictionScan` | Facts with a populated `contradicts` list — conflicting claims | Always-on when `contradicts` is set |
+| `SupersedeScan` | Facts that were superseded by a newer version | Always-on when `supersedes` is set |
+| `LowConfidenceScan` | Facts with `confidence` below the configured threshold | `pruner_low_confidence_threshold` (default 0.82) |
+
+#### The Review Workflow
+
+```
+                    ┌──────────────────┐
+                    │   POST /v1/facts  │
+                    │  (agent writes)   │
+                    └────────┬─────────┘
+                             │
+                             ▼
+                    ┌──────────────────┐
+                    │     active       │
+                    │    (trusted)     │
+                    └────────┬─────────┘
+                             │
+              ┌──────────────┼──────────────┐
+              │              │              │
+              ▼              ▼              ▼
+        Expiry pass   Contradiction    Low confidence
+        (StaleScan)   found            detected
+              │              │              │
+              └──────┬───────┘──────────────┘
+                     ▼
+            ┌──────────────────┐
+            │  needs_review    │
+            │  (review queue)  │◄── GET /v1/review[?reason=...]
+            └────────┬─────────┘
+                     │
+       ┌─────────────┼─────────────┐
+       │             │             │
+       ▼             ▼             ▼
+   confirm      supersede       reject
+   (active)  (new fact, old    (removed)
+              → superseded)
+```
+
+#### What Agents Should Do With the Review Queue
+
+The daily archivist pattern:
+
+```bash
+# What needs my attention today?
+curl -s http://localhost:8000/v1/review
+
+# Just the expired facts
+curl -s "http://localhost:8000/v1/review?reason=stale"
+
+# Just the contradictions (highest-value review target)
+curl -s "http://localhost:8000/v1/review?reason=contradiction"
+
+# Low-confidence facts I might want to re-verify
+curl -s "http://localhost:8000/v1/review?reason=low_confidence"
+
+# Quick confirm all still-accurate stale facts
+curl -s -X POST "http://localhost:8000/v1/review?key=deployment/url" \
+  -H "Content-Type: application/json" \
+  -d '{"action":"confirm","ttl_days":30}'
+```
+
+This is how the House keeps its fact base clean without manual cleanup.
+The pruner does the scanning, the agent does the judging. Neither side
+needs to do the other's job.
+
+#### Pruner Configuration
+
+```bash
+# Get current pruner config
+curl -s http://localhost:8000/v1/pruner/config
+
+# Response:
+{
+  "enabled": true,
+  "stale_days": 90,
+  "conflict_sample_size": 50,
+  "conflict_threshold": 0.85,
+  "low_confidence_threshold": 0.5,
+  "importance_threshold": 0.0
+}
+```
+
+#### Pruner Auto-Tune
+
+The pruner can auto-tune its thresholds by analyzing the review queue:
+
+```bash
+curl -s -X POST http://localhost:8000/v1/pruner/auto-tune
+```
+
+This analyzes the current review queue and adjusts thresholds to balance
+the alert rate. The auto-tune endpoint is safe to call periodically
+(after every N review cycles) — it only adjusts thresholds within
+preconfigured bounds.
+
+---
+
 #### `GET /v1/review` — List facts flagged for review
 
-Returns facts with status `needs_review` — flagged by the pruner's stale scan,
-conflict scan, supersede scan, or low-confidence scan. Pre-filtered to
-`needs_review`. Supports additional filter params beyond `GET /v1/facts`.
+Returns facts with status `needs_review` — flagged by the pruner scans
+described above. Pre-filtered to `needs_review`. Supports additional
+filter params beyond `GET /v1/facts`.
 
 ```bash
 # All flagged facts
@@ -1438,11 +1557,15 @@ Replace `{NAME}` with the uppercase vault name (e.g. `RAGAMUFFIN_VAULT_DOCS_CHUN
 
 ## CI & Dependencies
 
-Ragamuffin uses a **staged-branch pipeline** to keep `:latest` always benchmarked:
+Ragamuffin uses a **staged-branch pipeline**:
 
 ```
-dev/* → PR → testing (tests + build :rolling) → PR → main (gauntlet + :latest + release tag)
+dev/* → PR → testing (tests + build :rolling) → PR → main (:latest + release tag)
 ```
+
+The benchmark gauntlet workflow (`.github/workflows/benchmark-gauntlet.yml.disabled`)
+is disabled in CI — it requires external benchmark data repos. Benchmark results from
+v0.9.0-rc.1 are available in `benchmarks/results/`.
 
 Three external dependencies: [Qdrant gRPC](https://github.com/qdrant/go-client), [pure-Go SQLite](https://gitlab.com/cznic/sqlite), [JWT verification](https://github.com/golang-jwt/jwt). No ORM, no web framework.
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.9.0 (2026-06-09)
+
+### Features
+- **Procedural memory**: Automatic extraction of procedures from session traces, stored in a dedicated Qdrant collection with dedup and structured retrieval. (#317)
+- **Cross-file link index**: `/v1/links` and `/v1/links/graph` endpoints for inter-document relationships, backlink resolution, and link enrichment on recall responses. (#314)
+- **Facts mode (Option C)**: `RAGAMUFFIN_FACTS_MODE` — vault/global/both routing for fact CRUD, enabling per-vault Qdrant client isolation. (#553)
+- **Phase 1 & 2 benchmarks**: Full benchmark suite (6 Phase 1 + 4 Phase 2) covering fact lifecycle, vault isolation, batch recall, draft/audit, rate-limit, large-vault, and event-stream scenarios. (#647)
+- **Reference agent docs**: Complete API reference and example OpenClaw agent configuration for Ragamuffin integration.
+
+### Bug Fixes
+- **Vault-scoped fact writes**: Fact CRUD now uses vault-specific Qdrant client when available. (#656)
+- **CloudEvents payload fix**: Corrected envelope structure check to validate `evt.data` not top-level fields. (#662, #676)
+- **file.changed event**: `vault.file.changed` event now emitted on document ingest. (#661)
+- **Bare routes registered**: `/draft` and `/audit` registered in all server modes. (#660)
+- **Emitter source fix**: Event source set to `'ragamuffin'` in multi-tenant mode. (#669)
+- **Zero-vector reembed**: Scanner re-attempts embedding for facts with zero vectors; respects retry limits. (#672)
+- **CI test fixes**: Procedural package tests pass in CI. (#317)
+
+### Benchmark Fixes
+- **Vault-prefixed routes**: All benchmark fact CRUD operations use vault-prefixed routes. (#654)
+- **Rate-limit handling**: Benchmark gracefully handles disabled rate limiting and malformed request bodies. (#658)
+- **list_vaults return type**: Benchmark client returns vault names, not dicts. (#659)
+
+### Documentation
+- **README rewrite**: Introduction rewritten for clarity — less jargon, more use-case-driven. (#679)
+- **pr.go**: Documented purpose of the PR subsystem. (#683)
+- **Reference agent**: Full API reference and example agent configuration added to `docs/reference-agent/`.
+
+### Chores
+- Removed stale dev artifact `memory/` directory. (#682)
+- Consolidated 5 merged PRs into single CI build for `:rolling` tag.
+
 ## v0.9.0-rc.1
 
 ### Bug Fixes
