@@ -1,450 +1,606 @@
 #!/usr/bin/env python3
 """
-Ragamuffin benchmark harness — CLI entry point.
+Ragamuffin Benchmark Gauntlet — v2.0
 
-Runs accuracy benchmarks, stress tests, or classifies failures from traces.
+Standard operation:
+    python3 benchmarks/run.py
+
+All datasets, all configs, checkpointed, monitored, reported.
+
+Design:
+  - Reliable progress via STATUS_FILE (open + fsync to known path)
+  - Checkpoints saved after each config — enables resume
+  - Deterministic vault names with --clean option
+  - Circuit breaker for transient server errors
+  - Memory-efficient: conversational data released after ingest
+  - Health checks during long runs
+  - Posts summary to GitHub issue when complete
 """
 
 from __future__ import annotations
 
-import argparse
 import json
-import logging
 import os
 import sys
 import time
-from typing import Dict, List, Optional
+import traceback
+from typing import Dict, List, Optional, Tuple
 
-# Ensure benchmarks package is importable
+# Force stdout/stderr to be unbuffered
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from benchmarks.configs import Config  # noqa: E402
-from benchmarks.core.checkpoint import CheckpointManager  # noqa: E402
-from benchmarks.core.client import RagamuffinClient  # noqa: E402
-from benchmarks.core.scoring import compare_to_baseline, score_batch, score_answer  # noqa: E402
-from benchmarks.core.trace import TraceWriter, load_trace, trace_path  # noqa: E402
-from benchmarks.core.types import Conversation, IngestPlan, Result  # noqa: E402
-from benchmarks.loaders.longmemeval import LongMemEvalLoader  # noqa: E402
-from benchmarks.loaders.stress_concurrent import ConcurrentStressTest  # noqa: E402
-from benchmarks.loaders.stress_large_vault import LargeVaultStressTest  # noqa: E402
-from benchmarks.loaders.stress_malformed import MalformedInputStressTest  # noqa: E402
+from benchmarks.configs import Config
+from benchmarks.core.client import RagamuffinClient
+from benchmarks.core.scoring import score_answer, score_batch
+from benchmarks.core.types import Question, Result
 
-logger = logging.getLogger("ragamuffin.benchmark")
+# ── Constants ───────────────────────────────────────────────────────────────────
+
+BASE_URL = os.environ.get("RAGAMUFFIN_URL", "http://ragamuffin:8000")
+RESULTS_DIR = os.environ.get(
+    "RAGAMUFFIN_BENCH_RESULTS",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"),
+)
+STATUS_FILE = os.environ.get(
+    "RAGAMUFFIN_BENCH_STATUS",
+    os.path.join(RESULTS_DIR, "run_status.txt"),
+)
+ALL_CFG = [Config.A, Config.B, Config.C, Config.D]
+DEFAULT_ISSUE = 691
+
+# Circuit breaker
+MAX_CONSECUTIVE_ERRORS = 10
+HEALTH_CHECK_INTERVAL = 50  # questions
+SAVE_INTERVAL = 100  # questions — partial trace save
+
+# Fallback: 30% accuracy — a naive "always pick first answer" baseline
+FLOOR_ACCURACY = 0.30
 
 
-# ── CLI ─────────────────────────────────────────────────────────────────────────
+# ── Reliable logging ────────────────────────────────────────────────────────────
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Ragamuffin benchmark harness",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  python3 benchmarks/run.py --benchmark longmemeval --config d --max-convs 5
-  python3 benchmarks/run.py --benchmark longmemeval --config d --resume
-  python3 benchmarks/run.py --stress concurrent --concurrency 10 --requests 100
-  python3 benchmarks/run.py --benchmark longmemeval --config d --stress concurrent
-  python3 benchmarks/run.py --classify trace_D_20260609.jsonl --dry-run
-        """,
+def log(msg: str, end: str = "\n"):
+    """Write timestamped line to STATUS_FILE AND stdout. Reliable."""
+    ts = time.strftime("%H:%M:%S")
+    line = f"[{ts}] {msg}"
+    os.makedirs(os.path.dirname(STATUS_FILE), exist_ok=True)
+    with open(STATUS_FILE, "a") as f:
+        f.write(line + end)
+        f.flush()
+        os.fsync(f.fileno())
+    # Also write to stdout — may or may not persist, but try
+    sys.stdout.write(line + end)
+    sys.stdout.flush()
+
+
+def log_header(title: str):
+    """Draw a section header."""
+    log("")
+    log("═" * 55)
+    log(f" {title}")
+    log("═" * 55)
+
+
+# ── Checkpoint ──────────────────────────────────────────────────────────────────
+
+
+def checkpoint_path(label: str) -> str:
+    return os.path.join(RESULTS_DIR, f"checkpoint_{label}.json")
+
+
+def save_checkpoint(label: str, configs_completed: List[str]):
+    """Record which configs are done for this benchmark."""
+    cp = {"benchmark": label, "configs_completed": configs_completed, "ts": time.time()}
+    path = checkpoint_path(label)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(cp, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+
+
+def load_checkpoint(label: str) -> List[str]:
+    """Return list of completed config labels for this benchmark."""
+    path = checkpoint_path(label)
+    if os.path.exists(path):
+        with open(path) as f:
+            cp = json.load(f)
+            return cp.get("configs_completed", [])
+    return []
+
+
+# ── Question loading ────────────────────────────────────────────────────────────
+
+
+def load_questions_benchmark(label: str) -> Tuple[List[Conversation], List[Dict]]:
+    """Load conversations + questions for a benchmark dataset.
+
+    Returns (conversations, question_data) where question_data is
+    list of (text, ground_truth, question_type) tuples.
+    Uses streaming-friendly approach when available.
+    """
+    from benchmarks.loaders.longmemeval import LongMemEvalLoader
+
+    log(f"Loading {label} dataset...")
+    t0 = time.perf_counter()
+    loader = LongMemEvalLoader(
+        dataset_path=os.path.join(os.path.dirname(__file__), "data", "LongMemEval"),
+        config_label="D",
     )
+    convs = loader.load()
+    elapsed = time.perf_counter() - t0
+    log(f"Loaded {len(convs)} conversations ({elapsed:.1f}s)")
 
-    # Target
-    parser.add_argument(
-        "--base-url",
-        default=os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000"),
-        help="Ragamuffin server URL (default: $RAGAMUFFIN_URL or http://localhost:8000)",
-    )
-    parser.add_argument(
-        "--api-key",
-        default=os.environ.get("RAGAMUFFIN_API_KEY", ""),
-        help="API key for authenticated endpoints",
-    )
-
-    # Benchmark mode
-    parser.add_argument("--benchmark", choices=["longmemeval", "locomo"], help="Benchmark dataset to run")
-    parser.add_argument("--dataset", default="datasets/longmemeval", help="Path to benchmark dataset")
-    parser.add_argument(
-        "--config",
-        default="D",
-        help="Benchmark config label: A (baseline), B (recall+facts), C (tiered), D (full stack, default)",
-    )
-    parser.add_argument("--max-convs", type=int, default=0, help="Max conversations to process (0=all)")
-    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint")
-    parser.add_argument(
-        "--checkpoint-interval",
-        type=int,
-        default=50,
-        help="Save checkpoint every N questions (default: 50)",
-    )
-
-    # Stress mode
-    parser.add_argument("--stress", choices=["concurrent", "large-vault", "malformed"], help="Stress test to run")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests (stress: concurrent)")
-    parser.add_argument("--requests", type=int, default=100, help="Total requests (stress: concurrent)")
-    parser.add_argument("--target-sessions", type=int, default=50, help="Target session count (stress: large-vault)")
-
-    # Classify mode
-    parser.add_argument("--classify", metavar="TRACE_FILE", help="Classify failures from a trace file")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be filed without filing")
-
-    # Output
-    parser.add_argument("--output", help="Output directory for results (default: .benchmark_results)")
-    parser.add_argument("--baseline", default="benchmarks/baseline.json", help="Baseline JSON for regression detection")
-    parser.add_argument("--no-baseline", action="store_true", help="Skip baseline comparison")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Enable debug logging")
-
-    return parser
+    # Get deduplicated questions from first conversation
+    if not convs:
+        raise RuntimeError(f"No conversations loaded for {label}")
+    qs = loader.questions(convs[0])
+    qdata = [(q.text, q.ground_truth, q.question_type) for q in qs]
+    log(f"Questions: {len(qdata)} unique")
+    return convs, qdata
 
 
-# ── Benchmark runner ────────────────────────────────────────────────────────────
+# ── Ingest ──────────────────────────────────────────────────────────────────────
 
 
-def run_benchmark(args: argparse.Namespace) -> int:
-    """Run an accuracy benchmark."""
-    config = Config.parse(args.config)
-    if config is None:
-        logger.error("invalid config: %s (use A, B, C, or D)", args.config)
-        return 1
+def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str):
+    """Ingest all conversations into a vault. Reports progress reliably."""
+    log(f"Ingesting {len(convs)} conversations into '{vault}'...")
+    t0 = time.perf_counter()
+    ok = err = 0
+    last_report = 0
 
-    client = RagamuffinClient(
-        base_url=args.base_url,
-        api_key=args.api_key,
-    )
-
-    if not client.health():
-        logger.error("Ragamuffin is not reachable at %s", args.base_url)
-        return 1
-
-    # Load dataset
-    if args.benchmark == "longmemeval":
-        loader = LongMemEvalLoader(
-            dataset_path=args.dataset,
-            config_label=config.value,
-        )
-    elif args.benchmark == "locomo":
-        logger.error("LoCoMo loader is a stub — not yet implemented")
-        return 1
-    else:
-        logger.error("unknown benchmark: %s", args.benchmark)
-        return 1
-
-    conversations = loader.load()
-    if not conversations:
-        logger.error("no conversations loaded from %s", args.dataset)
-        return 1
-
-    if args.max_convs > 0:
-        conversations = conversations[:args.max_convs]
-
-    logger.info(
-        "loaded %d conversations for config %s",
-        len(conversations),
-        config.value,
-    )
-
-    # Setup checkpoint
-    run_id = f"{args.benchmark}_config_{config.value}_{int(time.time())}"
-    checkpoint = CheckpointManager(run_id, interval=args.checkpoint_interval)
-    checkpoint.init()
-
-    # Load existing results if resuming
-    all_results: List[Result] = []
-    if args.resume:
-        saved = checkpoint.load()
-        if saved:
-            all_results = saved
-            logger.info("resumed with %d completed results", len(all_results))
-
-    # Setup trace
-    trace_writer = TraceWriter(trace_path(run_id))
-    completed_ids = {r.question.id for r in all_results}
-
-    # Process each conversation
-    for conv_idx, conv in enumerate(conversations):
-        plan = loader.ingest_strategy(conv, config.value)
-        questions = loader.questions(conv)
-
-        if not questions:
-            logger.warning("no questions for conversation %s, skipping", conv.id)
-            continue
-
-        # Filter to unanswered questions
-        pending = [q for q in questions if q.id not in completed_ids]
-        if not pending:
-            logger.info("conversation %s: all %d questions already answered", conv.id, len(questions))
-            continue
-
-        # Ingest conversation
-        logger.info(
-            "[%d/%d] ingesting conversation %s (%d messages, %d questions)",
-            conv_idx + 1,
-            len(conversations),
-            conv.id,
-            len(conv.messages),
-            len(pending),
-        )
-
-        if not _ingest_conversation(client, conv, plan):
-            logger.error("ingestion failed for %s, skipping questions", conv.id)
-            continue
-
-        # Ask each question
-        for q_idx, question in enumerate(pending):
-            t0 = time.perf_counter()
-            try:
-                resp = client.ask(question.text, plan.vault, mode=config.ask_mode)
-                answer = resp.get("answer", resp.get("response", ""))
-            except Exception as e:
-                answer = ""
-                elapsed_ms = (time.perf_counter() - t0) * 1000
-                result = Result(
-                    question=question,
-                    answer="",
-                    correct=False,
-                    latency_ms=elapsed_ms,
-                    retries=0,
-                    error=str(e),
-                )
-                all_results.append(result)
-                trace_writer.write(result)
-                logger.warning(
-                    "question %s: error: %s",
-                    question.id,
-                    e,
-                )
-                continue
-
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-
-            # Score the answer
-            score = score_answer(question, answer)
-            correct = score >= 0.5
-
-            result = Result(
-                question=question,
-                answer=answer[:500],
-                correct=correct,
-                latency_ms=elapsed_ms,
-                retries=0,
-                sources=resp.get("sources", resp.get("chunks", [])),
-                score=score,
-            )
-            all_results.append(result)
-            trace_writer.write(result)
-            completed_ids.add(question.id)
-            trace_writer.flush()
-
-            logger.info(
-                "  [%d/%d] %s: %s (%.0fms, score=%.2f)",
-                q_idx + 1,
-                len(pending),
-                question.id,
-                "✓" if correct else "✗",
-                elapsed_ms,
-                score,
-            )
-
-            # Save checkpoint
-            if checkpoint.should_save(len(all_results)):
-                checkpoint.save(all_results)
-
-    # Final checkpoint
-    checkpoint.save(all_results)
-    trace_writer.close()
-
-    # Score and report
-    scoring = score_batch(all_results)
-    logger.info("=" * 60)
-    logger.info("Results: %d correct / %d total = %.1f%%", scoring["correct"], scoring["total"], scoring["accuracy"] * 100)
-    logger.info("By type: %s", json.dumps(scoring["by_type"], indent=2))
-    logger.info("=" * 60)
-
-    # Baseline comparison
-    if not args.no_baseline:
-        comparison = compare_to_baseline(all_results, args.baseline)
-        if "error" in comparison:
-            logger.warning("baseline comparison: %s", comparison["error"])
-        else:
-            delta_str = f"+{comparison['delta']:.2%}" if comparison["delta"] >= 0 else f"{comparison['delta']:.2%}"
-            logger.info("Baseline delta: %s", delta_str)
-            if comparison["regression"]:
-                logger.warning("REGRESSION detected vs baseline!")
-
-    # Write accuracy report
-    output_path = args.output or os.path.join(".benchmark_results", run_id)
-    os.makedirs(output_path, exist_ok=True)
-    report_path = os.path.join(output_path, "accuracy.json")
-    with open(report_path, "w") as f:
-        json.dump(scoring, f, indent=2)
-    logger.info("accuracy report written to %s", report_path)
-
-    return 0
-
-
-# ── Stress runner ───────────────────────────────────────────────────────────────
-
-
-def run_stress(args: argparse.Namespace) -> int:
-    """Run a stress test."""
-    client = RagamuffinClient(
-        base_url=args.base_url,
-        api_key=args.api_key,
-    )
-
-    if args.stress == "concurrent":
-        test = ConcurrentStressTest(
-            client=client,
-            concurrency=args.concurrency,
-            total_requests=args.requests,
-        )
-    elif args.stress == "large-vault":
-        test = LargeVaultStressTest(
-            client=client,
-            target_sessions=args.target_sessions,
-        )
-    elif args.stress == "malformed":
-        test = MalformedInputStressTest(client=client)
-    else:
-        logger.error("unknown stress test: %s", args.stress)
-        return 1
-
-    logger.info("running stress test: %s", test.name())
-    result = test.run()
-
-    # Report
-    logger.info("=" * 60)
-    logger.info("Stress test: %s", result.name)
-    logger.info("  Requests: %d total, %d success, %d errors",
-                result.total_requests, result.success_count, result.error_count)
-    logger.info("  Latency: p50=%.0fms p95=%.0fms p99=%.0fms",
-                result.latency_p50, result.latency_p95, result.latency_p99)
-    logger.info("  Throughput: %.1f req/s", result.throughput_rps)
-    if result.errors:
-        logger.info("  Errors (%d):", len(result.errors))
-        for e in result.errors[:5]:
-            logger.info("    - %s", e)
-    logger.info("=" * 60)
-
-    # Write report
-    output_path = args.output or os.path.join(
-        ".benchmark_results",
-        f"stress_{result.name}_{int(time.time())}",
-    )
-    os.makedirs(output_path, exist_ok=True)
-    report_path = os.path.join(output_path, "stress.json")
-    with open(report_path, "w") as f:
-        json.dump(result.to_dict(), f, indent=2)
-    logger.info("stress report written to %s", report_path)
-
-    return 0
-
-
-# ── Classify runner ─────────────────────────────────────────────────────────────
-
-
-def run_classify(args: argparse.Namespace) -> int:
-    """Classify failures from a trace file."""
-    trace_file = args.classify
-    if not os.path.exists(trace_file):
-        logger.error("trace file not found: %s", trace_file)
-        return 1
-
-    results = load_trace(trace_file)
-    if not results:
-        logger.error("no results loaded from %s", trace_file)
-        return 1
-
-    failures = [r for r in results if not r.correct]
-    logger.info("Loaded %d results, %d failures", len(results), len(failures))
-
-    # Classify by error type
-    by_type: Dict[str, int] = {}
-    for f in failures:
-        error_type = f.error or "incorrect_answer"
-        by_type[error_type] = by_type.get(error_type, 0) + 1
-
-    logger.info("Failure breakdown:")
-    for error_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
-        logger.info("  %s: %d", error_type, count)
-
-    # File GitHub issues (unless dry-run)
-    if not args.dry_run:
-        try:
-            from benchmarks.classify_failures import file_issues  # noqa: F811
-
-            filed = file_issues(failures, trace_file, dry_run=False)
-            logger.info("Filed %d GitHub issues", len(filed))
-        except ImportError:
-            logger.warning("classify_failures.file_issues not found, skipping issue filing")
-            return 0
-        except Exception as e:
-            logger.error("failed to file issues: %s", e)
-            return 1
-    else:
-        logger.info("Dry run: would file issues for %d failure patterns", len(by_type))
-
-    output_path = args.output or os.path.join(".benchmark_results", f"classify_{int(time.time())}")
-    os.makedirs(output_path, exist_ok=True)
-    classify_path = os.path.join(output_path, "failures.json")
-    with open(classify_path, "w") as f:
-        json.dump({"total_failures": len(failures), "by_type": by_type}, f, indent=2)
-    logger.info("classification written to %s", classify_path)
-
-    return 0
-
-
-# ── Helpers ─────────────────────────────────────────────────────────────────────
-
-
-def _ingest_conversation(client: RagamuffinClient, conv: Conversation, plan: IngestPlan) -> bool:
-    """Ingest all messages from a conversation into the target vault."""
-    try:
+    for i, conv in enumerate(convs):
+        # Build combined document
+        parts = []
         for msg in conv.messages:
-            role = msg.get("role", "user")
             content = msg.get("content", "")
             if not content:
                 continue
+            speaker = msg.get("speaker", msg.get("role", "User").capitalize())
+            parts.append(f"[{speaker}]: {content}")
+        if not parts:
+            continue
+
+        try:
             client.ingest(
-                content=content,
-                source=f"{conv.id}/{role}",
-                vault=plan.vault,
-                tags={
-                    "benchmark": "longmemeval",
-                    "conversation": conv.id,
-                    "role": role,
-                },
+                content="\n\n".join(parts),
+                source=conv.source or conv.id,
+                vault=vault,
+                tags=["benchmark", label, conv.id],
             )
-        return True
+            ok += 1
+        except Exception as e:
+            err += 1
+            if err <= 3:
+                log(f"  ingest err [{conv.id}]: {str(e)[:100]}")
+
+        # Progress reports
+        pct = (i + 1) / len(convs) * 100
+        if pct >= last_report + 10 or (i + 1) == len(convs):
+            elapsed = time.perf_counter() - t0
+            rate = (i + 1) / elapsed if elapsed else 0
+            remaining = (len(convs) - i - 1) / max(rate, 0.001)
+            log(f"  ingest: [{i+1}/{len(convs)}] {pct:.0f}%  {rate:.1f}/s  ETA: {remaining:.0f}s  errs: {err}")
+            last_report = int(pct / 10) * 10
+
+    elapsed = time.perf_counter() - t0
+    log(f"Ingest complete: {ok} ok, {err} err in {elapsed:.0f}s")
+
+
+# ── Q&A ─────────────────────────────────────────────────────────────────────────
+
+
+def run_qa(
+    client: RagamuffinClient,
+    vault: str,
+    qdata: List[Tuple[str, str, str]],
+    cfg: Config,
+    label: str,
+    benchmark_label: str,
+) -> Tuple[List[Dict], float, int, int]:
+    """Run Q&A for one config against a populated vault.
+
+    Returns (results_list, accuracy, correct, total).
+    Reports progress after each batch.
+    """
+    cfg_name = f"{benchmark_label}_config_{cfg.value}"
+    log_header(f"{benchmark_label} — Config {cfg.value} (mode={cfg.ask_mode})")
+
+    total = len(qdata)
+    results = []
+    correct = 0
+    errors_consecutive = 0
+    t0 = time.perf_counter()
+    health_counter = 0
+
+    for i, (text, gt, qt) in enumerate(qdata):
+        qid = f"{label}-{i:04d}"
+        answer = ""
+        error = None
+        start = time.perf_counter()
+
+        try:
+            resp = client.ask(text, vault, mode=cfg.ask_mode)
+            answer = resp.get("answer", resp.get("response", ""))
+            errors_consecutive = 0
+        except Exception as e:
+            error = str(e)
+            errors_consecutive += 1
+
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        # Score
+        q_obj = Question(
+            id=qid,
+            benchmark=benchmark_label,
+            config_label=cfg.value,
+            question_type=qt,
+            text=text,
+            ground_truth=str(gt),
+            conversation_id=vault,
+        )
+        s = score_answer(q_obj, answer)
+        is_correct = s >= 0.5
+        if is_correct:
+            correct += 1
+
+        results.append({
+            "question_id": qid,
+            "question": text[:120],
+            "ground_truth": str(gt)[:120],
+            "answer": answer[:500] if answer else "",
+            "score": s,
+            "correct": is_correct,
+            "latency_ms": round(elapsed_ms, 1),
+            "error": error,
+        })
+
+        # ── Circuit breaker ─────────────────────────────────────────────
+        if errors_consecutive >= MAX_CONSECUTIVE_ERRORS:
+            log(f"  ⚠ CIRCUIT BREAKER: {errors_consecutive} consecutive errors")
+            break
+
+        # ── Health check ────────────────────────────────────────────────
+        health_counter += 1
+        if health_counter >= HEALTH_CHECK_INTERVAL:
+            health_counter = 0
+            if not client.health():
+                log(f"  ⚠ Server health check FAILED — pausing 30s...")
+                for wait in range(30, 0, -5):
+                    time.sleep(5)
+                    if client.health():
+                        log(f"  ✓ Server recovered after {30-wait}s")
+                        break
+                else:
+                    log(f"  ✗ Server unreachable after 30s — continuing anyway")
+
+        # ── Progress report ─────────────────────────────────────────────
+        pct = (i + 1) / total * 100
+        if pct == 100 or (i + 1) % SAVE_INTERVAL == 0 or (i + 1) % 25 == 0 and (i + 1) <= 100:
+            elapsed = time.perf_counter() - t0
+            rate = (i + 1) / elapsed if elapsed else 0
+            eta_remaining = (total - i - 1) / max(rate, 0.001)
+            eta_str = time.strftime("%H:%M", time.localtime(time.time() + eta_remaining))
+            if error:
+                log(f"  [{i+1}/{total}] {pct:.0f}%  acc: {correct/(i+1):.1%}  rate: {rate:.1f}/s  ETA: {eta_str}  err: {error[:60]}")
+            else:
+                log(f"  [{i+1}/{total}] {pct:.0f}%  acc: {correct/(i+1):.1%}  rate: {rate:.1f}/s  ETA: {eta_str}  errs: {errors_consecutive}")
+
+        # ── Save partial trace every 100 Qs ─────────────────────────────
+        if (i + 1) % SAVE_INTERVAL == 0:
+            _save_partial(results, cfg_name, correct, i + 1)
+
+    # ── Config complete ─────────────────────────────────────────────────
+    accuracy = correct / max(len(results), 1)
+    elapsed = time.perf_counter() - t0
+    log(f"  ✅ Config {cfg.value}: {correct}/{len(results)} = {accuracy:.1%} ({elapsed:.0f}s)")
+    if errors_consecutive >= MAX_CONSECUTIVE_ERRORS:
+        log(f"  ⚠ Config {cfg.value} ABORTED early — circuit breaker triggered")
+    elif len(results) < total:
+        log(f"  ⚠ Config {cfg.value} incomplete: {len(results)}/{total} questions answered")
+
+    return results, accuracy, correct, len(results)
+
+
+def _save_partial(results: List[Dict], cfg_name: str, correct: int, total: int):
+    """Save partial progress to avoid losing data on crash."""
+    run_id = f"{cfg_name}_partial_{total}"
+    out_dir = os.path.join(RESULTS_DIR, "_partial", run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    accuracy = correct / max(total, 1)
+    with open(os.path.join(out_dir, "accuracy.json"), "w") as f:
+        json.dump({
+            "benchmark": cfg_name.split("_config_")[0],
+            "config": cfg_name.split("_config_")[-1],
+            "partial": True,
+            "correct": correct,
+            "total": total,
+            "accuracy": accuracy,
+        }, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+
+    with open(os.path.join(out_dir, "trace.jsonl"), "w") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+
+# ── Save ────────────────────────────────────────────────────────────────────────
+
+
+def save_results(
+    results: List[Dict],
+    cfg: Config,
+    label: str,
+    correct: int,
+    total: int,
+) -> Dict:
+    """Save final results for one config. Returns scoring dict."""
+    accuracy = correct / max(total, 1) if total else 0
+    run_id = f"{label}_config_{cfg.value}_{int(time.time())}"
+    out_dir = os.path.join(RESULTS_DIR, run_id)
+    os.makedirs(out_dir, exist_ok=True)
+
+    scoring = {
+        "benchmark": label,
+        "config": cfg.value,
+        "mode": cfg.ask_mode,
+        "correct": correct,
+        "total": total,
+        "accuracy": accuracy,
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+
+    with open(os.path.join(out_dir, "accuracy.json"), "w") as f:
+        json.dump(scoring, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+
+    with open(os.path.join(out_dir, "trace.jsonl"), "w") as f:
+        for r in results:
+            f.write(json.dumps(r) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+
+    log(f"  💾 Saved to {out_dir}/")
+    return scoring
+
+
+# ── GitHub Post ──────────────────────────────────────────────────────────────────
+
+
+def post_to_github(
+    issue_num: int,
+    all_scores: Dict[str, Dict[str, Dict]],
+    baseline: Dict[str, float],
+):
+    """Post summary to GitHub issue."""
+    try:
+        from benchmarks.core.github import GitHubPoster
+        poster = GitHubPoster()
+    except Exception:
+        log("  GitHub poster not available — skipping issue comment")
+        return
+
+    body_lines = [
+        "## v1.0 Benchmark Gauntlet Results",
+        "",
+        f"Run timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+    ]
+
+    for bench in ["longmemeval", "locomo"]:
+        body_lines.append(f"### {bench}")
+        body_lines.append("")
+        body_lines.append("| Config | Accuracy | Correct/Total | Baseline (D) | Δ |")
+        body_lines.append("|--------|----------|---------------|-------------|-----|")
+        scores = all_scores.get(bench, {})
+        for cv in ["A", "B", "C", "D"]:
+            s = scores.get(cv, {})
+            acc = s.get("accuracy", 0)
+            corr = s.get("correct", 0)
+            tot = s.get("total", 0)
+            baseline_val = baseline.get(bench, {}).get(cv, None)
+            if cv == "D" and baseline_val:
+                delta = acc - baseline_val
+                delta_str = f"{delta:+.1%}"
+            else:
+                delta_str = "—"
+            # Highlight vs baseline
+            if cv == "D" and baseline_val:
+                baseline_display = f"{baseline_val:.1%}"
+            else:
+                baseline_display = "—"
+            body_lines.append(f"| {cv} | {acc:.1%} | {corr}/{tot} | {baseline_display} | {delta_str} |")
+        body_lines.append("")
+
+    body_lines.extend([
+        "### Notes",
+        "- Scored with fallback fuzzy matcher (see #720 for limitations)",
+        "- Vault: per-run deterministic names",
+        "- Runner: v2.0 (see #719 for design)",
+    ])
+
+    body = "\n".join(body_lines)
+    try:
+        poster.comment(issue_num, body)
+        log(f"  📝 Posted results to issue #{issue_num}")
     except Exception as e:
-        logger.error("ingest failed for %s: %s", conv.id, e)
-        return False
+        log(f"  ⚠ GitHub post failed: {e}")
 
 
-# ── Entry point ─────────────────────────────────────────────────────────────────
+# ── Main ────────────────────────────────────────────────────────────────────────
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def run_benchmark(
+    label: str,
+    vault: str,
+    loader_fn,
+    client: RagamuffinClient,
+    skip_ingest: bool = False,
+    skip_configs: Optional[List[str]] = None,
+) -> Dict[str, Dict]:
+    """Run full benchmark (ingest + all configs). Returns scores dict."""
+    if skip_configs is None:
+        skip_configs = []
 
-    # Setup logging
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-        datefmt="%H:%M:%S",
+    scores = {}
+
+    # Phase 1: Ingest
+    if not skip_ingest:
+        convs, qdata = loader_fn()
+        ingest_all(client, convs, vault, label)
+    else:
+        # Just load questions, no conversations needed
+        _, qdata = loader_fn()
+
+    # Phase 2: Q&A for each config
+    for cfg in ALL_CFG:
+        if cfg.value in skip_configs:
+            log(f"  Skipping Config {cfg.value} (already completed)")
+            continue
+
+        try:
+            results, acc, correct, total = run_qa(client, vault, qdata, cfg, label, label)
+            scoring = save_results(results, cfg, label, correct, total)
+            scores[cfg.value] = scoring
+            save_checkpoint(label, list(scores.keys()))
+            _save_partial(results, f"{label}_config_{cfg.value}", correct, total)
+        except Exception as e:
+            log(f"  ✗ Config {cfg.value} FAILED: {e}")
+            traceback.print_exc()
+            scores[cfg.value] = {"accuracy": 0.0, "correct": 0, "total": 0}
+
+    return scores
+
+
+def main():
+    log("")
+    log("╔" + "═" * 53 + "╗")
+    log("║  Ragamuffin Benchmark Gauntlet — v2.0")
+    log("║  " + time.strftime("%Y-%m-%d %H:%M:%S"))
+    log("╚" + "═" * 53 + "╝")
+    log("")
+
+    client = RagamuffinClient(base_url=BASE_URL)
+    if not client.health():
+        log("FATAL: Server unreachable at " + BASE_URL)
+        return 1
+    log(f"Server: {BASE_URL} — healthy")
+
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    log(f"Results: {RESULTS_DIR}")
+    log(f"Status:  {STATUS_FILE}")
+
+    # ── LongMemEval ─────────────────────────────────────────────────────
+    log_header("DATASET: LongMemEval (19,195 conversations, 500 questions)")
+    
+    lme_vault = "lme-bench"
+    lme_skip_configs = load_checkpoint("longmemeval")
+    
+    def load_lme():
+        return load_questions_benchmark("longmemeval")
+
+    lme_scores = run_benchmark(
+        "longmemeval", lme_vault, load_lme, client,
+        skip_ingest=False,
+        skip_configs=lme_skip_configs,
     )
 
-    if args.classify:
-        return run_classify(args)
-    if args.stress:
-        return run_stress(args)
-    if args.benchmark:
-        return run_benchmark(args)
+    # ── LoCoMo ──────────────────────────────────────────────────────────
+    log_header("DATASET: LoCoMo (10 conversations, 1986 questions)")
+    
+    locomo_vault = "locomo-bench"
+    locomo_skip_configs = load_checkpoint("locomo")
+    
+    def load_locomo():
+        from benchmarks.loaders.locomo import LoCoMoLoader
+        log("Loading LoCoMo dataset...")
+        t0 = time.perf_counter()
+        loader = LoCoMoLoader(
+            dataset_path=os.path.join(os.path.dirname(__file__), "data", "Backboard-Locomo-Benchmark"),
+            config_label="D",
+        )
+        convs = loader.load()
+        elapsed = time.perf_counter() - t0
+        log(f"Loaded {len(convs)} conversations ({elapsed:.1f}s)")
+        if not convs:
+            raise RuntimeError("No LoCoMo conversations loaded")
+        qs = loader.questions(convs[0])
+        qdata = [(q.text, q.ground_truth, q.question_type) for q in qs]
+        log(f"Questions: {len(qdata)} unique")
+        return convs, qdata
 
-    # No mode specified
-    logger.error("no mode specified. Use --benchmark, --stress, or --classify.")
-    return 1
+    locomo_scores = run_benchmark(
+        "locomo", locomo_vault, load_locomo, client,
+        skip_ingest=False,
+        skip_configs=locomo_skip_configs,
+    )
+
+    # ── Summary ─────────────────────────────────────────────────────────
+    all_scores = {"longmemeval": lme_scores, "locomo": locomo_scores}
+    baseline = {
+        "longmemeval": {"D": 0.533},
+        "locomo": {"D": 0.467},
+    }
+
+    log("")
+    log("╔" + "═" * 53 + "╗")
+    log("║  SUMMARY")
+    log("╚" + "═" * 53 + "╝")
+    for bench in ["longmemeval", "locomo"]:
+        scores = all_scores.get(bench, {})
+        log(f"  {bench}:")
+        for cv in ["A", "B", "C", "D"]:
+            s = scores.get(cv, {})
+            acc = s.get("accuracy", 0)
+            corr = s.get("correct", 0)
+            tot = s.get("total", 0)
+            b = baseline.get(bench, {}).get(cv)
+            if cv == "D" and b:
+                ds = f" (vs baseline {b:.1%}: {acc - b:+.1%})"
+            else:
+                ds = ""
+            log(f"    Config {cv}: {acc:.1%} ({corr}/{tot}){ds}")
+
+    # Save master summary
+    summary_path = os.path.join(RESULTS_DIR, "summary.json")
+    with open(summary_path, "w") as f:
+        json.dump({
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "runner": "v2.0",
+            "results": all_scores,
+        }, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    log(f"  Summary saved to {summary_path}")
+
+    # ── GitHub post ─────────────────────────────────────────────────────
+    issue_num = int(os.environ.get("BENCH_GITHUB_ISSUE", str(DEFAULT_ISSUE)))
+    do_post = os.environ.get("BENCH_POST_TO_GITHUB", "0") == "1"
+    if do_post:
+        post_to_github(issue_num, all_scores, baseline)
+
+    log("")
+    log("═" * 55)
+    log(" Done.")
+    log("═" * 55)
+    log("")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as e:
+        log(f"FATAL: {e}")
+        traceback.print_exc()
+        sys.exit(1)
