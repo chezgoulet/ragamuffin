@@ -12,7 +12,7 @@ env:
   DOCKERHUB_REPO: chezgoulet
 
 jobs:
-  test:
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -21,11 +21,29 @@ jobs:
         with:
           go-version: '1.25'
 
+      - name: Check formatting (gofmt)
+        run: |
+          UNFMT=$(gofmt -l .)
+          if [ -n "$UNFMT" ]; then
+            echo "Unformatted files:"
+            echo "$UNFMT"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./internal/... ./cmd/...
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.25'
+          check-latest: true
+
       - name: Run Go tests
         run: go test -timeout 120s ./internal/... ./cmd/...
 
   docker-build:
-    needs: [test]
+    needs: [quality]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,9 +62,10 @@ jobs:
   smoke-test:
     needs: docker-build
     runs-on: ubuntu-latest
-    if: false  # disabled — requires Qdrant in CI
+    # Disabled: requires Qdrant + an embedding provider in CI.
+    # Enable once we have a CI-compatible Qdrant service or mock.
+    if: false
     steps:
       - name: Run smoke test
         run: |
-          # docker compose up, ingest 1 conversation, answer 2 questions
-          echo "smoke test placeholder"
+          echo "smoke test placeholder — needs Qdrant in CI"

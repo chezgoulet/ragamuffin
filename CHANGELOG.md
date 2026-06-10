@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (v0.8.11)
+## v0.9.0-rc.1
 
 ### Bug Fixes
 - **conversation facts zero vectors**: `conversation.go` now calls `s.embedder.EmbedSingle()` instead of `make([]float32, FactsVectorSize)` before creating Qdrant points. Embedding failures fall back to zero vector with metadata preserved. (#558)

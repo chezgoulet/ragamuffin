@@ -8,19 +8,35 @@ env:
   DOCKERHUB_REPO: chezgoulet
 
 jobs:
-  # ── Test ────────────────────────────────────────────────────────────────
-  test:
+  # ── Quality ─────────────────────────────────────────────────────────────
+  quality:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
+      - name: Check formatting (gofmt)
+        run: |
+          UNFMT=$(gofmt -l .)
+          if [ -n "$UNFMT" ]; then
+            echo "Unformatted files:"
+            echo "$UNFMT"
+            exit 1
+          fi
+      - name: Run go vet
+        run: go vet ./internal/... ./cmd/...
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.25'
+          check-latest: true
       - name: Run Go tests
         run: go test -timeout 120s ./internal/... ./cmd/...
+
   # ── Docker build + push ────────────────────────────────────────────────
   docker:
-    needs: [test]
+    needs: [quality]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -49,7 +65,7 @@ jobs:
 
   # ── Binary release ─────────────────────────────────────────────────────
   release:
-    needs: test
+    needs: quality
     runs-on: ubuntu-latest
     permissions:
       contents: write
