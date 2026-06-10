@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
@@ -49,28 +50,36 @@ type factPayload struct {
 
 // factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
-	Key               string   `json:"key"`
-	Value             string   `json:"value"`
-	Tags              []string `json:"tags,omitempty"`
-	Source            string   `json:"source,omitempty"`
-	SourceType        string   `json:"source_type,omitempty"`
-	Confidence        *float64 `json:"confidence,omitempty"`
-	Status            string   `json:"status"`
-	Version           int      `json:"version,omitempty"`
-	Supersedes        string   `json:"supersedes"`
-	SupersededBy      int      `json:"superseded_by,omitempty"`
-	Contradicts       []string `json:"contradicts,omitempty"`
-	Refines           string   `json:"refines"`
-	Supports          []string `json:"supports,omitempty"`
-	ConflictResolved  bool     `json:"conflict_resolved"`
-	ConfirmationCount int      `json:"confirmation_count"`
-	LastConfirmedAt   string   `json:"last_confirmed_at,omitempty"`
-	CreatedAt         string   `json:"created_at,omitempty"`
-	UpdatedAt         string   `json:"updated_at"`
-	ExpiresAt         string   `json:"expires_at,omitempty"`
-	RelatedChunks     []string `json:"related_chunks,omitempty"`
-	ValidFrom         string   `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
-	ValidUntil        string   `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Key               string           `json:"key"`
+	Value             string           `json:"value"`
+	Tags              []string         `json:"tags,omitempty"`
+	Source            string           `json:"source,omitempty"`
+	SourceType        string           `json:"source_type,omitempty"`
+	Confidence        *float64         `json:"confidence,omitempty"`
+	Status            string           `json:"status"`
+	Version           int              `json:"version,omitempty"`
+	Supersedes        string           `json:"supersedes"`
+	SupersededBy      int              `json:"superseded_by,omitempty"`
+	Contradicts       []string         `json:"contradicts,omitempty"`
+	Refines           string           `json:"refines"`
+	Supports          []string         `json:"supports,omitempty"`
+	ConflictResolved  bool             `json:"conflict_resolved"`
+	ConfirmationCount int              `json:"confirmation_count"`
+	LastConfirmedAt   string           `json:"last_confirmed_at,omitempty"`
+	CreatedAt         string           `json:"created_at,omitempty"`
+	UpdatedAt         string           `json:"updated_at"`
+	ExpiresAt         string           `json:"expires_at,omitempty"`
+	RelatedChunks     []string         `json:"related_chunks,omitempty"`
+	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Provenance        *provenanceEntry `json:"provenance,omitempty"`
+}
+
+// provenanceEntry is a resolved provenance link from a fact to its source.
+type provenanceEntry struct {
+	Target   string `json:"target"`
+	Type     string `json:"type"`
+	Resolved bool   `json:"resolved"`
 }
 
 // factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
@@ -359,6 +368,11 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		go s.linkFactToChunks(fp.Key, fp.Value, vaultName)
 	}
 
+	// Background provenance link: if source is set, register a resolvable link
+	if fp.Source != "" && s.logStore != nil {
+		go s.registerProvenanceLink(s.shutdownCtx, fp.Key, fp.Source, vaultName)
+	}
+
 	// Emit fact lifecycle event
 	if s.emitter != nil {
 		s.emitter.Emit(events.TypeFactCreated, events.FactCreatedData{
@@ -403,6 +417,13 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		// Track access for importance scoring
 		go s.incrementFactAccess(s.shutdownCtx, key)
+
+		// Resolve provenance from link index
+		if s.logStore != nil {
+			provenance := s.resolveFactProvenance(r.Context(), key, vaultFromContext(r.Context()))
+			resp.Provenance = provenance
+		}
+
 		writeJSON(w, 200, resp)
 		return
 	}
@@ -660,6 +681,12 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		s.log(r.Context()).Error("facts put failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to update fact")
 		return
+	}
+
+	// If source was updated, refresh the provenance link
+	if req.Source != nil && s.logStore != nil {
+		vaultName := vaultFromContext(r.Context())
+		go s.registerProvenanceLink(s.shutdownCtx, key, *req.Source, vaultName)
 	}
 
 	resp := pointToFactResponse(payload, key)
@@ -1299,6 +1326,43 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 }
 
 // applyFieldUpdate sets payload[key] = qutil.Nv(*val) when val is non-nil.
+// registerProvenanceLink registers a resolvable provenance link from a fact to
+// its source in the link index. Runs as a background goroutine.
+func (s *Server) registerProvenanceLink(ctx context.Context, factKey, source, vaultName string) {
+	if s.logStore == nil {
+		return
+	}
+	err := s.logStore.WriteLinks(ctx, vaultName, []logstore.LinkRecord{{
+		SourcePath: "fact:" + factKey,
+		TargetPath: source,
+		LinkType:   "provenance",
+		Context:    "fact: " + factKey,
+	}})
+	if err != nil {
+		s.logger.Warn("provenance: write link failed", "fact", factKey, "error", err)
+	}
+}
+
+// resolveFactProvenance looks up the provenance link for a fact from the link index.
+// Returns nil if no provenance link exists.
+func (s *Server) resolveFactProvenance(ctx context.Context, factKey, vaultName string) *provenanceEntry {
+	links, err := s.logStore.GetOutboundLinks(ctx, "fact:"+factKey, vaultName)
+	if err != nil {
+		s.logger.Warn("provenance: lookup failed", "fact", factKey, "error", err)
+		return nil
+	}
+	for _, l := range links {
+		if l.Type == "provenance" {
+			return &provenanceEntry{
+				Target:   l.Target,
+				Type:     l.Type,
+				Resolved: l.Target != "",
+			}
+		}
+	}
+	return nil
+}
+
 // linkFactToChunks embeds the fact value, searches the vault's chunk collection
 // for semantically similar chunks (score > 0.7), and stores the top chunk IDs
 // in the fact's related_chunks payload field. Runs as a background goroutine.
