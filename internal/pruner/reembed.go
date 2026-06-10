@@ -14,7 +14,7 @@ import (
 //
 // The fallback to zero vectors exists because we'd rather store a fact
 // with no vector than drop data entirely on a transient embedding failure.
-// This scan fixes those facts once embedding is available once.
+// This scan fixes those facts once embedding is available again.
 func (p *Pruner) reembedScan(ctx context.Context) {
 	if p.facts == nil || p.embedder == nil {
 		p.logger.Warn("reembedScan: facts client or embedder not available")
