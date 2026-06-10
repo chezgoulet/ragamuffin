@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,7 +92,7 @@ func (s *Server) queryHybridFacts(ctx context.Context, key, prefix, tag string, 
 		if err == nil && len(points) > 0 {
 			factKey, _ := qutil.GetPayloadString(points[0].Payload, "fact_key")
 			value, _ := qutil.GetPayloadString(points[0].Payload, "fact_value")
-			tags, _ := qutil.GetPayloadStringList(points[0].Payload, "fact_tags")
+			tags := qutil.GetPayloadStringList(points[0].Payload, "fact_tags")
 			results = append(results, hybridResult{
 				Kind: "fact", Key: factKey, Value: value,
 				Tags: tags, Match: "key",
@@ -114,7 +115,7 @@ func (s *Server) queryHybridFacts(ctx context.Context, key, prefix, tag string, 
 					continue
 				}
 				value, _ := qutil.GetPayloadString(p.Payload, "fact_value")
-				tags, _ := qutil.GetPayloadStringList(p.Payload, "fact_tags")
+				tags := qutil.GetPayloadStringList(p.Payload, "fact_tags")
 				results = append(results, hybridResult{
 					Kind: "fact", Key: factKey, Value: value,
 					Tags: tags, Match: "prefix",
@@ -152,7 +153,7 @@ func (s *Server) queryHybridFacts(ctx context.Context, key, prefix, tag string, 
 					continue
 				}
 				value, _ := qutil.GetPayloadString(p.Payload, "fact_value")
-				tags, _ := qutil.GetPayloadStringList(p.Payload, "fact_tags")
+				tags := qutil.GetPayloadStringList(p.Payload, "fact_tags")
 				results = append(results, hybridResult{
 					Kind: "fact", Key: factKey, Value: value,
 					Tags: tags, Match: "tag",
