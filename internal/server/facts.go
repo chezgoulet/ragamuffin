@@ -74,6 +74,7 @@ type factResponse struct {
 	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
 	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
 	Provenance        *provenanceEntry `json:"provenance,omitempty"`
+	Score             float64          `json:"score,omitempty"`
 	ReadCount         int              `json:"read_count,omitempty"`
 	LastReadAt        string           `json:"last_read_at,omitempty"`
 }
@@ -158,7 +159,7 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 
 // zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
 // configured facts vector dimension. Used as fallback when the embedder is
-// unavailable (degraded mode). V1.0 replaced this with real embedding on upsert.
+// unavailable (degraded mode).
 func (s *Server) zeroFactVector() *qdrant.Vectors {
 	return &qdrant.Vectors{
 		VectorsOptions: &qdrant.Vectors_Vector{
@@ -167,6 +168,25 @@ func (s *Server) zeroFactVector() *qdrant.Vectors {
 			},
 		},
 	}
+}
+
+// embedFactVector embeds a fact value and returns a Vectors wrapper.
+// Falls back to zeroFactVector if the embedder is unavailable or embedding fails.
+func (s *Server) embedFactVector(ctx context.Context, value string) *qdrant.Vectors {
+	if s.embedder != nil && value != "" {
+		vec, err := s.embedder.EmbedSingle(ctx, value)
+		if err == nil {
+			return &qdrant.Vectors{
+				VectorsOptions: &qdrant.Vectors_Vector{
+					Vector: &qdrant.Vector{
+						Data: vec,
+					},
+				},
+			}
+		}
+		s.log(ctx).Warn("fact embed failed, using zero vector", "error", err)
+	}
+	return s.zeroFactVector()
 }
 
 // computeExpiresAt returns an ISO8601 timestamp for (now + ttl_days), or "" if 0.
@@ -349,7 +369,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: s.embedFactVector(r.Context(), fp.Value),
 	}
 
 	qc := s.factsQdrantFor(r.Context())
@@ -428,6 +448,111 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, 200, resp)
+		return
+	}
+
+	// ── Semantic vector search ──────────────────────────────────────────
+	query := r.URL.Query().Get("query")
+	if query != "" {
+		queryLimit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 1000 {
+				queryLimit = v
+			}
+		}
+
+		// Embed the query
+		eb := s.embeddingFor(r.Context())
+		if eb == nil {
+			writeError(w, 500, "EMBEDDER_UNAVAILABLE", "embedder not configured")
+			return
+		}
+		vector, err := eb.EmbedSingle(r.Context(), query)
+		if err != nil {
+			writeError(w, 500, "EMBED_FAILED", fmt.Sprintf("failed to embed query: %v", err))
+			return
+		}
+
+		// Build filter from optional scalar params
+		var conditions []*qdrant.Condition
+		if tag != "" {
+			conditions = append(conditions, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "fact_tags",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: tag,
+							},
+						},
+					},
+				},
+			})
+		}
+		if status != "" {
+			conditions = append(conditions, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "status",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: status,
+							},
+						},
+					},
+				},
+			})
+		}
+		if conflictResolvedStr != "" {
+			cr, err := strconv.ParseBool(conflictResolvedStr)
+			if err == nil {
+				conditions = append(conditions, &qdrant.Condition{
+					ConditionOneOf: &qdrant.Condition_Field{
+						Field: &qdrant.FieldCondition{
+							Key: "conflict_resolved",
+							Match: &qdrant.Match{
+								MatchValue: &qdrant.Match_Boolean{
+									Boolean: cr,
+								},
+							},
+						},
+					},
+				})
+			}
+		}
+		tf, err := timeFilter(timeFilterMode)
+		if err != nil {
+			writeError(w, 400, "INVALID_TIME_FILTER", err.Error())
+			return
+		}
+		if tf != nil {
+			conditions = append(conditions, tf)
+		}
+
+		var filter *qdrant.Filter
+		if len(conditions) > 0 {
+			filter = &qdrant.Filter{Must: conditions}
+		}
+
+		// Search facts collection
+		qc := s.factsQdrantFor(r.Context())
+		points, err := qc.Search(r.Context(), vector, uint64(queryLimit), 0.0, "", filter)
+		if err != nil {
+			writeError(w, 500, "SEARCH_FAILED", fmt.Sprintf("fact search failed: %v", err))
+			return
+		}
+
+		resp := make([]factResponse, 0, len(points))
+		for _, p := range points {
+			key, _ := qutil.GetPayloadString(p.GetPayload(), "fact_key")
+			fr := pointToFactResponse(p.GetPayload(), key)
+			if fr != nil {
+				fr.Score = float64(p.GetScore())
+				resp = append(resp, *fr)
+			}
+		}
+
+		writeJSON(w, 200, map[string]any{"entries": resp})
 		return
 	}
 
@@ -669,6 +794,12 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 
 	payload["updated_at"] = qutil.Nv(now)
 
+	// Read the final fact value from the updated payload for embedding
+	finalValue := ""
+	if v := payload["fact_value"]; v != nil {
+		finalValue = v.GetStringValue()
+	}
+
 	point := &qdrant.PointStruct{
 		Id: &qdrant.PointId{
 			PointIdOptions: &qdrant.PointId_Uuid{
@@ -676,7 +807,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: s.embedFactVector(r.Context(), finalValue),
 	}
 
 	qc := s.factsQdrantFor(r.Context())

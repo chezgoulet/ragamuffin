@@ -596,6 +596,118 @@ func (s *Server) ensureFactIndexes() {
 				"field", field, "error", err)
 		}
 	}
+
+	// ── Startup reembed scan for existing zero-vector facts ──
+	if s.embedder != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			s.logger.Info("facts: scanning for zero-vector facts at startup")
+
+			// Scroll all facts, detect zero vectors, re-embed
+			var limit uint32 = 100
+			var offset string
+			var reembedded, skipped, failed, total int
+
+			for {
+				points, err := s.facts.ScrollFiltered(ctx, factsCollection, nil, limit, offset)
+				if err != nil {
+					s.logger.Error("facts: reembed scan scroll failed", "error", err)
+					break
+				}
+				if len(points) == 0 {
+					break
+				}
+
+				for _, pt := range points {
+					total++
+					vec := getPointVector(pt)
+					if vec == nil || isZeroVector(vec) {
+						// Re-embed this fact
+						val := pt.GetPayload()["fact_value"]
+						if val == nil {
+							skipped++
+							continue
+						}
+						value := val.GetStringValue()
+						if value == "" {
+							skipped++
+							continue
+						}
+
+						pointID := pt.GetId().GetUuid()
+						newVec, err := s.embedder.EmbedSingle(ctx, value)
+						if err != nil {
+							failed++
+							continue
+						}
+
+						pv := &pb.PointVectors{
+							Id: &pb.PointId{
+								PointIdOptions: &pb.PointId_Uuid{
+									Uuid: pointID,
+								},
+							},
+							Vectors: &pb.Vectors{
+								VectorsOptions: &pb.Vectors_Vector{
+									Vector: &pb.Vector{
+										Data: newVec,
+									},
+								},
+							},
+						}
+						if err := s.facts.UpdateVectors(ctx, factsCollection, []*pb.PointVectors{pv}); err != nil {
+							failed++
+							continue
+						}
+						reembedded++
+					}
+				}
+
+				// Advance to next page
+				if id := points[len(points)-1].GetId().GetUuid(); id != "" {
+					offset = id
+				} else {
+					break
+				}
+			}
+
+			if reembedded > 0 || failed > 0 || total > 0 {
+				s.logger.Info("facts: startup reembed scan complete",
+					"reembedded", reembedded,
+					"failed", failed,
+					"skipped", skipped,
+					"total_scanned", total)
+			}
+		}()
+	}
+}
+
+// isZeroVector returns true if all elements of the vector are zero.
+func isZeroVector(vec []float32) bool {
+	for _, v := range vec {
+		if v != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// getPointVector extracts the vector data from a RetrievedPoint.
+func getPointVector(pt *pb.RetrievedPoint) []float32 {
+	if pt == nil {
+		return nil
+	}
+	vecs := pt.GetVectors()
+	if vecs == nil {
+		return nil
+	}
+	vec := vecs.GetVector()
+	if vec == nil {
+		return nil
+	}
+	return vec.GetData()
 }
 
 // withVault wraps a handler to validate vault access. Extracts the vault name

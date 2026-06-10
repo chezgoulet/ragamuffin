@@ -1,0 +1,18 @@
+[13:21:58] 
+[13:21:58] ╔═════════════════════════════════════════════════════╗
+[13:21:58] ║  Ragamuffin Benchmark Gauntlet — v2.0
+[13:21:58] ║  2026-06-10 13:21:58
+[13:21:58] ╚═════════════════════════════════════════════════════╝
+[13:21:58] 
+[13:21:59] Server: http://ragamuffin:8000 — healthy
+[13:21:59] Results: /home/node/.openclaw/workspace/ragamuffin/benchmarks/results
+[13:21:59] Status:  /home/node/.openclaw/workspace/ragamuffin/benchmarks/results/run_status.txt
+[13:21:59] 
+[13:21:59] ═══════════════════════════════════════════════════════
+[13:21:59]  DATASET: LongMemEval (19,195 conversations, 500 questions)
+[13:21:59] ═══════════════════════════════════════════════════════
+[13:21:59] Loading longmemeval dataset...
+[13:22:21] Loaded 19195 conversations (22.4s)
+[13:22:21] Questions: 500 unique
+[13:22:21] Ingesting 19195 conversations into 'lme-bench'...
+[13:30:50]   ingest err [0a88e234]: timed out
