@@ -19,6 +19,7 @@ Design:
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -37,6 +38,41 @@ from benchmarks.core.client import RagamuffinClient
 from benchmarks.core.scoring import score_answer, score_batch
 from benchmarks.core.types import Question, Result
 
+# ── CLI ────────────────────────────────────────────────────────────────────────
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Ragamuffin Benchmark Gauntlet",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clear vaults before re-ingesting (destructive)",
+    )
+    parser.add_argument(
+        "--datasets",
+        nargs="*",
+        default=["longmemeval", "locomo"],
+        choices=["longmemeval", "locomo"],
+        help="Datasets to run (default: all)",
+    )
+    parser.add_argument(
+        "--configs",
+        nargs="*",
+        default=None,
+        choices=["A", "B", "C", "D"],
+        help="Configs to run (default: all)",
+    )
+    parser.add_argument(
+        "--post",
+        action="store_true",
+        default=os.environ.get("BENCH_POST_TO_GITHUB", "0") == "1",
+        help="Post results to GitHub issue",
+    )
+    return parser.parse_args()
+
+
 # ── Constants ───────────────────────────────────────────────────────────────────
 
 BASE_URL = os.environ.get("RAGAMUFFIN_URL", "http://ragamuffin:8000")
@@ -48,6 +84,7 @@ STATUS_FILE = os.environ.get(
     "RAGAMUFFIN_BENCH_STATUS",
     os.path.join(RESULTS_DIR, "run_status.txt"),
 )
+RUN_ID = time.strftime("%Y%m%d-%H%M%S")
 ALL_CFG = [Config.A, Config.B, Config.C, Config.D]
 DEFAULT_ISSUE = 691
 
@@ -482,7 +519,46 @@ def run_benchmark(
     return scores
 
 
+def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str]):
+    """Run a single dataset (longmemeval or locomo)."""
+    if label not in datasets:
+        log(f"  Skipping {label} (not selected)")
+        return {}
+
+    if label == "longmemeval":
+        log_header("DATASET: LongMemEval (19,195 conversations, 500 questions)")
+        def load_fn():
+            return load_questions_benchmark("longmemeval")
+    elif label == "locomo":
+        log_header("DATASET: LoCoMo (10 conversations, 1986 questions)")
+        def load_fn():
+            from benchmarks.loaders.locomo import LoCoMoLoader
+            log("Loading LoCoMo dataset...")
+            t0 = time.perf_counter()
+            loader = LoCoMoLoader(
+                dataset_path=os.path.join(os.path.dirname(__file__), "data", "Backboard-Locomo-Benchmark"),
+                config_label="D",
+            )
+            convs = loader.load()
+            elapsed = time.perf_counter() - t0
+            log(f"Loaded {len(convs)} conversations ({elapsed:.1f}s)")
+            if not convs:
+                raise RuntimeError("No LoCoMo conversations loaded")
+            qs = loader.questions(convs[0])
+            qdata = [(q.text, q.ground_truth, q.question_type) for q in qs]
+            log(f"Questions: {len(qdata)} unique")
+            return convs, qdata
+
+    return run_benchmark(
+        label, vault, load_fn, client,
+        skip_ingest=False,
+        skip_configs=skip_configs,
+    )
+
+
 def main():
+    args = parse_args()
+
     log("")
     log("╔" + "═" * 53 + "╗")
     log("║  Ragamuffin Benchmark Gauntlet — v2.0")
@@ -490,7 +566,11 @@ def main():
     log("╚" + "═" * 53 + "╝")
     log("")
 
-    client = RagamuffinClient(base_url=BASE_URL)
+    client = RagamuffinClient(
+        base_url=BASE_URL,
+        ingest_timeout=120,
+        ask_timeout=30,
+    )
     if not client.health():
         log("FATAL: Server unreachable at " + BASE_URL)
         return 1
@@ -500,49 +580,37 @@ def main():
     log(f"Results: {RESULTS_DIR}")
     log(f"Status:  {STATUS_FILE}")
 
-    # ── LongMemEval ─────────────────────────────────────────────────────
-    log_header("DATASET: LongMemEval (19,195 conversations, 500 questions)")
-    
-    lme_vault = "lme-bench"
-    lme_skip_configs = load_checkpoint("longmemeval")
-    
-    def load_lme():
-        return load_questions_benchmark("longmemeval")
+    # Determine vault names — unique per run, or static if --clean
+    if args.clean:
+        lme_vault = "lme-bench-clean"
+        locomo_vault = "locomo-bench-clean"
+        log("Clean mode: clearing vaults...")
+        for v in [lme_vault, locomo_vault]:
+            try:
+                result = client.clear_vault(v)
+                log(f"  Cleared '{v}': {result.get('chunks_deleted', 0)} chunks, "
+                     f"{result.get('facts_deleted', 0)} facts deleted")
+            except Exception as e:
+                msg = str(e).lower()
+                if "not found" in msg or "404" in msg:
+                    log(f"  Vault '{v}' does not exist — will create during ingest")
+                else:
+                    log(f"  ⚠ Could not clear '{v}': {e}")
+    else:
+        lme_vault = f"lme-bench-{RUN_ID}"
+        locomo_vault = f"locomo-bench-{RUN_ID}"
+        log(f"Unique vault names: {lme_vault}, {locomo_vault}")
 
-    lme_scores = run_benchmark(
-        "longmemeval", lme_vault, load_lme, client,
-        skip_ingest=False,
-        skip_configs=lme_skip_configs,
+    # ── Run selected datasets ──────────────────────────────────────────
+    lme_scores = _run_dataset(
+        "longmemeval", lme_vault, client,
+        skip_configs=[],
+        datasets=args.datasets,
     )
-
-    # ── LoCoMo ──────────────────────────────────────────────────────────
-    log_header("DATASET: LoCoMo (10 conversations, 1986 questions)")
-    
-    locomo_vault = "locomo-bench"
-    locomo_skip_configs = load_checkpoint("locomo")
-    
-    def load_locomo():
-        from benchmarks.loaders.locomo import LoCoMoLoader
-        log("Loading LoCoMo dataset...")
-        t0 = time.perf_counter()
-        loader = LoCoMoLoader(
-            dataset_path=os.path.join(os.path.dirname(__file__), "data", "Backboard-Locomo-Benchmark"),
-            config_label="D",
-        )
-        convs = loader.load()
-        elapsed = time.perf_counter() - t0
-        log(f"Loaded {len(convs)} conversations ({elapsed:.1f}s)")
-        if not convs:
-            raise RuntimeError("No LoCoMo conversations loaded")
-        qs = loader.questions(convs[0])
-        qdata = [(q.text, q.ground_truth, q.question_type) for q in qs]
-        log(f"Questions: {len(qdata)} unique")
-        return convs, qdata
-
-    locomo_scores = run_benchmark(
-        "locomo", locomo_vault, load_locomo, client,
-        skip_ingest=False,
-        skip_configs=locomo_skip_configs,
+    locomo_scores = _run_dataset(
+        "locomo", locomo_vault, client,
+        skip_configs=[],
+        datasets=args.datasets,
     )
 
     # ── Summary ─────────────────────────────────────────────────────────

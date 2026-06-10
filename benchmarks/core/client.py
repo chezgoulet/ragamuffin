@@ -57,6 +57,11 @@ class RagamuffinClient:
         except Exception:
             return False
 
+    def clear_vault(self, name: str) -> Dict:
+        """Clear all data in a vault. Requires confirmation."""
+        data, status = self._request("POST", f"/v1/vaults/{name}/clear", body={"confirm": True})
+        return data if isinstance(data, dict) else {"status": str(status)}
+
     def list_vaults(self) -> List[str]:
         """List available vault names."""
         data, _ = self._request("GET", "/vaults")
