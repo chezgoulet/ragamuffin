@@ -24,35 +24,58 @@ _EVALUATE_QA = os.path.join(
 )
 
 
-def _load_judge():
+def _load_litellm_judge():
+    """Load the LiteLLM-based judge."""
+    try:
+        from .litellm_judge import evaluate as litellm_evaluate
+        return litellm_evaluate
+    except Exception as e:
+        logger.warning("LiteLLM judge unavailable: %s", e)
+        return None
+
+
+def _load_upstream_judge():
     """Lazy-load the evaluate_qa judge module once."""
-    if _load_judge.cached is not None:
-        return _load_judge.cached
+    if _load_upstream_judge.cached is not None:
+        return _load_upstream_judge.cached
 
     if not os.path.exists(_EVALUATE_QA):
-        logger.warning("evaluate_qa.py not found at %s — scoring disabled", _EVALUATE_QA)
-        _load_judge.cached = None
+        _load_upstream_judge.cached = None
         return None
 
     spec = importlib.util.spec_from_file_location("evaluate_qa", _EVALUATE_QA)
     mod = importlib.util.module_from_spec(spec)
     sys.modules["evaluate_qa"] = mod
     spec.loader.exec_module(mod)
-    _load_judge.cached = mod
+    _load_upstream_judge.cached = mod
     return mod
 
 
-_load_judge.cached = None  # type: ignore[attr-defined]
+_load_upstream_judge.cached = None  # type: ignore[attr-defined]
 
 
 def score_answer(question: Question, answer: str) -> float:
-    """Score a single answer against ground truth using the upstream judge.
+    """Score a single answer against ground truth using an LLM judge.
 
+    Uses LiteLLM first, falls back to upstream evaluate_qa, then
+    exact string match on failure.
     Returns 0.0-1.0 where 1.0 is a perfect match.
-    Falls back to exact string match if judge is unavailable.
     """
-    judge = _load_judge()
+    # 1. Try LiteLLM judge (fastest, no deps needed)
+    litellm_evaluate = _load_litellm_judge()
+    if litellm_evaluate is not None:
+        try:
+            result = litellm_evaluate(
+                question.text,
+                answer,
+                question.ground_truth,
+            )
+            return float(min(max(result, 0.0), 1.0))
+        except Exception as e:
+            logger.warning("LiteLLM judge failed: %s", e)
 
+    # 2. Try upstream judge (requires openai, backoff, tqdm)
+    judge = _load_upstream_judge()
     if judge is not None and hasattr(judge, "evaluate"):
         try:
             result = judge.evaluate(
@@ -67,9 +90,9 @@ def score_answer(question: Question, answer: str) -> float:
             if isinstance(result, bool):
                 return 1.0 if result else 0.0
         except Exception as e:
-            logger.warning("judge evaluate failed: %s", e)
+            logger.warning("upstream judge evaluate failed: %s", e)
 
-    # Fallback: exact string match
+    # 3. Fallback: exact string match
     return 1.0 if answer.strip().lower() == question.ground_truth.strip().lower() else 0.0
 
 
