@@ -43,6 +43,7 @@ func newMCPTestServer(t *testing.T) *Server {
 		logger:   testMCPLogger(t),
 		logStore: sto,
 		embedder: &mockEmbedder{},
+		qdrant:   &conversationMockStore{},
 		indexers: indexer.NewManager(),
 	}
 	// Add a no-op indexer for "test-vault" so doStore doesn't
