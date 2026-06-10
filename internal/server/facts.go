@@ -22,9 +22,10 @@ import (
 // ── Fact Data Model ──────────────────────────────────────────────────────
 
 // Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
-// Vector dimension is set by RAGAMUFFIN_FACTS_VECTOR_SIZE (default 4).
-// Facts use zero vectors (no semantic search), but the dimension must match
-// what the Qdrant collection was created with.
+// Vector dimension is set by RAGAMUFFIN_FACTS_VECTOR_SIZE (default: EMBEDDING_DIMS = 1536).
+// Facts are embedded on upsert for semantic search via the ?query= parameter.
+// Prior to v1.0, facts used zero vectors — existing zero-vector facts are
+// re-embedded at startup by the pruner's reembed scan.
 //
 // v0.5 extends the payload with lifecycle fields:
 //   - source, source_type, confidence, ttl_days — client-supplied, optional
@@ -156,8 +157,8 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 }
 
 // zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
-// configured facts vector dimension. Facts are payload-only (no semantic search),
-// but Qdrant requires vectors to match the collection's configured dimension.
+// configured facts vector dimension. Used as fallback when the embedder is
+// unavailable (degraded mode). V1.0 replaced this with real embedding on upsert.
 func (s *Server) zeroFactVector() *qdrant.Vectors {
 	return &qdrant.Vectors{
 		VectorsOptions: &qdrant.Vectors_Vector{
