@@ -27,6 +27,8 @@ type reviewResponse struct {
 	LastConfirmedAt string         `json:"last_confirmed_at,omitempty"`
 	CreatedAt       string         `json:"created_at,omitempty"`
 	UpdatedAt       string         `json:"updated_at"`
+	ReadCount       int            `json:"read_count,omitempty"`
+	LastReadAt      string         `json:"last_read_at,omitempty"`
 }
 
 type reviewReason struct {
@@ -201,6 +203,8 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfid
 		LastConfirmedAt: qutil.GetPayloadStringValue(payload, "last_confirmed_at"),
 		CreatedAt:       qutil.GetPayloadStringValue(payload, "created_at"),
 		UpdatedAt:       qutil.GetPayloadStringValue(payload, "updated_at"),
+		ReadCount:       qutil.GetPayloadIntValue(payload, "access_count"),
+		LastReadAt:      qutil.GetPayloadStringValue(payload, "last_accessed_at"),
 	}
 
 	// Compute review reasons dynamically from payload fields
@@ -245,6 +249,25 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfid
 			Type:   "supersession",
 			Detail: fmt.Sprintf("Supersedes fact: %s", supersedes),
 		})
+	}
+
+	// Unread check: fact has never been read or not read in 30+ days
+	lastReadAt := qutil.GetPayloadStringValue(payload, "last_accessed_at")
+	readCount := qutil.GetPayloadIntValue(payload, "access_count")
+	if readCount == 0 && r.CreatedAt != "" {
+		if created, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil && now.Sub(created) > 30*24*time.Hour {
+			reasons = append(reasons, reviewReason{
+				Type:   "unread",
+				Detail: fmt.Sprintf("Never read (created %s ago)", now.Sub(created).Truncate(time.Hour).String()),
+			})
+		}
+	} else if lastReadAt != "" {
+		if lastRead, err := time.Parse(time.RFC3339, lastReadAt); err == nil && now.Sub(lastRead) > 30*24*time.Hour {
+			reasons = append(reasons, reviewReason{
+				Type:   "unread",
+				Detail: fmt.Sprintf("Last read %s ago (%d total reads)", now.Sub(lastRead).Truncate(time.Hour).String(), readCount),
+			})
+		}
 	}
 
 	// Filter by reason type if requested

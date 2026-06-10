@@ -73,6 +73,8 @@ type factResponse struct {
 	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
 	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
 	Provenance        *provenanceEntry `json:"provenance,omitempty"`
+	ReadCount         int              `json:"read_count,omitempty"`
+	LastReadAt        string           `json:"last_read_at,omitempty"`
 }
 
 // provenanceEntry is a resolved provenance link from a fact to its source.
@@ -1317,6 +1319,8 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.RelatedChunks = qutil.GetPayloadStringList(payload, "related_chunks")
 	fr.ValidFrom, _ = qutil.GetPayloadString(payload, "valid_from")
 	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
+	fr.ReadCount, _ = qutil.GetPayloadInt(payload, "access_count")
+	fr.LastReadAt, _ = qutil.GetPayloadString(payload, "last_accessed_at")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1593,11 +1597,26 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 
 	// Read current access_count or default 0
 	currentCount := qutil.GetPayloadIntValue(pt.GetPayload(), "access_count")
-	now := time.Now().UTC().Format(time.RFC3339)
+	lastAccessStr, _ := qutil.GetPayloadString(pt.GetPayload(), "last_accessed_at")
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+
+	// Debounce: skip write if read within the last 60 seconds, unless it's
+	// every 5th read (to keep the count roughly accurate).
+	newCount := currentCount + 1
+	if lastAccessStr != "" {
+		lastAccess, err := time.Parse(time.RFC3339, lastAccessStr)
+		if err == nil && now.Sub(lastAccess) < 60*time.Second && newCount%5 != 0 {
+			// Too soon since last write — skip the Qdrant write but still
+			// count in-the-money for the caller's perspective.
+			// After 5 reads the write goes through regardless.
+			return
+		}
+	}
 
 	setPayload := map[string]*qdrant.Value{
-		"access_count":     qutil.Nv(float64(currentCount + 1)),
-		"last_accessed_at": qutil.Nv(now),
+		"access_count":     qutil.Nv(float64(newCount)),
+		"last_accessed_at": qutil.Nv(nowStr),
 	}
 	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
