@@ -3,7 +3,7 @@ module github.com/chezgoulet/ragamuffin
 go 1.25.0
 
 require (
-	github.com/golang-jwt/jwt/v5 v5.2.1
+	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/google/uuid v1.6.0
 	github.com/qdrant/go-client v1.17.1
 	golang.org/x/sys v0.45.0
