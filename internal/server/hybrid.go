@@ -19,7 +19,7 @@ type hybridResult struct {
 	Header  string   `json:"header,omitempty"`  // section header (chunks only)
 	Key     string   `json:"key,omitempty"`     // fact key (facts only)
 	Value   string   `json:"value,omitempty"`   // fact value (facts only)
-	Match   string   `json:"match,omitempty"`   // how fact matched: key|prefix|tag (facts only)
+	Match   string   `json:"match,omitempty"`   // how fact matched: key|prefix|tag|vector (facts only)
 	Tags    []string `json:"tags,omitempty"`    // fact tags
 }
 
@@ -71,7 +71,30 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// ── 2. Facts (exact key, prefix, tag) — in priority order, deduped ──
+	// ── 2. Facts (vector search) — when query is present ──
+	if query != "" {
+		eb := s.embeddingFor(r.Context())
+		if eb != nil {
+			vector, err := eb.EmbedSingle(r.Context(), query)
+			if err == nil {
+				qc := s.factsQdrantFor(r.Context())
+				factPoints, err := qc.Search(r.Context(), vector, uint64(topK), 0.0, "", nil)
+				if err == nil {
+					for _, p := range factPoints {
+						key, _ := qutil.GetPayloadString(p.GetPayload(), "fact_key")
+						value, _ := qutil.GetPayloadString(p.GetPayload(), "fact_value")
+						tags := qutil.GetPayloadStringList(p.GetPayload(), "fact_tags")
+						results = append(results, hybridResult{
+							Kind: "fact", Key: key, Value: value,
+							Tags: tags, Score: float32(p.GetScore()), Match: "vector",
+						})
+					}
+				}
+			}
+		}
+	}
+
+	// ── 3. Facts (exact key, prefix, tag) — in priority order, deduped ──
 	if key != "" || prefix != "" || tag != "" {
 		facts := s.queryHybridFacts(r.Context(), key, prefix, tag, limit)
 		results = append(results, facts...)
