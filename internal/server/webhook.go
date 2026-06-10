@@ -2,9 +2,13 @@ package server
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -41,6 +45,20 @@ func (s *Server) handleWebhookGit(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 5<<20)) // 5 MB max
 	if err != nil {
 		writeError(w, 400, "INVALID_REQUEST", "failed to read request body")
+		return
+	}
+
+	// Authenticate the webhook. Fail closed: a secret MUST be configured and
+	// the signature MUST verify, independent of RAGAMUFFIN_AUTH_MODE. Without
+	// this, /webhook/git is an unauthenticated server-side fetch trigger.
+	if s.cfg.WebhookSecret == "" {
+		writeError(w, 403, "WEBHOOK_NOT_CONFIGURED",
+			"webhook ingestion disabled — set RAGAMUFFIN_WEBHOOK_SECRET")
+		return
+	}
+	if !verifyWebhookSignature(provider, s.cfg.WebhookSecret, body, r) {
+		s.logger.Warn("webhook: signature verification failed", "provider", provider)
+		writeError(w, 401, "INVALID_SIGNATURE", "webhook signature verification failed")
 		return
 	}
 
@@ -355,13 +373,84 @@ func (s *Server) resolveVault(repoURL string) string {
 	return ""
 }
 
+// ── Signature verification ────────────────────────────────────────────────────
+
+// verifyWebhookSignature checks the provider-specific authenticity header.
+//   - GitHub / Gitea / Forgejo: X-Hub-Signature-256 = "sha256=" + HMAC-SHA256(body, secret)
+//   - GitLab: X-Gitlab-Token = the shared secret verbatim
+func verifyWebhookSignature(provider, secret string, body []byte, r *http.Request) bool {
+	if secret == "" {
+		return false
+	}
+	switch provider {
+	case "gitlab":
+		token := r.Header.Get("X-Gitlab-Token")
+		return hmac.Equal([]byte(token), []byte(secret))
+	default: // github, gitea/forgejo
+		sig := r.Header.Get("X-Hub-Signature-256")
+		const prefix = "sha256="
+		if !strings.HasPrefix(sig, prefix) {
+			return false
+		}
+		got, err := hex.DecodeString(strings.TrimPrefix(sig, prefix))
+		if err != nil {
+			return false
+		}
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write(body)
+		return hmac.Equal(got, mac.Sum(nil))
+	}
+}
+
+// ── SSRF egress guard ──────────────────────────────────────────────────────────
+
+// webhookHTTPClient refuses redirects and connections to private/loopback/
+// link-local addresses, to prevent SSRF via attacker-supplied raw URLs
+// (GitLab/Gitea payloads carry an attacker-controlled base URL).
+var webhookHTTPClient = &http.Client{
+	CheckRedirect: func(*http.Request, []*http.Request) error {
+		return fmt.Errorf("redirects are not allowed for webhook fetches")
+	},
+	Transport: &http.Transport{DialContext: safeDialContext},
+}
+
+func isDisallowedIP(ip net.IP) bool {
+	return ip == nil || ip.IsLoopback() || ip.IsPrivate() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified()
+}
+
+// safeDialContext resolves the host, rejects disallowed addresses, then dials
+// the resolved IP directly (closing the resolve-then-dial TOCTOU window).
+func safeDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, ip := range ips {
+		if isDisallowedIP(ip.IP) {
+			return nil, fmt.Errorf("refusing to connect to disallowed address %s", ip.IP)
+		}
+	}
+	d := &net.Dialer{Timeout: 10 * time.Second}
+	return d.DialContext(ctx, network, net.JoinHostPort(ips[0].IP.String(), port))
+}
+
 // ── File downloading ───────────────────────────────────────────────────────────
 
-func downloadFile(ctx context.Context, url string, timeout time.Duration) (string, error) {
+func downloadFile(ctx context.Context, rawURL string, timeout time.Duration) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("invalid or disallowed URL: %q", rawURL)
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
@@ -369,14 +458,14 @@ func downloadFile(ctx context.Context, url string, timeout time.Duration) (strin
 	// OpenClaw / Ragamuffin user-agent
 	req.Header.Set("User-Agent", "Ragamuffin/0.9")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webhookHTTPClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("download: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("download %s: HTTP %d", url, resp.StatusCode)
+		return "", fmt.Errorf("download %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 10<<20)) // 10 MB max

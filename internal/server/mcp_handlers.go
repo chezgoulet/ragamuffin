@@ -214,6 +214,17 @@ func (s *Server) mcpVaultContext(ctx context.Context, args map[string]interface{
 func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
 	ctx = s.mcpVaultContext(ctx, args)
 
+	// Enforce vault scope from auth claims. A scoped key that only grants
+	// access to vault "default" must not be able to read/write any other
+	// vault via MCP tool arguments. This mirrors the REST withVault middleware.
+	if vaultName := vaultFromContext(ctx); vaultName != "" {
+		if claims := auth.ClaimsFromContext(ctx); claims != nil {
+			if !claims.HasVaultAccess(vaultName) {
+				return nil, fmt.Errorf("access to vault %q denied by key scope", vaultName)
+			}
+		}
+	}
+
 	switch toolName {
 	case "ragamuffin_recall":
 		return s.mcpRecall(ctx, args)
