@@ -6,9 +6,14 @@ type ctxKey string
 
 const claimsKey ctxKey = "auth_claims"
 
-// contextWithClaims stores claims in the context.
-func contextWithClaims(ctx context.Context, claims *Claims) context.Context {
+// WithClaims stores claims in the context.
+func WithClaims(ctx context.Context, claims *Claims) context.Context {
 	return context.WithValue(ctx, claimsKey, claims)
+}
+
+// contextWithClaims is a backwards-compatible alias for WithClaims.
+func contextWithClaims(ctx context.Context, claims *Claims) context.Context {
+	return WithClaims(ctx, claims)
 }
 
 // ClaimsFromContext retrieves claims from the context.

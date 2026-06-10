@@ -295,6 +295,11 @@ func (s *Server) BuildAuth() auth.Authenticator {
 
 	switch m {
 	case auth.ModeNone:
+		s.logger.Warn("⚠️  AUTH DISABLED — ALL ENDPOINTS ARE OPEN. Set RAGAMUFFIN_AUTH_MODE to api_key, jwt, or oidc in production.",
+			"host", s.cfg.Host, "port", s.cfg.Port)
+		if s.cfg.Host == "0.0.0.0" || s.cfg.Host == "" {
+			s.logger.Warn("⚠️  BINDING TO ALL INTERFACES WITH AUTH DISABLED — this is an SSRF and data-exposure risk")
+		}
 		return &auth.NoneAuthenticator{}
 	case auth.ModeAPIKey:
 		s.logger.Info("api_key auth enabled")

@@ -160,6 +160,7 @@ type Config struct {
 
 	// Optional — Webhook ingestion
 	WebhookVaultMap map[string]string // repo → vault mapping from RAGAMUFFIN_WEBHOOK_VAULT_MAP
+	WebhookSecret   string            // HMAC/shared secret for verifying inbound git webhooks (RAGAMUFFIN_WEBHOOK_SECRET)
 
 	// Optional — Audit / Tuning
 	AuditSampleSize int
@@ -336,6 +337,23 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_AUTH_OIDC_ISSUER is required for OIDC mode")
 	}
 
+	// API-key mode must have at least one key. In multi-tenant mode the
+	// global keys may legitimately be empty (per-vault scoped keys are loaded
+	// from RAGAMUFFIN_AUTH_{READ,WRITE}_KEY_<VAULT> at authenticator build
+	// time), so only enforce the global-key requirement in single-tenant mode.
+	if strings.ToLower(c.AuthMode) == "api_key" {
+		if c.AuthReadKey == "" && c.AuthWriteKey == "" && !c.IsMultiTenant() {
+			errs = append(errs, "RAGAMUFFIN_AUTH_MODE=api_key requires RAGAMUFFIN_AUTH_READ_KEY and/or RAGAMUFFIN_AUTH_WRITE_KEY")
+		}
+	}
+
+	// JWT mode needs issuer, audience, and a JWKS URL to validate anything.
+	if strings.ToLower(c.AuthMode) == "jwt" {
+		if c.AuthJWTIssuer == "" || c.AuthJWTAudience == "" || c.AuthJWKSURL == "" {
+			errs = append(errs, "RAGAMUFFIN_AUTH_MODE=jwt requires RAGAMUFFIN_AUTH_JWT_ISSUER, RAGAMUFFIN_AUTH_JWT_AUDIENCE, and RAGAMUFFIN_AUTH_JWT_JWKS_URL")
+		}
+	}
+
 	return errs
 }
 
@@ -442,6 +460,7 @@ func Load() (*Config, error) {
 		GitRepos:           os.Getenv("RAGAMUFFIN_GIT_REPOS"),
 
 		WebhookVaultMap: parseJSONMap("RAGAMUFFIN_WEBHOOK_VAULT_MAP"),
+		WebhookSecret:   os.Getenv("RAGAMUFFIN_WEBHOOK_SECRET"),
 
 		AuthMode:         envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
 		AuthReadKey:      os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),

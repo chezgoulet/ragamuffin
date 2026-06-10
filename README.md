@@ -27,7 +27,7 @@ docker run -d -p 8000:8000 \
 
 > *noun.* A person, typically a child, in ragged, dirty clothes. In our case: a scrappy little knowledge tool that agents can actually use.
 
-> See the [full architecture](#two-patterns), [API reference](docs/API.md), or jump to [Quick Start (Development)](#quick-start-development).
+> See the [full architecture](#two-patterns), [API reference](docs/reference-agent/api-reference.md), or jump to [Quick Start (Development)](#quick-start-development).
 
 ---
 
@@ -35,7 +35,7 @@ docker run -d -p 8000:8000 \
 
 ### Prerequisites
 
-- **Go 1.23+** (`go version`)
+- **Go 1.25+** (`go version`)
 - **Qdrant** running locally (`docker run -d -p 6334:6334 qdrant/qdrant`)
 - **Embedding API key** (OpenAI or compatible — `text-embedding-3-small` by default)
 
@@ -105,8 +105,9 @@ pushes the `:rolling` Docker tag. This is where changes validate before
 reaching production.
 
 **Tier 3 — `main` branch**
-The stable release branch. Merges from `testing` trigger `build.yml` which
-runs the full benchmark gauntlet, builds `:latest`, and cuts a git tag.
+The stable release branch. Tagged releases trigger `build.yml` which
+runs quality gates (format, vet, tests), builds Docker `:latest` +
+version tags, cross-compiles binaries, and cuts a GitHub release.
 Only release PRs from testing to main land here.
 
 > See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full CI pipeline
@@ -159,8 +160,8 @@ flowchart LR
     Q2["Qdrant<br/>agent::robot"]
 
     OC -->|POST /v1/ingest| R
-    H -->|POST /v1/recall| R
-    R -->|POST /v1/recall?<br/>vault=agent::robot| R
+    H -->|POST /vault/{name}/recall| R
+    R -->|POST /vault/{name}/recall?<br/>vault=agent::robot| R
     R --> Q1
     R --> Q2
 

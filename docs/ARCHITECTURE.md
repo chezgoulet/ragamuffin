@@ -15,9 +15,11 @@ dev/*  ──(PR)──→  testing  ──(PR)──→  main
 All development happens on branches from `testing`. Every PR triggers
 `pr-check.yml`:
 
+- `gofmt -l .` — all files formatted (§gofmt)
 - `go build ./...` — compiles cleanly
-- `go test -short ./internal/...` — unit tests pass
-- `go vet ./...` — no static analysis issues
+- `go test ./internal/... ./cmd/...` — unit tests pass
+- `go vet ./internal/... ./cmd/...` — no static analysis issues
+- `govulncheck` — no known vulnerable dependencies
 
 This check **must pass** before the PR can merge. It's designed to be fast
 (< 2 min) — no external dependencies, no Docker, no benchmark runs.
@@ -27,9 +29,11 @@ This check **must pass** before the PR can merge. It's designed to be fast
 The `testing` branch is the integration point. Every merge triggers
 `testing-push.yml`:
 
+- `gofmt` + `go vet` — quality gates
+- `go test ./internal/... ./cmd/...` — all tests pass
 - Builds the `:rolling` Docker image
 - Pushes to container registry
-- Deploys to staging for validation
+- Deploys to staging for validation (manual)
 
 This is where changes bake before reaching production. Agents can pull
 `:rolling` to preview what's coming. If a bug is found here, it's fixed
@@ -37,12 +41,13 @@ before it reaches `main`.
 
 ### Tier 3 — `main` (Production)
 
-Release PRs from `testing` → `main` trigger `build.yml`:
+Tagged releases (git tag `v*`) trigger `build.yml`:
 
-- Full benchmark gauntlet (all configs, both datasets)
-- Compares results against `benchmarks/baseline.json`
-- If benchmarks pass: builds `:latest` image, cuts a git tag
-- If benchmarks regress: PR is flagged for review
+- `gofmt` + `go vet` + `govulncheck` — quality gates
+- `go test ./internal/... ./cmd/...` — all tests pass
+- Docker build + push (`:latest` + version tag)
+- Cross-compile release binaries (linux + darwin, amd64 + arm64)
+- GitHub Release with binaries and release notes
 
 Only `testing` → `main` PRs land here. No direct commits.
 
@@ -50,68 +55,33 @@ Only `testing` → `main` PRs land here. No direct commits.
 
 | File | Trigger | What It Does |
 |---|---|---|
-| `.github/workflows/pr-check.yml` | PR to `testing` | `go build`, `go test -short`, `go vet` |
-| `.github/workflows/testing-push.yml` | Push to `testing` | Build `:rolling`, smoke tests |
-| `.github/workflows/build.yml` | Push to `main` | Benchmark gauntlet, `:latest`, git tag |
+| `.github/workflows/pr-check.yml` | PR to `testing` | `gofmt`, `go vet`, `govulncheck`, tests, Docker verify |
+| `.github/workflows/testing-push.yml` | Push to `testing` | Quality gates + `:rolling` Docker image |
+| `.github/workflows/build.yml` | Tag push `v*` | Quality gates, tests, Docker + binary release |
 
 ## Tag Semantics
 
 | Tag | Source | Updated By | Stability |
 |---|---|---|---|
 | `chezgoulet/ragamuffin:rolling` | `testing` | Every testing push | Pre-release |
-| `chezgoulet/ragamuffin:latest` | `main` | Every main push | Production |
-| `vX.Y.Z` (git tag) | `main` | Every main push | Release |
+| `chezgoulet/ragamuffin:latest` | `main` | Every tagged release | Production |
+| `vX.Y.Z` (git tag) | `main` | Every tagged release | Release |
 
 The `:rolling` tag follows `testing` tip without versioning. Version tags
 are applied to `main` commits only.
 
 ## Benchmark Gauntlet
 
-The full benchmark suite runs on every merge to `main`:
+A benchmark suite (`benchmarks/`) exists for LongMemEval and LoCoMo datasets
+but is currently **disabled in CI** (`benchmark-gauntlet.yml.disabled`). It
+requires Qdrant and an embedding provider. To re-enable:
 
-```
-testing:merge ──→ build.yml ──→ benchmark gauntlet ──→ pass → promote → :latest
-                                                     └─→ fail → flag PR
-```
+1. Set up a CI-compatible Qdrant service
+2. Configure an embedding provider (e.g., OpenAI-compatible)
+3. Rename `benchmark-gauntlet.yml.disabled` → `benchmark-gauntlet.yml`
+4. Wire it into the release workflow as a gating step
 
-### What It Tests
-
-- Both datasets: LongMemEval (~500 questions) and LoCoMo (~1,986 pairs)
-- All four configurations (A, B, C, D)
-- Results compared against `benchmarks/baseline.json`
-
-### Baseline Management
-
-`benchmarks/baseline.json` stores the reference accuracy per question type.
-It's updated only at release time (when `main` is tagged). The gauntlet
-compares new results against this baseline; significant regressions block
-promotion.
-
-## Auto-Revert Mechanism
-
-If a `testing` → `main` merge causes benchmark regressions:
-
-1. The `build.yml` workflow reports the failure
-2. The release PR is marked as failing — does not produce `:latest`
-3. The commit remains on `main` but `:latest` is not updated
-4. A fix is developed on a new `dev/*` branch, goes through the normal
-   testing pipeline, and a new release PR addresses the regression
-
-There is no automatic revert — human judgment is required to assess whether
-the regression is acceptable (e.g., tradeoff for a feature improvement).
-
-## When This Pattern Applies
-
-This three-tier pipeline is suitable for repos that:
-
-- Have a release-quality `main` branch with benchmarked performance
-- Need a staging step between dev and production (e.g., Docker images)
-- Have CI that takes > 5 minutes per run (so per-PR checks are minimal,
-  full validation happens at merge time)
-
-For smaller repos or pure libraries without Docker deployment, a simpler
-two-tier model (dev → main) is sufficient. The full three-tier model is
-recommended for any repo that produces deployable artifacts.
+See `benchmarks/README.md` for local usage.
 
 ## Cross-Repo Reference
 
