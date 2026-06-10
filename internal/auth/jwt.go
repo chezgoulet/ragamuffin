@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -98,6 +99,10 @@ func (j *JWTAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 	},
 		jwt.WithIssuer(j.issuer),
 		jwt.WithAudience(j.audience),
+		// Pin accepted algorithms as defense-in-depth against alg-confusion.
+		// While our key-type parser rejects mismatches, pinning catches
+		// future drift between parsing and validation.
+		jwt.WithValidMethods([]string{"RS256", "ES256", "ES384", "ES512"}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("jwt validation: %w", err)
@@ -157,7 +162,7 @@ func (j *JWTAuthenticator) GetJWKS() (map[string]cachedKey, error) {
 	var jwksResp struct {
 		Keys []map[string]any `json:"keys"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&jwksResp); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&jwksResp); err != nil {
 		return nil, fmt.Errorf("decode jwks: %w", err)
 	}
 
