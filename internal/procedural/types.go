@@ -53,10 +53,10 @@ var ActionKeywords = []string{
 
 // DedupResult describes the outcome of dedup against existing procedures.
 type DedupResult struct {
-	ExistingKey   string // Non-empty if a match was found
-	ShouldUpdate  bool   // True if the existing procedure should be updated
-	ShouldCreate  bool   // True if no match found — write new
-	Similarity    float64
+	ExistingKey  string // Non-empty if a match was found
+	ShouldUpdate bool   // True if the existing procedure should be updated
+	ShouldCreate bool   // True if no match found — write new
+	Similarity   float64
 }
 
 // NewProcedure creates a Procedure with sensible defaults.

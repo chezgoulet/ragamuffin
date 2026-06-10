@@ -25,10 +25,10 @@ type OIDCAuthenticator struct {
 	clientID string
 	logger   *slog.Logger
 
-	mu            sync.Mutex
+	mu sync.Mutex
 	// Resolved via discovery
-	jwksURL       string
-	discoveredAt  time.Time
+	jwksURL      string
+	discoveredAt time.Time
 
 	// Shared JWT validation infrastructure
 	jwtAuth *JWTAuthenticator
@@ -102,7 +102,7 @@ func (o *OIDCAuthenticator) ensureDiscovered(ctx context.Context) error {
 		}
 
 		var discovery struct {
-			Issuer   string `json:"issuer"`
+			Issuer  string `json:"issuer"`
 			JWKSURI string `json:"jwks_uri"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&discovery); err != nil {

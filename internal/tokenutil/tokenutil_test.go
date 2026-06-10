@@ -20,7 +20,7 @@ func TestEstTokens_Simple(t *testing.T) {
 
 func TestEstTokens_LongText(t *testing.T) {
 	text := "the quick brown fox jumps over the lazy dog" // 9 words
-	got := EstTokens(text)                                 // 9 * 1.3 = 11.7 → 11
+	got := EstTokens(text)                                // 9 * 1.3 = 11.7 → 11
 	if got != 11 {
 		t.Errorf("expected 11, got %d", got)
 	}

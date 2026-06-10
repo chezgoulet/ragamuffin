@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
@@ -14,13 +16,25 @@ import (
 )
 
 // newTestServer creates a Server with minimal backends for testing.
+// testVaultDir is created once at package init so newTestServer callers
+// (32 in this file) don't need a *testing.T parameter just for a temp dir.
+var testVaultDir string
+
+func init() {
+	var err error
+	testVaultDir, err = os.MkdirTemp("", "ragamuffin-test-vault-*")
+	if err != nil {
+		panic(fmt.Sprintf("create test vault dir: %v", err))
+	}
+}
+
 func newTestServer() *Server {
 	cfg := &config.Config{
-		VaultPath: "/test/vault",
+		VaultPath: testVaultDir,
 	}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
-	idxm.Add("default", indexer.New("/test/vault", "default", nil, nil, nil), nil)
+	idxm.Add("default", indexer.New(testVaultDir, "default", nil, nil, nil), nil)
 	return New(cfg, nil, nil, nil, nil, idxm, nil, rl, nil, nil, nil, nil, nil, slog.Default(), nil, nil)
 }
 

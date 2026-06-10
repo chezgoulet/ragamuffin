@@ -14,7 +14,7 @@ type APIKeyAuthenticator struct {
 	readKey  string
 	writeKey string
 	// Per-vault scoped keys: vault name -> {read, write}
-	vaultKeys map[string]struct{ readKey, writeKey string }
+	vaultKeys  map[string]struct{ readKey, writeKey string }
 	writePaths map[string]bool // paths requiring write access
 }
 

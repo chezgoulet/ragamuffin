@@ -66,7 +66,7 @@ func (s *Server) handleBacklinks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]any{
-		"path":     path,
+		"path":      path,
 		"backlinks": links,
 	})
 }
@@ -125,13 +125,13 @@ func (s *Server) enrichChunksWithLinks(ctx context.Context, results []recallResu
 	enriched := make([]map[string]any, len(results))
 	for i, r := range results {
 		m := map[string]any{
-			"chunk_id":         r.ChunkID,
-			"text":             r.Text,
-			"first_paragraph":  r.FirstParagraph,
-			"source_file":      r.SourceFile,
-			"header":           r.Header,
-			"chunk_index":      r.ChunkIndex,
-			"score":            r.Score,
+			"chunk_id":          r.ChunkID,
+			"text":              r.Text,
+			"first_paragraph":   r.FirstParagraph,
+			"source_file":       r.SourceFile,
+			"header":            r.Header,
+			"chunk_index":       r.ChunkIndex,
+			"score":             r.Score,
 			"file_last_updated": r.FileLastUpdated,
 		}
 

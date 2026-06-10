@@ -503,7 +503,7 @@ func TestLoad_MultiTenant(t *testing.T) {
 
 func TestLoad_InvalidVaultEntry(t *testing.T) {
 	tests := []string{
-		":/path",  // empty name
+		":/path", // empty name
 	}
 
 	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
@@ -859,16 +859,16 @@ func TestValidVaultName(t *testing.T) {
 		{"vault123", true},
 		{"a", true},
 		{"a-b", true},
-		{"Docs", false},           // uppercase
-		{"my_vault", false},       // underscore
-		{"-docs", false},          // leading hyphen
-		{"docs-", false},          // trailing hyphen
-		{"", false},               // empty
-		{"a", true},               // single char
+		{"Docs", false},     // uppercase
+		{"my_vault", false}, // underscore
+		{"-docs", false},    // leading hyphen
+		{"docs-", false},    // trailing hyphen
+		{"", false},         // empty
+		{"a", true},         // single char
 		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 33 chars
-		{"a-b-c-d-e-f-g", true},  // 13 chars, multiple hyphens
-		{"no spaces", false},      // space
-		{"docs!", false},          // special char
+		{"a-b-c-d-e-f-g", true},                      // 13 chars, multiple hyphens
+		{"no spaces", false},                         // space
+		{"docs!", false},                             // special char
 	}
 
 	for _, tt := range tests {

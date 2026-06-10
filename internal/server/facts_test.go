@@ -20,11 +20,11 @@ import (
 // factsMockStore stores points in memory and supports all qdrant.FactStore methods.
 // ScrollFiltered does basic filter matching (status, fact_key, fact_tags).
 type factsMockStore struct {
-	points  map[string]*pb.RetrievedPoint // key → point (key = fact_key, not UUID)
-	coll    string                        // collection name
-	upsertCalls int
+	points          map[string]*pb.RetrievedPoint // key → point (key = fact_key, not UUID)
+	coll            string                        // collection name
+	upsertCalls     int
 	setPayloadCalls int
-	deleteCalls int
+	deleteCalls     int
 }
 
 func newFactsMockStore() *factsMockStore {
@@ -130,8 +130,8 @@ func (s *factsMockStore) DeleteFiltered(_ context.Context, _ string, filter *pb.
 	return nil
 }
 
-func (s *factsMockStore) Close() error                       { return nil }
-func (s *factsMockStore) Collection() string                 { return s.coll }
+func (s *factsMockStore) Close() error                            { return nil }
+func (s *factsMockStore) Collection() string                      { return s.coll }
 func (s *factsMockStore) Count(_ context.Context) (uint64, error) { return uint64(len(s.points)), nil }
 func (s *factsMockStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
 	return nil, nil, nil
@@ -139,10 +139,12 @@ func (s *factsMockStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*
 func (s *factsMockStore) Search(_ context.Context, _ []float32, _ uint64, _ float32, _ string, _ *pb.Filter) ([]*pb.ScoredPoint, error) {
 	return nil, nil
 }
-func (s *factsMockStore) DeleteBySource(_ context.Context, _ string) error { return nil }
-func (s *factsMockStore) CountFiles(_ context.Context) (int, error)       { return 0, nil }
+func (s *factsMockStore) DeleteBySource(_ context.Context, _ string) error           { return nil }
+func (s *factsMockStore) CountFiles(_ context.Context) (int, error)                  { return 0, nil }
 func (s *factsMockStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
-func (s *factsMockStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error { return nil }
+func (s *factsMockStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error {
+	return nil
+}
 func (s *factsMockStore) Health(_ context.Context) error { return nil }
 
 // matchFactsFilter checks a RetrievedPoint against a Qdrant filter.

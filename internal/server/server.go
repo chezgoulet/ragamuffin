@@ -7,30 +7,30 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"log/slog"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
-	"github.com/google/uuid"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
-	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
-	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
+	"github.com/chezgoulet/ragamuffin/web"
+	"github.com/google/uuid"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -48,56 +48,56 @@ var (
 
 // Server is the HTTP server.
 type Server struct {
-	cfg         *config.Config
-	qdrant      qdrant.FactStore
-	facts       qdrant.FactStore
-	embedder    embedding.Embedder
-	llm         llm.Synthesizer
-	indexers    *indexer.Manager
-	gitProvider git.Provider
-	ratelimit   *ratelimit.Limiter
-	watcher     watcher.Watcher
-	logStore    *logstore.Store
-	pruner      *pruner.Pruner
-	extractor   *extraction.Extractor
-	apiDriver   *ingress.APIIngestDriver
-	emitter     *events.Emitter // webhook + SSE event publisher
-	mcpHandler  *mcp.Handler
-	broker      *events.Broker  // SSE subscriber registry
-	logger      *slog.Logger
-	started     time.Time
-	mu          sync.Mutex
+	cfg           *config.Config
+	qdrant        qdrant.FactStore
+	facts         qdrant.FactStore
+	embedder      embedding.Embedder
+	llm           llm.Synthesizer
+	indexers      *indexer.Manager
+	gitProvider   git.Provider
+	ratelimit     *ratelimit.Limiter
+	watcher       watcher.Watcher
+	logStore      *logstore.Store
+	pruner        *pruner.Pruner
+	extractor     *extraction.Extractor
+	apiDriver     *ingress.APIIngestDriver
+	emitter       *events.Emitter // webhook + SSE event publisher
+	mcpHandler    *mcp.Handler
+	broker        *events.Broker // SSE subscriber registry
+	logger        *slog.Logger
+	started       time.Time
+	mu            sync.Mutex
 	requestCounts map[string]map[string]int64 // endpoint -> status -> count
 
 	shutdownCtx    context.Context // cancelled by Shutdown() (#420)
 	shutdownCancel context.CancelFunc
 
 	qdrantReconnecting bool
-	qdrantMu          sync.RWMutex
+	qdrantMu           sync.RWMutex
 }
 
 // New creates a new Server.
 func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger, ext *extraction.Extractor, apiDrv *ingress.APIIngestDriver) *Server {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	s := &Server{
-		cfg:           cfg,
-		qdrant:        qc,
-		facts:         factsQc,
-		embedder:      ec,
-		llm:           lm,
-		indexers:      idxm,
-		gitProvider:   gp,
-		ratelimit:     rl,
-		watcher:       w,
-		logStore:      logStore,
-		pruner:        pr,
+		cfg:            cfg,
+		qdrant:         qc,
+		facts:          factsQc,
+		embedder:       ec,
+		llm:            lm,
+		indexers:       idxm,
+		gitProvider:    gp,
+		ratelimit:      rl,
+		watcher:        w,
+		logStore:       logStore,
+		pruner:         pr,
 		extractor:      ext,
-		apiDriver:     apiDrv,
-		emitter:       emitter,
-		broker:        br,
-		logger:        logger,
-		started:       time.Now(),
-		requestCounts: make(map[string]map[string]int64),
+		apiDriver:      apiDrv,
+		emitter:        emitter,
+		broker:         br,
+		logger:         logger,
+		started:        time.Now(),
+		requestCounts:  make(map[string]map[string]int64),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 	}
@@ -569,7 +569,6 @@ func (s *Server) ensureFactIndexes() {
 		}
 	}
 
-
 	indexes := map[string]string{
 		"status":            "keyword",
 		"source_type":       "keyword",
@@ -724,10 +723,10 @@ func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
 				{
 					"name":          "default",
 					"path":          s.cfg.VaultPath,
-					"indexed_files":  fileCount,
-					"total_chunks":   chunkCount,
-					"last_indexed":   lastIndexedStr,
-					"indexing":       indexing,
+					"indexed_files": fileCount,
+					"total_chunks":  chunkCount,
+					"last_indexed":  lastIndexedStr,
+					"indexing":      indexing,
 				},
 			},
 		})

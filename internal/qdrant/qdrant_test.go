@@ -746,7 +746,7 @@ func TestSearch_WithCustomFilter(t *testing.T) {
 		Must: []*pb.Condition{{
 			ConditionOneOf: &pb.Condition_Field{
 				Field: &pb.FieldCondition{
-					Key: "status",
+					Key:   "status",
 					Match: &pb.Match{MatchValue: &pb.Match_Keyword{Keyword: "active"}},
 				},
 			},
@@ -955,7 +955,7 @@ func TestCreatePayloadIndex(t *testing.T) {
 		{"datetime", pb.FieldType_FieldTypeDatetime},
 		{"uuid", pb.FieldType_FieldTypeUuid},
 		{"unknown", pb.FieldType_FieldTypeKeyword}, // default
-		{"", pb.FieldType_FieldTypeKeyword},         // default for empty
+		{"", pb.FieldType_FieldTypeKeyword},        // default for empty
 	}
 	for _, tt := range tests {
 		t.Run(tt.fieldType, func(t *testing.T) {

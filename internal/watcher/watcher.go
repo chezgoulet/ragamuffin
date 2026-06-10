@@ -18,7 +18,7 @@ type Event struct {
 type Action int
 
 const (
-	ActionAdd    Action = iota
+	ActionAdd Action = iota
 	ActionModify
 	ActionDelete
 )
@@ -63,5 +63,3 @@ func New(vaultPath string, interval time.Duration, logger *slog.Logger, mode str
 		return newPollWatcher(vaultPath, interval, logger)
 	}
 }
-
-

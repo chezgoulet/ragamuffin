@@ -20,12 +20,12 @@ type Stats struct {
 
 // StatsSnapshot is a point-in-time view of pipeline statistics.
 type StatsSnapshot struct {
-	TotalAttempted      uint64    `json:"total_attempted"`
-	FactsCreated        uint64    `json:"facts_created"`
-	FactsSkipped        uint64    `json:"facts_skipped"`
-	FactsRejected       uint64    `json:"facts_rejected"`
-	AvgConfidence       float64   `json:"avg_confidence"`
-	LastExtraction      string    `json:"last_extraction,omitempty"`
+	TotalAttempted uint64  `json:"total_attempted"`
+	FactsCreated   uint64  `json:"facts_created"`
+	FactsSkipped   uint64  `json:"facts_skipped"`
+	FactsRejected  uint64  `json:"facts_rejected"`
+	AvgConfidence  float64 `json:"avg_confidence"`
+	LastExtraction string  `json:"last_extraction,omitempty"`
 }
 
 // NewStats creates a new Stats instance.
@@ -35,11 +35,11 @@ func NewStats() *Stats {
 	return s
 }
 
-func (s *Stats) IncAttempted()                    { s.attempted.Add(1) }
-func (s *Stats) IncCreated()                      { s.created.Add(1) }
-func (s *Stats) IncSkipped()                      { s.skipped.Add(1) }
-func (s *Stats) IncRejected()                     { s.rejected.Add(1) }
-func (s *Stats) SetLastExtraction(t time.Time)    { s.lastExtraction.Store(t) }
+func (s *Stats) IncAttempted()                 { s.attempted.Add(1) }
+func (s *Stats) IncCreated()                   { s.created.Add(1) }
+func (s *Stats) IncSkipped()                   { s.skipped.Add(1) }
+func (s *Stats) IncRejected()                  { s.rejected.Add(1) }
+func (s *Stats) SetLastExtraction(t time.Time) { s.lastExtraction.Store(t) }
 
 // RecordConfidence records a confidence value for averaging.
 func (s *Stats) RecordConfidence(c float64) {

@@ -42,6 +42,8 @@ func newMCPTestServer(t *testing.T) *Server {
 		facts:    &conversationMockStore{}, // satisfies qdrant.FactStore, all methods return nil/0
 		logger:   testMCPLogger(t),
 		logStore: sto,
+		embedder: &mockEmbedder{},
+		qdrant:   &conversationMockStore{},
 		indexers: indexer.NewManager(),
 	}
 	// Add a no-op indexer for "test-vault" so doStore doesn't
@@ -55,8 +57,8 @@ func newMCPTestServer(t *testing.T) *Server {
 
 func minimalConfig() *config.Config {
 	return &config.Config{
-		FactsCollection:    "test_facts",
-		FactsVectorSize:    4,
+		FactsCollection:     "test_facts",
+		FactsVectorSize:     4,
 		AutoProvisionVaults: false,
 	}
 }

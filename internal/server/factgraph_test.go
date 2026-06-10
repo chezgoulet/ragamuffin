@@ -54,14 +54,24 @@ func (s *factGraphTestStore) Close() error { return nil }
 
 func (s *factGraphTestStore) Collection() string { return "test_facts" }
 
-func (s *factGraphTestStore) Count(_ context.Context) (uint64, error) { return uint64(len(s.points)), nil }
-func (s *factGraphTestStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) { return nil, nil, nil }
-func (s *factGraphTestStore) Search(_ context.Context, _ []float32, _ uint64, _ float32, _ string, _ *pb.Filter) ([]*pb.ScoredPoint, error) { return nil, nil }
+func (s *factGraphTestStore) Count(_ context.Context) (uint64, error) {
+	return uint64(len(s.points)), nil
+}
+func (s *factGraphTestStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	return nil, nil, nil
+}
+func (s *factGraphTestStore) Search(_ context.Context, _ []float32, _ uint64, _ float32, _ string, _ *pb.Filter) ([]*pb.ScoredPoint, error) {
+	return nil, nil
+}
 func (s *factGraphTestStore) DeleteBySource(_ context.Context, _ string) error { return nil }
-func (s *factGraphTestStore) DeleteFiltered(_ context.Context, _ string, _ *pb.Filter) error { return nil }
-func (s *factGraphTestStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
+func (s *factGraphTestStore) DeleteFiltered(_ context.Context, _ string, _ *pb.Filter) error {
+	return nil
+}
+func (s *factGraphTestStore) CountFiles(_ context.Context) (int, error)                  { return 0, nil }
 func (s *factGraphTestStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
-func (s *factGraphTestStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error { return nil }
+func (s *factGraphTestStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error {
+	return nil
+}
 func (s *factGraphTestStore) Health(_ context.Context) error { return nil }
 
 func factGraphMatchesFilter(pt *pb.RetrievedPoint, filter *pb.Filter) bool {

@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
-	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 

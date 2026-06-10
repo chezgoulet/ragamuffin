@@ -39,58 +39,58 @@ type factPayload struct {
 	Source     string   `json:"source,omitempty"`
 	SourceType string   `json:"source_type,omitempty"`
 
-	Confidence    *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
-	TTLDays       *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
-	Version       *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
+	Confidence    *float64 `json:"confidence,omitempty"`     // 0.0–1.0; default 1.0
+	TTLDays       *int     `json:"ttl_days,omitempty"`       // days; 0 = never expire
+	Version       *int     `json:"version,omitempty"`        // >0 = versioned; 0/omitted = unversioned
 	RelatedChunks []string `json:"related_chunks,omitempty"` // server-populated; ignored on upsert
-	ValidFrom     *string  `json:"valid_from,omitempty"`   // RFC 3339; default = created_at
-	ValidUntil    *string  `json:"valid_until,omitempty"`  // RFC 3339; null = no expiry
+	ValidFrom     *string  `json:"valid_from,omitempty"`     // RFC 3339; default = created_at
+	ValidUntil    *string  `json:"valid_until,omitempty"`    // RFC 3339; null = no expiry
 }
 
 // factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
-	Key              string   `json:"key"`
-	Value            string   `json:"value"`
-	Tags             []string `json:"tags,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	SourceType       string   `json:"source_type,omitempty"`
-	Confidence       *float64 `json:"confidence,omitempty"`
-	Status           string   `json:"status"`
-	Version          int      `json:"version,omitempty"`
-	Supersedes       string   `json:"supersedes"`
-	SupersededBy     int      `json:"superseded_by,omitempty"`
-	Contradicts      []string `json:"contradicts,omitempty"`
-	Refines          string   `json:"refines"`
-	Supports         []string `json:"supports,omitempty"`
-	ConflictResolved bool     `json:"conflict_resolved"`
-	ConfirmationCount int     `json:"confirmation_count"`
-	LastConfirmedAt  string   `json:"last_confirmed_at,omitempty"`
-	CreatedAt        string   `json:"created_at,omitempty"`
-	UpdatedAt        string   `json:"updated_at"`
-	ExpiresAt        string   `json:"expires_at,omitempty"`
-	RelatedChunks    []string `json:"related_chunks,omitempty"`
-	ValidFrom        string   `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
-	ValidUntil       string   `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Key               string   `json:"key"`
+	Value             string   `json:"value"`
+	Tags              []string `json:"tags,omitempty"`
+	Source            string   `json:"source,omitempty"`
+	SourceType        string   `json:"source_type,omitempty"`
+	Confidence        *float64 `json:"confidence,omitempty"`
+	Status            string   `json:"status"`
+	Version           int      `json:"version,omitempty"`
+	Supersedes        string   `json:"supersedes"`
+	SupersededBy      int      `json:"superseded_by,omitempty"`
+	Contradicts       []string `json:"contradicts,omitempty"`
+	Refines           string   `json:"refines"`
+	Supports          []string `json:"supports,omitempty"`
+	ConflictResolved  bool     `json:"conflict_resolved"`
+	ConfirmationCount int      `json:"confirmation_count"`
+	LastConfirmedAt   string   `json:"last_confirmed_at,omitempty"`
+	CreatedAt         string   `json:"created_at,omitempty"`
+	UpdatedAt         string   `json:"updated_at"`
+	ExpiresAt         string   `json:"expires_at,omitempty"`
+	RelatedChunks     []string `json:"related_chunks,omitempty"`
+	ValidFrom         string   `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil        string   `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
 }
 
 // factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
 // Pointer fields distinguish "omitted" (nil) from "set to zero/empty" (non-nil).
 type factUpdateRequest struct {
-	Value            *string   `json:"value,omitempty"`
-	Tags             *[]string `json:"tags,omitempty"`
-	Source           *string   `json:"source,omitempty"`
-	SourceType       *string   `json:"source_type,omitempty"`
-	Status           *string   `json:"status,omitempty"`
-	Supersedes       *string   `json:"supersedes,omitempty"`
-	Refines          *string   `json:"refines,omitempty"`
-	Supports         *[]string `json:"supports,omitempty"`
-	Confidence       *float64  `json:"confidence,omitempty"`
-	ConflictResolved *bool     `json:"conflict_resolved,omitempty"`
-	ConfirmationCount *int     `json:"confirmation_count,omitempty"`
-	LastConfirmedAt  *string   `json:"last_confirmed_at,omitempty"`
-	TTLDays          *int      `json:"ttl_days,omitempty"`
-	ValidFrom        *string   `json:"valid_from,omitempty"`  // RFC 3339; set to "" to clear
-	ValidUntil       *string   `json:"valid_until,omitempty"` // RFC 3339; set to "" to clear
+	Value             *string   `json:"value,omitempty"`
+	Tags              *[]string `json:"tags,omitempty"`
+	Source            *string   `json:"source,omitempty"`
+	SourceType        *string   `json:"source_type,omitempty"`
+	Status            *string   `json:"status,omitempty"`
+	Supersedes        *string   `json:"supersedes,omitempty"`
+	Refines           *string   `json:"refines,omitempty"`
+	Supports          *[]string `json:"supports,omitempty"`
+	Confidence        *float64  `json:"confidence,omitempty"`
+	ConflictResolved  *bool     `json:"conflict_resolved,omitempty"`
+	ConfirmationCount *int      `json:"confirmation_count,omitempty"`
+	LastConfirmedAt   *string   `json:"last_confirmed_at,omitempty"`
+	TTLDays           *int      `json:"ttl_days,omitempty"`
+	ValidFrom         *string   `json:"valid_from,omitempty"`  // RFC 3339; set to "" to clear
+	ValidUntil        *string   `json:"valid_until,omitempty"` // RFC 3339; set to "" to clear
 }
 
 // factBulkUpdateRequest is the JSON body for PATCH /v1/facts (bulk update).
@@ -281,31 +281,31 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := qdrant.NewValueMap(map[string]any{
-		"fact_key":          fp.Key,
-		"key_prefix":        versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
-		"fact_value":        fp.Value,
-		"source":            fp.Source,
-		"source_type":       fp.SourceType,
-		"confidence":        confidence,
-		"version":           version,
-		"status":            "active",
-		"supersedes":        "",
-		"superseded_by":     0,
-		"refines":           "",
-		"conflict_resolved": true,
+		"fact_key":           fp.Key,
+		"key_prefix":         versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
+		"fact_value":         fp.Value,
+		"source":             fp.Source,
+		"source_type":        fp.SourceType,
+		"confidence":         confidence,
+		"version":            version,
+		"status":             "active",
+		"supersedes":         "",
+		"superseded_by":      0,
+		"refines":            "",
+		"conflict_resolved":  true,
 		"confirmation_count": 1,
-		"last_confirmed_at": now,
-		"access_count":      0,
-		"last_accessed_at":  "",
-		"created_at":        createdAt,
-		"updated_at":        now,
-		"ttl_days":          intValue(fp.TTLDays),
-		"expires_at":        expiresAt,
-		"expires_at_unix":   expiresAtUnix,
-		"valid_from":        validFrom,
-		"valid_from_unix":   validFromUnix,
-		"valid_until":       validUntil,
-		"valid_until_unix":  validUntilUnix,
+		"last_confirmed_at":  now,
+		"access_count":       0,
+		"last_accessed_at":   "",
+		"created_at":         createdAt,
+		"updated_at":         now,
+		"ttl_days":           intValue(fp.TTLDays),
+		"expires_at":         expiresAt,
+		"expires_at_unix":    expiresAtUnix,
+		"valid_from":         validFrom,
+		"valid_from_unix":    validFromUnix,
+		"valid_until":        validUntil,
+		"valid_until_unix":   validUntilUnix,
 	})
 	// Contradicts: empty list (server-managed)
 	payload["contradicts"] = &qdrant.Value{
@@ -1184,7 +1184,7 @@ func (s *Server) migrateFacts() {
 			}
 
 			point := &qdrant.PointStruct{
-				Id: p.Id,
+				Id:      p.Id,
 				Payload: payload,
 				Vectors: s.zeroFactVector(),
 			}
@@ -1410,6 +1410,7 @@ func intValue(p *int) int {
 //   - "active_at:2006-01-02T15:04:05Z": effective at a specific point in time
 //   - "active_at:2006-01-02": also accepted, midnight UTC
 //   - "all": no filter (returns nil, nil)
+//
 // Returns an error for malformed active_at values.
 func timeFilter(mode string) (*qdrant.Condition, error) {
 	if mode == "all" {
@@ -1421,14 +1422,14 @@ func timeFilter(mode string) (*qdrant.Condition, error) {
 
 	if mode != "" {
 		if strings.HasPrefix(mode, "active_at:") {
-		ts := strings.TrimPrefix(mode, "active_at:")
-		if t, err := time.Parse(time.RFC3339, ts); err == nil {
-			target = t
-		} else if t, err := time.Parse("2006-01-02", ts); err == nil {
-			target = t
-		} else {
-			return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
-		}
+			ts := strings.TrimPrefix(mode, "active_at:")
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				target = t
+			} else if t, err := time.Parse("2006-01-02", ts); err == nil {
+				target = t
+			} else {
+				return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
+			}
 		} else {
 			return nil, fmt.Errorf("unknown time filter mode: %q", mode)
 		}

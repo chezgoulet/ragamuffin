@@ -13,21 +13,20 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-
 // ── Request/Response types ────────────────────────────────────────────────────
 
 type reviewResponse struct {
-	Key           string         `json:"key"`
-	Value         string         `json:"value"`
-	Tags          []string       `json:"tags,omitempty"`
-	Source        string         `json:"source,omitempty"`
-	SourceType    string         `json:"source_type,omitempty"`
-	Confidence    *float64       `json:"confidence,omitempty"`
-	Status        string         `json:"status"`
-	ReviewReasons []reviewReason `json:"review_reasons,omitempty"`
-	LastConfirmedAt string       `json:"last_confirmed_at,omitempty"`
-	CreatedAt     string         `json:"created_at,omitempty"`
-	UpdatedAt     string         `json:"updated_at"`
+	Key             string         `json:"key"`
+	Value           string         `json:"value"`
+	Tags            []string       `json:"tags,omitempty"`
+	Source          string         `json:"source,omitempty"`
+	SourceType      string         `json:"source_type,omitempty"`
+	Confidence      *float64       `json:"confidence,omitempty"`
+	Status          string         `json:"status"`
+	ReviewReasons   []reviewReason `json:"review_reasons,omitempty"`
+	LastConfirmedAt string         `json:"last_confirmed_at,omitempty"`
+	CreatedAt       string         `json:"created_at,omitempty"`
+	UpdatedAt       string         `json:"updated_at"`
 }
 
 type reviewReason struct {
@@ -37,24 +36,24 @@ type reviewReason struct {
 }
 
 type reviewResolveRequest struct {
-	Action          string   `json:"action"` // confirm | supersede | reject | reclassify
-	Confidence      *float64 `json:"confidence,omitempty"`
-	NewKey          string   `json:"new_key,omitempty"`
-	NewValue        string   `json:"new_value,omitempty"`
-	Note            string   `json:"note,omitempty"`
-	ConflictResolved *bool   `json:"conflict_resolved,omitempty"`
-	TTLDays         *int     `json:"ttl_days,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	Source          string   `json:"source,omitempty"`
-	SourceType      string   `json:"source_type,omitempty"`
+	Action           string   `json:"action"` // confirm | supersede | reject | reclassify
+	Confidence       *float64 `json:"confidence,omitempty"`
+	NewKey           string   `json:"new_key,omitempty"`
+	NewValue         string   `json:"new_value,omitempty"`
+	Note             string   `json:"note,omitempty"`
+	ConflictResolved *bool    `json:"conflict_resolved,omitempty"`
+	TTLDays          *int     `json:"ttl_days,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	SourceType       string   `json:"source_type,omitempty"`
 }
 
 type reviewStatsResponse struct {
-	TotalNeedsReview int                         `json:"total_needs_review"`
-	ByReason         map[string]int              `json:"by_reason"`
-	BySourceType     map[string]int              `json:"by_source_type"`
-	OldestItem       string                      `json:"oldest_item,omitempty"`
-	AvgPendingDays   float64                     `json:"avg_pending_days,omitempty"`
+	TotalNeedsReview int            `json:"total_needs_review"`
+	ByReason         map[string]int `json:"by_reason"`
+	BySourceType     map[string]int `json:"by_source_type"`
+	OldestItem       string         `json:"oldest_item,omitempty"`
+	AvgPendingDays   float64        `json:"avg_pending_days,omitempty"`
 }
 
 // ── GET /v1/review ────────────────────────────────────────────────────────────
@@ -192,16 +191,16 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfid
 		confidence = &c
 	}
 	r := &reviewResponse{
-		Key:     key,
-		Value:   value,
-		Tags:    qutil.GetPayloadStringList(payload, "fact_tags"),
-		Source:  qutil.GetPayloadStringValue(payload, "source"),
-		SourceType: qutil.GetPayloadStringValue(payload, "source_type"),
-		Confidence: confidence,
-		Status:  status,
+		Key:             key,
+		Value:           value,
+		Tags:            qutil.GetPayloadStringList(payload, "fact_tags"),
+		Source:          qutil.GetPayloadStringValue(payload, "source"),
+		SourceType:      qutil.GetPayloadStringValue(payload, "source_type"),
+		Confidence:      confidence,
+		Status:          status,
 		LastConfirmedAt: qutil.GetPayloadStringValue(payload, "last_confirmed_at"),
-		CreatedAt: qutil.GetPayloadStringValue(payload, "created_at"),
-		UpdatedAt: qutil.GetPayloadStringValue(payload, "updated_at"),
+		CreatedAt:       qutil.GetPayloadStringValue(payload, "created_at"),
+		UpdatedAt:       qutil.GetPayloadStringValue(payload, "updated_at"),
 	}
 
 	// Compute review reasons dynamically from payload fields
@@ -643,6 +642,3 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET or POST")
 	}
 }
-
-
-

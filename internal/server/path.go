@@ -20,13 +20,15 @@ func safeVaultPath(vaultRoot, requestedPath string) (string, error) {
 	cleanRequested := filepath.Clean(requestedPath)
 	fullPath := filepath.Join(cleanRoot, cleanRequested)
 
-	// Normalize to prevent prefix-match confusion on "/" edge case
-	if !strings.HasSuffix(cleanRoot, string(os.PathSeparator)) {
-		cleanRoot += string(os.PathSeparator)
+	// Normalize to prevent prefix-match confusion on "/" edge case.
+	// Use a local copy so cleanRoot stays clean for ancestor comparison.
+	rootPrefix := cleanRoot
+	if !strings.HasSuffix(rootPrefix, string(os.PathSeparator)) {
+		rootPrefix += string(os.PathSeparator)
 	}
 	absTarget := filepath.Clean(fullPath) + string(os.PathSeparator)
 
-	if !strings.HasPrefix(absTarget, cleanRoot) {
+	if !strings.HasPrefix(absTarget, rootPrefix) {
 		return "", fmt.Errorf("requested path %q escapes vault root", requestedPath)
 	}
 
@@ -52,8 +54,10 @@ func safeVaultPath(vaultRoot, requestedPath string) (string, error) {
 		return "", fmt.Errorf("cannot resolve vault path %q: %w", checkPath, err)
 	}
 
+	// Use rootPrefix for symlink escape check (trailing slash ensures
+	// we don't match a sibling dir that happens to share a prefix).
 	resolvedTarget := filepath.Clean(resolved) + string(os.PathSeparator)
-	if !strings.HasPrefix(resolvedTarget, cleanRoot) {
+	if !strings.HasPrefix(resolvedTarget, rootPrefix) {
 		return "", fmt.Errorf("requested path %q escapes vault root via symlink at %q", requestedPath, checkPath)
 	}
 

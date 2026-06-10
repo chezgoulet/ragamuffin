@@ -6,10 +6,11 @@
 // statuses like "needs_review", "superseded", "rejected" — it never deletes.
 //
 // Architectural principle (from SPEC-v0.5):
-//   The Pruner is a reader and status updater only. It never deletes facts.
-//   It marks them superseded, rejected, needs_review, or adjusts their
-//   confidence and expires_at. The storage layer remains the single
-//   source of truth; pruning is an annotation layer on top.
+//
+//	The Pruner is a reader and status updater only. It never deletes facts.
+//	It marks them superseded, rejected, needs_review, or adjusts their
+//	confidence and expires_at. The storage layer remains the single
+//	source of truth; pruning is an annotation layer on top.
 package pruner
 
 import (
@@ -29,23 +30,22 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
-
 // ── Config ────────────────────────────────────────────────────────────────────
 
 // PrunerConfig controls the Pruner's scan intervals and thresholds.
 // All intervals have sensible defaults; zero values disable that scan type.
 type PrunerConfig struct {
-	Enabled                bool          // master switch (default false)
-	StaleScanInterval      time.Duration // default 24h
-	ConflictScanInterval   time.Duration // default 72h
-	SupersedeScanInterval  time.Duration // default 24h
+	Enabled                 bool          // master switch (default false)
+	StaleScanInterval       time.Duration // default 24h
+	ConflictScanInterval    time.Duration // default 72h
+	SupersedeScanInterval   time.Duration // default 24h
 	SourceStaleScanInterval time.Duration // default 0 (disabled)
-	ExpiredScanInterval    time.Duration // default 24h — flags facts with valid_until < now
-	StaleDays              int           // default 90 — facts past this TTL expiry are flagged
-	ConflictSampleSize     int           // default 50 — pairs per scan cycle
-	LowConfidenceThreshold float64       // default 0.5 — below this → needs_review
-	ConfidenceBoost        float64       // default 0.1 — added on confirmation via review queue
-	ConflictThreshold     float64       // default 0.85 — cosine similarity for contradiction detection
+	ExpiredScanInterval     time.Duration // default 24h — flags facts with valid_until < now
+	StaleDays               int           // default 90 — facts past this TTL expiry are flagged
+	ConflictSampleSize      int           // default 50 — pairs per scan cycle
+	LowConfidenceThreshold  float64       // default 0.5 — below this → needs_review
+	ConfidenceBoost         float64       // default 0.1 — added on confirmation via review queue
+	ConflictThreshold       float64       // default 0.85 — cosine similarity for contradiction detection
 
 	// ReembedScanInterval controls how often the pruner scans for facts with
 	// zero vectors and re-embeds them. Default 24h. Set to 0 to disable.
@@ -73,9 +73,9 @@ func DefaultConfig() PrunerConfig {
 		StaleScanInterval:       24 * time.Hour,
 		ConflictScanInterval:    72 * time.Hour,
 		ReembedScanInterval:     24 * time.Hour,
-		SupersedeScanInterval:  24 * time.Hour,
+		SupersedeScanInterval:   24 * time.Hour,
 		SourceStaleScanInterval: 0,
-		ExpiredScanInterval:    24 * time.Hour,
+		ExpiredScanInterval:     24 * time.Hour,
 		StaleDays:               90,
 		ConflictSampleSize:      50,
 		LowConfidenceThreshold:  0.5,
@@ -103,18 +103,18 @@ type Pruner struct {
 
 // ScanHealthReport describes one scan's status for audit reporting.
 type ScanHealthReport struct {
-	Enabled     bool   `json:"enabled"`
-	LastRun     string `json:"last_run,omitempty"`
-	TotalRuns   int64  `json:"total_runs"`
-	Interval    string `json:"interval"`
+	Enabled   bool   `json:"enabled"`
+	LastRun   string `json:"last_run,omitempty"`
+	TotalRuns int64  `json:"total_runs"`
+	Interval  string `json:"interval"`
 }
 
 // HealthReport is the full Pruner health report for audit integration.
 type HealthReport struct {
-	Enabled          bool                         `json:"enabled"`
-	Scans            map[string]ScanHealthReport  `json:"scans"`
-	FactsFlaggedTotal int64                       `json:"facts_flagged_total"`
-	FactsResolvedTotal int64                      `json:"facts_resolved_total"`
+	Enabled            bool                        `json:"enabled"`
+	Scans              map[string]ScanHealthReport `json:"scans"`
+	FactsFlaggedTotal  int64                       `json:"facts_flagged_total"`
+	FactsResolvedTotal int64                       `json:"facts_resolved_total"`
 }
 
 // New creates a Pruner. Pass nil for any unused client (e.g., no vault client
@@ -140,20 +140,20 @@ func (p *Pruner) Health() HealthReport {
 	defer p.mu.Unlock()
 
 	hr := HealthReport{
-		Enabled:           p.cfg.Enabled,
-		Scans:             make(map[string]ScanHealthReport),
-		FactsFlaggedTotal: p.factsFlagged,
+		Enabled:            p.cfg.Enabled,
+		Scans:              make(map[string]ScanHealthReport),
+		FactsFlaggedTotal:  p.factsFlagged,
 		FactsResolvedTotal: p.factsResolved,
 	}
 
 	scanDefs := map[string]struct {
 		interval time.Duration
 	}{
-		"StaleScan":          {p.cfg.StaleScanInterval},
-		"ConflictScan":       {p.cfg.ConflictScanInterval},
-		"SupersedeScan":      {p.cfg.SupersedeScanInterval},
-		"ReembedScan":        {p.cfg.ReembedScanInterval},
-		"LowConfidenceScan":  {0},
+		"StaleScan":         {p.cfg.StaleScanInterval},
+		"ConflictScan":      {p.cfg.ConflictScanInterval},
+		"SupersedeScan":     {p.cfg.SupersedeScanInterval},
+		"ReembedScan":       {p.cfg.ReembedScanInterval},
+		"LowConfidenceScan": {0},
 	}
 
 	for name, def := range scanDefs {

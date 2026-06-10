@@ -152,9 +152,9 @@ func (p *githubProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 
 	// 5. Create PR
 	prReq := map[string]any{
-		"title":                 title,
-		"head":                  branch,
-		"base":                  baseBranch,
+		"title": title,
+		"head":  branch,
+		"base":  baseBranch,
 	}
 	if description != "" {
 		prReq["body"] = description
@@ -239,13 +239,13 @@ func (p *gitlabProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 	}
 
 	commitReq := map[string]any{
-		"branch":        branch,
+		"branch":         branch,
 		"commit_message": title,
 		"actions": []map[string]any{
 			{
-				"action":  action,
+				"action":    action,
 				"file_path": targetPath,
-				"content": content,
+				"content":   content,
 			},
 		},
 	}
@@ -255,9 +255,9 @@ func (p *gitlabProvider) CreatePR(ctx context.Context, repo, baseBranch, title, 
 
 	// 3. Create merge request
 	mrReq := map[string]any{
-		"title":              title,
-		"source_branch":      branch,
-		"target_branch":      baseBranch,
+		"title":         title,
+		"source_branch": branch,
+		"target_branch": baseBranch,
 	}
 	if description != "" {
 		mrReq["description"] = description

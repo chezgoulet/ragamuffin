@@ -19,31 +19,31 @@ import (
 // Each callable method has a corresponding callback field and a CallCount.
 // CallCounts are atomic.Int64 for safe use with t.Parallel().
 type MockQdrant struct {
-	ScrollFn          func(ctx context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error)
-	ScrollFilteredFn  func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
-	UpsertFn          func(ctx context.Context, points []*qdrant.PointStruct) error
-	SetPayloadFn      func(ctx context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error
-	SearchFn          func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error)
-	DeleteBySourceFn  func(ctx context.Context, sourceFile string) error
-	CountFn           func(ctx context.Context) (uint64, error)
-	CountFilesFn      func(ctx context.Context) (int, error)
-	HealthFn          func(ctx context.Context) error
+	ScrollFn             func(ctx context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error)
+	ScrollFilteredFn     func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
+	UpsertFn             func(ctx context.Context, points []*qdrant.PointStruct) error
+	SetPayloadFn         func(ctx context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error
+	SearchFn             func(ctx context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error)
+	DeleteBySourceFn     func(ctx context.Context, sourceFile string) error
+	CountFn              func(ctx context.Context) (uint64, error)
+	CountFilesFn         func(ctx context.Context) (int, error)
+	HealthFn             func(ctx context.Context) error
 	CreatePayloadIndexFn func(ctx context.Context, collection, field, fieldType string) error
-	CollectionFn      func() string
-	CloseFn           func() error
+	CollectionFn         func() string
+	CloseFn              func() error
 
-	ScrollCallCount          atomic.Int64
-	ScrollFilteredCallCount  atomic.Int64
-	UpsertCallCount          atomic.Int64
-	SetPayloadCallCount      atomic.Int64
-	SearchCallCount          atomic.Int64
-	DeleteBySourceCallCount  atomic.Int64
-	CountCallCount           atomic.Int64
-	CountFilesCallCount      atomic.Int64
-	HealthCallCount          atomic.Int64
+	ScrollCallCount             atomic.Int64
+	ScrollFilteredCallCount     atomic.Int64
+	UpsertCallCount             atomic.Int64
+	SetPayloadCallCount         atomic.Int64
+	SearchCallCount             atomic.Int64
+	DeleteBySourceCallCount     atomic.Int64
+	CountCallCount              atomic.Int64
+	CountFilesCallCount         atomic.Int64
+	HealthCallCount             atomic.Int64
 	CreatePayloadIndexCallCount atomic.Int64
-	CollectionCallCount      atomic.Int64
-	CloseCallCount           atomic.Int64
+	CollectionCallCount         atomic.Int64
+	CloseCallCount              atomic.Int64
 }
 
 func (m *MockQdrant) Scroll(ctx context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
