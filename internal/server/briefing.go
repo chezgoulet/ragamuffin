@@ -14,16 +14,16 @@ import (
 
 // briefingResponse is the structured landing page for a returning agent.
 type briefingResponse struct {
-	Version       string                    `json:"version"`
-	Commit        string                    `json:"commit"`
-	BuildDate     string                    `json:"build_date"`
-	GoVersion     string                    `json:"go_version"`
-	StartedAt     string                    `json:"started_at"`
-	UptimeSeconds int                       `json:"uptime_seconds"`
-	Vaults        []briefingVault           `json:"vaults"`
-	ReviewQueue   *briefingReviewSummary    `json:"review_queue,omitempty"`
-	InboxCount    int                       `json:"inbox_count,omitempty"`
-	LastSession   *briefingSessionSummary   `json:"last_session,omitempty"`
+	Version       string                  `json:"version"`
+	Commit        string                  `json:"commit"`
+	BuildDate     string                  `json:"build_date"`
+	GoVersion     string                  `json:"go_version"`
+	StartedAt     string                  `json:"started_at"`
+	UptimeSeconds int                     `json:"uptime_seconds"`
+	Vaults        []briefingVault         `json:"vaults"`
+	ReviewQueue   *briefingReviewSummary  `json:"review_queue,omitempty"`
+	InboxCount    int                     `json:"inbox_count,omitempty"`
+	LastSession   *briefingSessionSummary `json:"last_session,omitempty"`
 }
 
 type briefingVault struct {
@@ -160,7 +160,7 @@ func (s *Server) needsReviewFilter() *qdrant.Filter {
 		Must: []*qdrant.Condition{{
 			ConditionOneOf: &qdrant.Condition_Field{
 				Field: &qdrant.FieldCondition{
-					Key:   "status",
+					Key: "status",
 					Match: &qdrant.Match{
 						MatchValue: &qdrant.Match_Keyword{Keyword: "needs_review"},
 					},
