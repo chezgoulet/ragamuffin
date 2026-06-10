@@ -545,6 +545,7 @@ def run_benchmark(
     client: RagamuffinClient,
     skip_ingest: bool = False,
     skip_configs: Optional[List[str]] = None,
+    chunk_size: int = 0,
 ) -> Dict[str, Dict]:
     """Run full benchmark (ingest + all configs). Returns scores dict."""
     if skip_configs is None:
@@ -614,6 +615,7 @@ def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs:
         label, vault, load_fn, client,
         skip_ingest=False,
         skip_configs=skip_configs,
+        chunk_size=chunk_size,
     )
 
 
