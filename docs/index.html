@@ -711,8 +711,8 @@ Ragamuffin is honest about what it doesn't do well. These are known gaps, not su
 </p>
 
 <div class="limitation">
-  <h4>🧠 No native semantic fact search</h4>
-  <p>Facts are stored with zero vectors — they can only be found by exact key match, prefix, or tags. There's no "find facts related to this concept" that doesn't go through an LLM. A future version may add fact embedding, but it's a deliberate trade-off: fact search is fast and simple because facts don't use vector space.</p>
+  <h4>🧠 Fact semantic search is via LLM only</h4>
+  <p>Fact values are embedded, but only for the fact-to-chunk bridge (linking facts to related document passages). There's no "find facts related to this concept" endpoint that ranks facts by semantic similarity — facts are found by exact key, prefix, or tags. The /ask endpoint can synthesize across both facts and documents, but that's LLM-powered. A dedicated embedded fact vector search is planned for a future release.</p>
 </div>
 
 <div class="limitation">
