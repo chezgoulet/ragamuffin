@@ -7,10 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"log/slog"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
@@ -208,6 +210,70 @@ func TestMCPVaultContext_EmptyVault(t *testing.T) {
 	vault := vaultFromContext(ctx)
 	if vault != "" {
 		t.Errorf("expected empty vault, got %q", vault)
+	}
+}
+
+// ── Security regression: Finding 3 — MCP cross-vault scope (#695) ───────────
+
+// TestMCPDispatch_ScopeDenied checks that a scoped API key with access only
+// to vault "allowed-vault" cannot access vault "test-vault" via MCP tool args.
+func TestMCPDispatch_ScopeDenied(t *testing.T) {
+	srv := newMCPTestServer(t)
+	ctx := auth.WithClaims(context.Background(), &auth.Claims{
+		Access: []string{"read"},
+		Vaults: []string{"allowed-vault"},
+	})
+
+	// Try to mcpRecall against "test-vault" — should be denied by scope
+	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+		"query": "test",
+		"vault": "test-vault",
+	})
+	if err == nil {
+		t.Fatal("expected scope error for unauthorized vault, got nil")
+	}
+	if !strings.Contains(err.Error(), "denied by key scope") {
+		t.Errorf("expected 'denied by key scope' error, got %q", err.Error())
+	}
+}
+
+// TestMCPDispatch_ScopeAllowed checks that a scoped key CAN access its
+// authorized vault via MCP.
+func TestMCPDispatch_ScopeAllowed(t *testing.T) {
+	srv := newMCPTestServer(t)
+	ctx := auth.WithClaims(context.Background(), &auth.Claims{
+		Access: []string{"read"},
+		Vaults: []string{"test-vault"},
+	})
+
+	// The test-vault exists (added in newMCPTestServer), so this should
+	// proceed past the scope check to the actual handler (which will fail
+	// on missing query field). We just want to confirm no scope denial.
+	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+		"query": "test",
+		"vault": "test-vault",
+	})
+	// Should NOT get scope-denial error. Actual handler may return different error.
+	if err != nil && strings.Contains(err.Error(), "denied by key scope") {
+		t.Fatalf("unexpected scope denial: %v", err)
+	}
+}
+
+// TestMCPDispatch_UnscopedClaimsAlwaysAccess checks that claims without
+// vault restrictions (Vaults==nil) can access any vault via MCP.
+func TestMCPDispatch_UnscopedClaimsAlwaysAccess(t *testing.T) {
+	srv := newMCPTestServer(t)
+	ctx := auth.WithClaims(context.Background(), &auth.Claims{
+		Access: []string{"read"},
+		// Vaults is nil = unrestricted
+	})
+
+	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+		"query": "test",
+		"vault": "test-vault",
+	})
+	if err != nil && strings.Contains(err.Error(), "denied by key scope") {
+		t.Fatalf("unexpected scope denial for unrestricted claims: %v", err)
 	}
 }
 

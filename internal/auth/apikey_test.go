@@ -118,6 +118,44 @@ func TestAPIKey_ScopedVaultWrite(t *testing.T) {
 	}
 }
 
+// ── Security regression: Finding 1 — empty token bypass (#693) ────────────
+
+// TestAPIKey_EmptyToken_ExplicitBearer checks that "Bearer " with no
+// token value after it is rejected (regression: ConstantTimeCompare("","")==1).
+func TestAPIKey_EmptyToken_ExplicitBearer(t *testing.T) {
+	a := NewAPIKeyAuthenticator("", "write-key", nil, false)
+	req := httptest.NewRequest("GET", "/recall?query=test", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	_, err := a.Authenticate(req)
+	if err != ErrUnauthenticated {
+		t.Fatalf("expected ErrUnauthenticated for empty bearer token, got: %v", err)
+	}
+}
+
+// TestAPIKey_EmptyToken_NoKeysConfigured checks that an attacker
+// sending an empty token when no keys are configured cannot authenticate.
+func TestAPIKey_EmptyToken_NoKeysConfigured(t *testing.T) {
+	a := NewAPIKeyAuthenticator("", "", nil, false)
+	req := httptest.NewRequest("GET", "/recall?query=test", nil)
+	req.Header.Set("Authorization", "Bearer ")
+	_, err := a.Authenticate(req)
+	if err != ErrUnauthenticated {
+		t.Fatalf("expected ErrUnauthenticated when no keys configured and empty token sent, got: %v", err)
+	}
+}
+
+// TestAPIKey_EmptyBearer_PrefixOnly checks that "Bearer" without
+// a trailing space is also rejected (doesn't match prefix).
+func TestAPIKey_EmptyBearer_PrefixOnly(t *testing.T) {
+	a := NewAPIKeyAuthenticator("", "write-key", nil, false)
+	req := httptest.NewRequest("GET", "/recall?query=test", nil)
+	req.Header.Set("Authorization", "Bearer")
+	_, err := a.Authenticate(req)
+	if err != ErrUnauthenticated {
+		t.Fatalf("expected ErrUnauthenticated for bare 'Bearer', got: %v", err)
+	}
+}
+
 func TestAPIKey_GlobalKeyWithMultiTenant(t *testing.T) {
 	os.Setenv("RAGAMUFFIN_AUTH_READ_KEY_DOCS", "docs-read-key")
 	defer os.Unsetenv("RAGAMUFFIN_AUTH_READ_KEY_DOCS")
