@@ -89,6 +89,12 @@ Examples:
         default=None,
         help="GitHub issue number to post results to",
     )
+    parser.add_argument(
+        "--chunks",
+        type=int,
+        default=0,
+        help="Split each conversation into N chunks during ingest (default: 1 blob per conversation)",
+    )
     return parser.parse_args()
 
 
@@ -203,46 +209,82 @@ def load_questions_benchmark(label: str) -> Tuple[List[Conversation], List[Dict]
 # ── Ingest ──────────────────────────────────────────────────────────────────────
 
 
-def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str):
-    """Ingest all conversations into a vault. Reports progress reliably."""
-    log(f"Ingesting {len(convs)} conversations into '{vault}'...")
+def _flatten_messages(messages: List[Dict]) -> str:
+    """Flatten a list of messages into a single text block."""
+    parts = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if not content:
+            continue
+        speaker = msg.get("speaker", msg.get("role", "User").capitalize())
+        parts.append(f"[{speaker}]: {content}")
+    return "\n\n".join(parts)
+
+
+def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str, chunk_size: int = 0):
+    """Ingest all conversations into a vault. Reports progress reliably.
+
+    When chunk_size > 0, split each conversation's messages into that many
+    roughly equal chunks before ingesting. Each chunk gets a unique source ID.
+    """
+    if chunk_size:
+        total_chunks = sum(max(1, len(c.messages) // (len(c.messages) // chunk_size + 1))
+                          for c in convs if c.messages)
+        log(f"Ingesting {len(convs)} conversations into '{vault}' as ~{total_chunks} chunks...")
+    else:
+        log(f"Ingesting {len(convs)} conversations into '{vault}'...")
+
     t0 = time.perf_counter()
     ok = err = 0
-    last_report = 0
+    total_target = len(convs) if not chunk_size else total_chunks
+    progress_count = 0
+    last_report_pct = 0
 
     for i, conv in enumerate(convs):
-        # Build combined document
-        parts = []
-        for msg in conv.messages:
-            content = msg.get("content", "")
-            if not content:
-                continue
-            speaker = msg.get("speaker", msg.get("role", "User").capitalize())
-            parts.append(f"[{speaker}]: {content}")
-        if not parts:
+        if not conv.messages:
             continue
 
-        try:
-            client.ingest(
-                content="\n\n".join(parts),
-                source=conv.source or conv.id,
-                vault=vault,
-                tags=["benchmark", label, conv.id],
-            )
-            ok += 1
-        except Exception as e:
-            err += 1
-            if err <= 3:
-                log(f"  ingest err [{conv.id}]: {str(e)[:100]}")
+        if chunk_size > 0:
+            # Split messages into evenly-sized groups
+            msgs = conv.messages
+            group_size = max(1, len(msgs) // chunk_size)
+            groups = [msgs[j:j + group_size] for j in range(0, len(msgs), group_size)]
+        else:
+            groups = [conv.messages]
 
-        # Progress reports
-        pct = (i + 1) / len(convs) * 100
-        if pct >= last_report + 10 or (i + 1) == len(convs):
-            elapsed = time.perf_counter() - t0
-            rate = (i + 1) / elapsed if elapsed else 0
-            remaining = (len(convs) - i - 1) / max(rate, 0.001)
-            log(f"  ingest: [{i+1}/{len(convs)}] {pct:.0f}%  {rate:.1f}/s  ETA: {remaining:.0f}s  errs: {err}")
-            last_report = int(pct / 10) * 10
+        for gi, group in enumerate(groups):
+            content = _flatten_messages(group)
+            if not content:
+                continue
+
+            # Unique source per chunk within a conversation
+            source = f"{conv.source or conv.id}/chunk-{gi}" if chunk_size else (conv.source or conv.id)
+            tags = ["benchmark", label, conv.id]
+            if chunk_size:
+                tags.append(f"chunk-{gi}")
+
+            try:
+                client.ingest(
+                    content=content,
+                    source=source,
+                    vault=vault,
+                    tags=tags,
+                )
+                ok += 1
+            except Exception as e:
+                err += 1
+                if err <= 3:
+                    log(f"  ingest err [{conv.id}/chunk-{gi}]: {str(e)[:100]}")
+
+            progress_count += 1
+            chunk_pct = progress_count / total_target * 100
+            report_block = int(chunk_pct / 10) * 10
+            if report_block > last_report_pct or progress_count == total_target:
+                last_report_pct = report_block
+                elapsed = time.perf_counter() - t0
+                rate = progress_count / elapsed if elapsed else 0
+                remaining = (total_target - progress_count) / max(rate, 0.001)
+                log(f"  ingest: [{progress_count}/{total_target}] {chunk_pct:.0f}%  {rate:.1f}/s  ETA: {remaining:.0f}s  errs: {err}")
 
     elapsed = time.perf_counter() - t0
     log(f"Ingest complete: {ok} ok, {err} err in {elapsed:.0f}s")
@@ -513,7 +555,7 @@ def run_benchmark(
     # Phase 1: Ingest
     if not skip_ingest:
         convs, qdata = loader_fn()
-        ingest_all(client, convs, vault, label)
+        ingest_all(client, convs, vault, label, chunk_size=chunk_size)
     else:
         # Just load questions, no conversations needed
         _, qdata = loader_fn()
@@ -538,7 +580,7 @@ def run_benchmark(
     return scores
 
 
-def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str]):
+def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str], chunk_size: int = 0):
     """Run a single dataset, respecting --datasets filter."""
     if label not in datasets:
         log(f"  Skipping {label} (not selected)")
@@ -633,11 +675,13 @@ def main():
         "longmemeval", lme_vault, client,
         skip_configs=[],
         datasets=args.datasets,
+        chunk_size=args.chunks,
     )
     locomo_scores = _run_dataset(
         "locomo", locomo_vault, client,
         skip_configs=[],
         datasets=args.datasets,
+        chunk_size=args.chunks,
     )
 
     # ── Summary ─────────────────────────────────────────────────────────
