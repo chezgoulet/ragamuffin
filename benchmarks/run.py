@@ -31,7 +31,7 @@ from typing import Dict, List, Optional, Tuple
 sys.stdout.reconfigure(line_buffering=True)
 sys.stderr.reconfigure(line_buffering=True)
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from benchmarks.configs import Config
 from benchmarks.core.client import RagamuffinClient

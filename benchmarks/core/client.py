@@ -21,8 +21,10 @@ logger = logging.getLogger("ragamuffin.benchmark")
 
 DEFAULT_BASE_URL = os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000")
 HTTP_TIMEOUT = int(os.environ.get("RAGAMUFFIN_HTTP_TIMEOUT", "30"))
-INGEST_TIMEOUT = int(os.environ.get("RAGAMUFFIN_INGEST_TIMEOUT", "")) or HTTP_TIMEOUT or 120
-ASK_TIMEOUT = int(os.environ.get("RAGAMUFFIN_ASK_TIMEOUT", "")) or HTTP_TIMEOUT or 30
+_raw_ingest = os.environ.get("RAGAMUFFIN_INGEST_TIMEOUT", "")
+INGEST_TIMEOUT = int(_raw_ingest) if _raw_ingest else (HTTP_TIMEOUT or 120)
+_raw_ask = os.environ.get("RAGAMUFFIN_ASK_TIMEOUT", "")
+ASK_TIMEOUT = int(_raw_ask) if _raw_ask else (HTTP_TIMEOUT or 30)
 MAX_RETRIES = int(os.environ.get("RAGAMUFFIN_MAX_RETRIES", "3"))
 
 
