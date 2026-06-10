@@ -9,7 +9,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
-	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	"github.com/qdrant/go-client/qdrant"
 )
 
 // briefingResponse is the structured landing page for a returning agent.
@@ -65,7 +65,7 @@ func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ── Accessible vaults ──
-	claims, _ := auth.ClaimsFromContext(r.Context())
+	claims := auth.ClaimsFromContext(r.Context())
 	var vaultPaths []string
 
 	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
