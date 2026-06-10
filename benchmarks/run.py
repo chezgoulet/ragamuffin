@@ -42,13 +42,16 @@ from benchmarks.core.types import Question, Result
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Ragamuffin Benchmark Gauntlet",
+        description="Ragamuffin Benchmark Gauntlet — v2.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser.add_argument(
-        "--clean",
-        action="store_true",
-        help="Clear vaults before re-ingesting (destructive)",
+        epilog="""
+Examples:
+  python3 benchmarks/run.py                           # All datasets, all configs
+  python3 benchmarks/run.py --datasets longmemeval     # LongMemEval only
+  python3 benchmarks/run.py --datasets longmemeval --configs D  # Config D only
+  python3 benchmarks/run.py --clean                    # Clean vaults before run
+  python3 benchmarks/run.py --model gpt-4o --post      # Override judge + post
+        """,
     )
     parser.add_argument(
         "--datasets",
@@ -65,10 +68,26 @@ def parse_args():
         help="Configs to run (default: all)",
     )
     parser.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clear vaults before re-ingesting (destructive)",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Override LLM judge model (default: gpt-4o)",
+    )
+    parser.add_argument(
         "--post",
         action="store_true",
         default=os.environ.get("BENCH_POST_TO_GITHUB", "0") == "1",
         help="Post results to GitHub issue",
+    )
+    parser.add_argument(
+        "--issue",
+        type=int,
+        default=None,
+        help="GitHub issue number to post results to",
     )
     return parser.parse_args()
 
@@ -520,7 +539,7 @@ def run_benchmark(
 
 
 def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str]):
-    """Run a single dataset (longmemeval or locomo)."""
+    """Run a single dataset, respecting --datasets filter."""
     if label not in datasets:
         log(f"  Skipping {label} (not selected)")
         return {}
@@ -559,12 +578,20 @@ def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs:
 def main():
     args = parse_args()
 
+    # Apply env overrides from CLI flags before anything else
+    if args.model:
+        os.environ["LITELLM_JUDGE_MODEL"] = args.model
+    if args.issue:
+        os.environ["BENCH_GITHUB_ISSUE"] = str(args.issue)
+
     log("")
     log("╔" + "═" * 53 + "╗")
     log("║  Ragamuffin Benchmark Gauntlet — v2.0")
-    log("║  " + time.strftime("%Y-%m-%d %H:%M:%S"))
     log("╚" + "═" * 53 + "╝")
     log("")
+
+    log(f"Judge model: {os.environ.get('LITELLM_JUDGE_MODEL', 'gpt-4o')}")
+    log(f"Datasets: {', '.join(args.datasets)}")
 
     client = RagamuffinClient(
         base_url=BASE_URL,
