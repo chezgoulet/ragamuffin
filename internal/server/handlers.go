@@ -694,6 +694,13 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 		}
 		contextText = b.String()
 
+		// ── Fact retrieval for temporal context ──
+		if s.facts != nil && contextText != "" {
+			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+				contextText += "\n" + factText
+			}
+		}
+
 		if mode == "auto" && topScore >= float32(s.cfg.AutoThreshold) {
 			modeUsed = "rag"
 		} else if mode == "auto" {
@@ -760,13 +767,12 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			}
 		}
 		contextText = b.String()
-	}
 
-	// ── Fact retrieval for temporal context ──
-	if s.facts != nil && contextText != "" {
-		factText := s.appendFactContext(ctx, query, topK)
-		if factText != "" {
-			contextText += "\n" + factText
+		// ── Fact retrieval for temporal context ──
+		if s.facts != nil && contextText != "" {
+			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+				contextText += "\n" + factText
+			}
 		}
 	}
 
@@ -775,11 +781,7 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 
 // appendFactContext retrieves facts relevant to a query and returns a formatted
 // context block with temporal metadata (valid_from, valid_until).
-func (s *Server) appendFactContext(ctx context.Context, query string, topK int) string {
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
-	if err != nil {
-		return ""
-	}
+func (s *Server) appendFactContext(ctx context.Context, vector []float32, topK int) string {
 
 	factResults, err := s.factsQdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
 	if err != nil || len(factResults) == 0 {
