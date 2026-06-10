@@ -30,21 +30,21 @@ type FileEventCallback func(action, path string)
 
 // Indexer processes file events and maintains the Qdrant index.
 type Indexer struct {
-	vaultPath     string
-	vaultName     string
-	qdrant        qdrant.FactStore
-	embedder      embedding.Embedder
-	logger        *slog.Logger
+	vaultPath      string
+	vaultName      string
+	qdrant         qdrant.FactStore
+	embedder       embedding.Embedder
+	logger         *slog.Logger
 	chunkMaxTokens int
 
-	mu         sync.RWMutex
-	fileCount  int
-	chunkCount int
+	mu          sync.RWMutex
+	fileCount   int
+	chunkCount  int
 	lastIndexed time.Time
-	indexing   bool
+	indexing    bool
 	progressPct int
 	totalFiles  int
-	knownFiles map[string]struct{} // set of indexed files for dedup counting
+	knownFiles  map[string]struct{} // set of indexed files for dedup counting
 
 	reindexCh chan struct{} // buffered channel (cap 1) for re-index requests
 
@@ -74,6 +74,7 @@ func New(vaultPath, vaultName string, qc qdrant.FactStore, ec embedding.Embedder
 func (idx *Indexer) SetLinkWriter(w logstore.LinkIndexWriter) {
 	idx.linkWriter = w
 }
+
 // VaultName returns the logical vault name this indexer belongs to.
 func (idx *Indexer) VaultName() string {
 	return idx.vaultName
@@ -302,11 +303,11 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 			// Deterministic UUID from file path + chunk index
 			id := pointID(relPath, c.ChunkIndex)
 			linksToValues := make([]*pb.Value, len(c.LinksTo))
-		for li, link := range c.LinksTo {
-			linksToValues[li] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: link}}
-		}
+			for li, link := range c.LinksTo {
+				linksToValues[li] = &pb.Value{Kind: &pb.Value_StringValue{StringValue: link}}
+			}
 
-		points[j] = &pb.PointStruct{
+			points[j] = &pb.PointStruct{
 				Id: id,
 				Vectors: &pb.Vectors{
 					VectorsOptions: &pb.Vectors_Vector{
@@ -463,8 +464,6 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 
 	return nil
 }
-
-
 
 // pointID generates a deterministic UUID from a file path and chunk index.
 // Uses SHA-256 (not SHA-1) for compatibility with Qdrant's UUID parser,

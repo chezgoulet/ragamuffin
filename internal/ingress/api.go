@@ -22,11 +22,11 @@ type IngestAPIFunc func(ctx context.Context, content, source, vault string, tags
 // Run(ctx) blocks until context cancellation — the driver maintains no polling
 // goroutines since events are pushed synchronously from the HTTP handler.
 type APIIngestDriver struct {
-	name       string
-	logger     *slog.Logger
+	name   string
+	logger *slog.Logger
 
-	events      chan IngestEvent
-	ingestFunc  IngestAPIFunc
+	events     chan IngestEvent
+	ingestFunc IngestAPIFunc
 }
 
 // NewAPIIngestDriver creates an APIIngestDriver.
@@ -86,5 +86,3 @@ func (d *APIIngestDriver) Run(ctx context.Context) error {
 	close(d.events)
 	return nil
 }
-
-

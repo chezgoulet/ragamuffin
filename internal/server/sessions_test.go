@@ -184,7 +184,7 @@ func TestSessionCreate_EmptyVaultDefaultsToAgentPath(t *testing.T) {
 
 func TestSessionCreate_LogStoreUnavailable(t *testing.T) {
 	srv, sto := newSessionTestServer(t, false)
-	sto.Close() // close the store so it's unavailable
+	sto.Close()        // close the store so it's unavailable
 	srv.logStore = nil // nil triggers the 503 path
 
 	body := createSessionRequest{

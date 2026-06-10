@@ -10,14 +10,14 @@ import (
 
 // supersedeScan performs two checks:
 //
-// 1. Cross-reference check: For facts with non-empty `supersedes`, verify the
-//    superseded key still has a `status = "active"` fact. If so, mark the
-//    superseded fact as `superseded`.
+//  1. Cross-reference check: For facts with non-empty `supersedes`, verify the
+//     superseded key still has a `status = "active"` fact. If so, mark the
+//     superseded fact as `superseded`.
 //
-// 2. Key-pattern supersession: Look for facts whose keys share a prefix and
-//    contain version-like segments (e.g., org/v2/decision vs org/v1/decision).
-//    If a higher-versioned active fact exists alongside a lower-versioned one,
-//    mark the lower one as superseded.
+//  2. Key-pattern supersession: Look for facts whose keys share a prefix and
+//     contain version-like segments (e.g., org/v2/decision vs org/v1/decision).
+//     If a higher-versioned active fact exists alongside a lower-versioned one,
+//     mark the lower one as superseded.
 //
 // The Pruner only writes `status`, `superseded_by`, and `updated_at` fields.
 func (p *Pruner) supersedeScan(ctx context.Context) {

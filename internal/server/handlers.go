@@ -160,14 +160,14 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]any{
-		"vault_path":        vaultPath,
-		"indexed_files":     fileCount,
-		"total_chunks":      chunkCount,
+		"vault_path":           vaultPath,
+		"indexed_files":        fileCount,
+		"total_chunks":         chunkCount,
 		"chunk_count_reliable": chunkReliable,
-		"last_indexed":      lastIndexed.Format(time.RFC3339),
-		"qdrant_collection": s.cfg.QdrantCollection,
-		"embedding_provider": s.cfg.EmbeddingProvider,
-		"uptime_seconds":    int(time.Since(s.started).Seconds()),
+		"last_indexed":         lastIndexed.Format(time.RFC3339),
+		"qdrant_collection":    s.cfg.QdrantCollection,
+		"embedding_provider":   s.cfg.EmbeddingProvider,
+		"uptime_seconds":       int(time.Since(s.started).Seconds()),
 	})
 }
 
@@ -267,7 +267,7 @@ func recallFilter(req recallRequest) *pb.Filter {
 		must = append(must, &pb.Condition{
 			ConditionOneOf: &pb.Condition_Field{
 				Field: &pb.FieldCondition{
-					Key:          "file_last_updated",
+					Key:           "file_last_updated",
 					DatetimeRange: dtr,
 				},
 			},
@@ -650,7 +650,6 @@ type askRequest struct {
 	TopK  int    `json:"top_k"`
 }
 
-
 // queryContext retrieves context text for /ask requests.
 // Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
 func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
@@ -748,8 +747,6 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 
 	return contextText, sources, modeUsed, nil
 }
-
-
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

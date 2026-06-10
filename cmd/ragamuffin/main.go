@@ -12,20 +12,20 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
-	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/server"
-	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 )
 
@@ -513,7 +513,7 @@ func main() {
 		Handler:           authMw(srv.Recovery(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second, // per-endpoint TimeoutHandler protects long uploads (#414)
-		WriteTimeout:      0,                 // 0 = no timeout — streaming /v1/snapshot and SSE need unbounded writes
+		WriteTimeout:      0,                // 0 = no timeout — streaming /v1/snapshot and SSE need unbounded writes
 		IdleTimeout:       60 * time.Second,
 	}
 

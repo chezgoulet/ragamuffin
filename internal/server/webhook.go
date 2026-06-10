@@ -191,10 +191,10 @@ type pushEvent struct {
 // ── GitHub push event ──────────────────────────────────────────────────────────
 
 type githubPushPayload struct {
-	Ref    string `json:"ref"`
-	Before string `json:"before"`
-	After  string `json:"after"`
-	Commits []gitCommit `json:"commits"`
+	Ref        string      `json:"ref"`
+	Before     string      `json:"before"`
+	After      string      `json:"after"`
+	Commits    []gitCommit `json:"commits"`
 	Repository struct {
 		FullName string `json:"full_name"`
 		CloneURL string `json:"clone_url"`
@@ -211,7 +211,7 @@ func parseGitHubPush(body []byte) (*pushEvent, error) {
 	rawURLs := make([]webhookFile, 0, len(files))
 	for _, f := range files {
 		rawURLs = append(rawURLs, webhookFile{
-			Path:   f,
+			Path: f,
 			RawURL: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s",
 				p.Repository.FullName, p.After, url.PathEscape(f)),
 		})
@@ -230,9 +230,9 @@ func parseGitHubPush(body []byte) (*pushEvent, error) {
 // ── GitLab push event ──────────────────────────────────────────────────────────
 
 type gitlabPushPayload struct {
-	Ref     string `json:"ref"`
-	Before  string `json:"before"`
-	After   string `json:"after"`
+	Ref     string      `json:"ref"`
+	Before  string      `json:"before"`
+	After   string      `json:"after"`
 	Commits []gitCommit `json:"commits"`
 	Project struct {
 		HTTPURL           string `json:"git_http_url"`
@@ -269,10 +269,10 @@ func parseGitLabPush(body []byte) (*pushEvent, error) {
 // ── Gitea / Forgejo push event ─────────────────────────────────────────────────
 
 type giteaPushPayload struct {
-	Ref     string `json:"ref"`
-	Before  string `json:"before"`
-	After   string `json:"after"`
-	Commits []gitCommit `json:"commits"`
+	Ref        string      `json:"ref"`
+	Before     string      `json:"before"`
+	After      string      `json:"after"`
+	Commits    []gitCommit `json:"commits"`
 	Repository struct {
 		FullName string `json:"full_name"`
 		CloneURL string `json:"clone_url"`

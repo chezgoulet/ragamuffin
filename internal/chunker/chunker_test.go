@@ -231,8 +231,8 @@ func TestEstTokens(t *testing.T) {
 		expected int
 	}{
 		{"", 0},
-		{"one two three", 3},  // 3 words × 1.3 = 3.9 → 3
-		{"word", 1},           // 1 word × 1.3 = 1.3 → 1
+		{"one two three", 3},           // 3 words × 1.3 = 3.9 → 3
+		{"word", 1},                    // 1 word × 1.3 = 1.3 → 1
 		{strings.Repeat("a ", 10), 13}, // 10 words × 1.3 = 13
 	}
 	for _, tt := range tests {
@@ -319,10 +319,10 @@ func TestSanitizeUTF8(t *testing.T) {
 	}{
 		{name: "valid_ascii", input: "hello", want: "hello"},
 		{name: "valid_utf8", input: "héllo", want: "héllo"},
-		{name: "truncated_2byte", input: "a\xc3", want: "a"},               // Ã cut after first byte
-		{name: "truncated_3byte", input: "a\xe1\x88", want: "a"},             // ማ cut after two bytes
-		{name: "truncated_4byte", input: "a\xf0\x9f\x98", want: "a"},         // 😀 cut after three bytes
-		{name: "mid_2byte", input: "ab\xc3world", want: "ab"},                // Ã cut mid-sequence
+		{name: "truncated_2byte", input: "a\xc3", want: "a"},         // Ã cut after first byte
+		{name: "truncated_3byte", input: "a\xe1\x88", want: "a"},     // ማ cut after two bytes
+		{name: "truncated_4byte", input: "a\xf0\x9f\x98", want: "a"}, // 😀 cut after three bytes
+		{name: "mid_2byte", input: "ab\xc3world", want: "ab"},        // Ã cut mid-sequence
 		{name: "empty", input: "", want: ""},
 	}
 

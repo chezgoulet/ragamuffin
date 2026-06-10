@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	pb "github.com/qdrant/go-client/qdrant"
-	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	pb "github.com/qdrant/go-client/qdrant"
 )
 
 // ── Graph types (prefixed to avoid conflict with existing graph.go) ─────

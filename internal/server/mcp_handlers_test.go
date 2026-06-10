@@ -55,8 +55,8 @@ func newMCPTestServer(t *testing.T) *Server {
 
 func minimalConfig() *config.Config {
 	return &config.Config{
-		FactsCollection:    "test_facts",
-		FactsVectorSize:    4,
+		FactsCollection:     "test_facts",
+		FactsVectorSize:     4,
 		AutoProvisionVaults: false,
 	}
 }

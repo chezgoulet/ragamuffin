@@ -18,7 +18,7 @@ import (
 // ── Local mocks for conversation tests ────────────────────────────────────────
 
 type mockLLM struct {
-	synthesizeFn       func(query, context string) string
+	synthesizeFn        func(query, context string) string
 	synthesizeCallCount int
 }
 
@@ -90,17 +90,31 @@ func (m *conversationMockStore) ScrollFiltered(_ context.Context, collection str
 func (m *conversationMockStore) Search(_ context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error) {
 	return nil, nil
 }
-func (m *conversationMockStore) DeleteBySource(_ context.Context, sourceFile string) error { return nil }
-func (m *conversationMockStore) DeleteFiltered(_ context.Context, collection string, filter *qdrant.Filter) error { return nil }
-func (m *conversationMockStore) Count(_ context.Context) (uint64, error) { return 0, nil }
+func (m *conversationMockStore) DeleteBySource(_ context.Context, sourceFile string) error {
+	return nil
+}
+func (m *conversationMockStore) DeleteFiltered(_ context.Context, collection string, filter *qdrant.Filter) error {
+	return nil
+}
+func (m *conversationMockStore) Count(_ context.Context) (uint64, error)   { return 0, nil }
 func (m *conversationMockStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
-func (m *conversationMockStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error { return nil }
+func (m *conversationMockStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error {
+	return nil
+}
 func (m *conversationMockStore) Health(_ context.Context) error { return nil }
-func (m *conversationMockStore) Close() error { return nil }
-func (m *conversationMockStore) GetVectorSize(_ context.Context, collectionName string) (uint64, error) { return 0, nil }
-func (m *conversationMockStore) GetPoints(_ context.Context, collection string, ids []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) { return nil, nil }
-func (m *conversationMockStore) SetPayload(_ context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error { return nil }
-func (m *conversationMockStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error { return nil }
+func (m *conversationMockStore) Close() error                   { return nil }
+func (m *conversationMockStore) GetVectorSize(_ context.Context, collectionName string) (uint64, error) {
+	return 0, nil
+}
+func (m *conversationMockStore) GetPoints(_ context.Context, collection string, ids []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) {
+	return nil, nil
+}
+func (m *conversationMockStore) SetPayload(_ context.Context, collection string, points []*qdrant.PointId, payload map[string]*qdrant.Value) error {
+	return nil
+}
+func (m *conversationMockStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error {
+	return nil
+}
 func (m *conversationMockStore) Collection() string { return "test_facts" }
 
 // ── Test: confidence normalization (1-10 → 0.0-1.0) ───────────────────────────

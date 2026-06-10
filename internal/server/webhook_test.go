@@ -19,11 +19,11 @@ import (
 
 func TestDetectProvider(t *testing.T) {
 	tests := []struct {
-		name       string
-		header     string
-		value      string
-		wantProv   string
-		wantEvent  string
+		name      string
+		header    string
+		value     string
+		wantProv  string
+		wantEvent string
 	}{
 		{"github push", "X-GitHub-Event", "push", "github", "push"},
 		{"github ping", "X-GitHub-Event", "ping", "github", "ping"},
@@ -522,7 +522,7 @@ func TestWebhook_HandleValidSignaturePassesAuth(t *testing.T) {
 
 	srv := &Server{
 		cfg: &config.Config{
-			WebhookSecret:  secret,
+			WebhookSecret:   secret,
 			WebhookVaultMap: map[string]string{"https://github.com/test/repo": "test-vault"},
 		},
 		logger: testMCPLogger(t),

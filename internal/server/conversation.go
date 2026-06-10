@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/google/uuid"
 	qdrant "github.com/qdrant/go-client/qdrant"
-	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 )
 
 // ── Request/Response types ────────────────────────────────────────────────────
@@ -21,8 +21,8 @@ type conversationMessage struct {
 }
 
 type conversationRequest struct {
-	Vault    string                 `json:"vault"`    // optional in single-tenant mode
-	Messages []conversationMessage  `json:"messages"` // conversation transcript
+	Vault    string                 `json:"vault"`             // optional in single-tenant mode
+	Messages []conversationMessage  `json:"messages"`          // conversation transcript
 	Context  map[string]interface{} `json:"context,omitempty"` // optional metadata
 }
 
@@ -36,11 +36,11 @@ type conversationResponse struct {
 // extractedFact represents a single factual claim extracted from conversation.
 // Confidence is an integer 1-10 from the LLM, normalized to 0.0-1.0 at storage.
 type extractedFact struct {
-	Key         string `json:"key"`
-	Value       string `json:"value"`
-	Confidence  int    `json:"confidence"` // 1-10 (normalized to 0.0-1.0 at storage)
-	Category    string `json:"category"`   // e.g., preference, knowledge, relationship
-	TTLDays     int    `json:"ttl_days"`   // 0 = no expiry
+	Key        string `json:"key"`
+	Value      string `json:"value"`
+	Confidence int    `json:"confidence"` // 1-10 (normalized to 0.0-1.0 at storage)
+	Category   string `json:"category"`   // e.g., preference, knowledge, relationship
+	TTLDays    int    `json:"ttl_days"`   // 0 = no expiry
 }
 
 // ── POST /v1/ingest/conversation ──────────────────────────────────────────────
@@ -127,8 +127,8 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 		s.log(r.Context()).Error("failed to parse extracted facts", "error", err, "raw", result)
 		// Fallback: try to create a single fact from the raw response
 		facts = []extractedFact{{
-			Key:    fmt.Sprintf("conversation-summary-%s", uuid.New().String()[:8]),
-			Value:  result,
+			Key:        fmt.Sprintf("conversation-summary-%s", uuid.New().String()[:8]),
+			Value:      result,
 			Confidence: 5,
 		}}
 	}
@@ -167,16 +167,16 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 		}
 
 		payload := map[string]*qdrant.Value{
-			"fact_key":           qutil.Nv(key),
-			"fact_value":         qutil.Nv(f.Value),
-			"status":             qutil.Nv("needs_review"),
-			"source_type":        qutil.Nv("conversation_extraction"),
-			"source":             qutil.Nv("conversation"),
-			"conversation_id":    qutil.Nv(conversationID),
-			"confidence":         qutil.Nv(normalizedConfidence),
-			"category":           qutil.Nv(f.Category),
-			"created_at":         qutil.Nv(now.Format(time.RFC3339)),
-			"updated_at":         qutil.Nv(now.Format(time.RFC3339)),
+			"fact_key":        qutil.Nv(key),
+			"fact_value":      qutil.Nv(f.Value),
+			"status":          qutil.Nv("needs_review"),
+			"source_type":     qutil.Nv("conversation_extraction"),
+			"source":          qutil.Nv("conversation"),
+			"conversation_id": qutil.Nv(conversationID),
+			"confidence":      qutil.Nv(normalizedConfidence),
+			"category":        qutil.Nv(f.Category),
+			"created_at":      qutil.Nv(now.Format(time.RFC3339)),
+			"updated_at":      qutil.Nv(now.Format(time.RFC3339)),
 
 			// Edge fields (empty)
 			"supersedes":         qutil.Nv(""),
@@ -193,7 +193,7 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 			payload["expires_at_unix"] = qutil.Nv(float64(now.AddDate(0, 0, f.TTLDays).Unix()))
 		}
 
-			// Embed the fact value for semantic search. EmbedSingle now retries on
+		// Embed the fact value for semantic search. EmbedSingle now retries on
 		// transient errors (rate limit, network blip) before returning. If it still
 		// fails after retries, fall back to zero vector — the fact is stored with
 		// metadata but invisible to semantic search until the pruner's ReembedScan

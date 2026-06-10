@@ -13,25 +13,25 @@ import (
 // CloudEvent is a minimal CloudEvents v1.0 envelope.
 // https://github.com/cloudevents/spec/blob/v1.0/cloudevents/spec.md
 type CloudEvent struct {
-	SpecVersion string      `json:"specversion"`
-	ID          string      `json:"id"`
-	Source      string      `json:"source"`
-	Type        string      `json:"type"`
-	Time        string      `json:"time"`
-	Data        any `json:"data,omitempty"`
+	SpecVersion string `json:"specversion"`
+	ID          string `json:"id"`
+	Source      string `json:"source"`
+	Type        string `json:"type"`
+	Time        string `json:"time"`
+	Data        any    `json:"data,omitempty"`
 }
 
 // Event types Ragamuffin emits.
 const (
-	TypeFileChanged      = "vault.file.changed"
-	TypeFileDeleted      = "vault.file.deleted"
-	TypeCollectionIndex  = "vault.collection.reindexed"
-	TypeServerStarted    = "ragamuffin.started"
-	TypeServerHealthy    = "ragamuffin.healthy"
-	TypeFactCreated      = "fact.created"
-	TypeFactFlagged      = "fact.flagged"
-	TypeFactReviewed     = "fact.reviewed"
-	TypePrunerComplete   = "pruner.scan.complete"
+	TypeFileChanged     = "vault.file.changed"
+	TypeFileDeleted     = "vault.file.deleted"
+	TypeCollectionIndex = "vault.collection.reindexed"
+	TypeServerStarted   = "ragamuffin.started"
+	TypeServerHealthy   = "ragamuffin.healthy"
+	TypeFactCreated     = "fact.created"
+	TypeFactFlagged     = "fact.flagged"
+	TypeFactReviewed    = "fact.reviewed"
+	TypePrunerComplete  = "pruner.scan.complete"
 )
 
 // FileChangedData is the payload for vault.file.changed.
@@ -86,11 +86,11 @@ type PrunerCompleteData struct {
 
 // ServerStartedData is the payload for ragamuffin.started.
 type ServerStartedData struct {
-	Version string `json:"version"`
-	Commit  string `json:"commit"`
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
 	GoVersion string `json:"go_version"`
-	Host    string `json:"host"`
-	Port    string `json:"port"`
+	Host      string `json:"host"`
+	Port      string `json:"port"`
 }
 
 // New creates a CloudEvent with required fields populated.

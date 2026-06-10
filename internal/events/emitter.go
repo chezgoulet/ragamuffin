@@ -23,8 +23,8 @@ type Emitter struct {
 	source        string
 	client        *http.Client
 	logger        *slog.Logger
-	logStore      LogStorer      // optional — persists events
-	broker        *Broker        // optional — SSE fan-out
+	logStore      LogStorer       // optional — persists events
+	broker        *Broker         // optional — SSE fan-out
 	allowedEvents map[string]bool // optional — if non-nil, only these event types are POSTed to webhook
 	closed        bool
 	mu            sync.Mutex
@@ -43,8 +43,8 @@ func NewEmitter(webhookURL, source string, logger *slog.Logger, logStore LogStor
 		ae[e] = true
 	}
 	return &Emitter{
-		webhookURL:    webhookURL,
-		source:        source,
+		webhookURL: webhookURL,
+		source:     source,
 		client: &http.Client{
 			Timeout: 10 * time.Second,
 		},

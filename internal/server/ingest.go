@@ -206,5 +206,3 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 	s.log(ctx).Info("vault provisioned", "vault", name, "path", vaultPath, "collection", collectionName)
 	return idx
 }
-
-

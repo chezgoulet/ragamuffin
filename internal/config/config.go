@@ -14,22 +14,22 @@ import (
 
 // VaultConfig holds per-vault configuration, including overrides.
 type VaultConfig struct {
-	Path                 string
-	ChunkStrategy        string
-	ChunkMaxTokens       int
-	ChunkFixedSize       int
-	ChunkFixedOverlap    int
-	EmbeddingModel       string
-	EmbeddingDims        int
+	Path                  string
+	ChunkStrategy         string
+	ChunkMaxTokens        int
+	ChunkFixedSize        int
+	ChunkFixedOverlap     int
+	EmbeddingModel        string
+	EmbeddingDims         int
 	AuditEntityExtraction bool
-	AuditEntityLLM       string
+	AuditEntityLLM        string
 
 	// Per-vault LLM overrides. Empty fields fall through to server defaults.
-	LLMProvider       string
-	LLMEndpoint       string
-	LLMApiKey         string
-	LLMModel          string
-	LLMTimeout        time.Duration
+	LLMProvider string
+	LLMEndpoint string
+	LLMApiKey   string
+	LLMModel    string
+	LLMTimeout  time.Duration
 
 	// Per-vault embedding overrides. Empty = use server default.
 	EmbeddingEndpoint string
@@ -106,9 +106,9 @@ type Config struct {
 	RateLimitFacts    int
 	RateLimitLogs     int
 	RateLimitSnapshot int
-	RateLimitReindex   int
-	RateLimitIngest    int
-	RateLimitReview    int
+	RateLimitReindex  int
+	RateLimitIngest   int
+	RateLimitReview   int
 
 	// Pruner configuration
 	PrunerEnabled                bool
@@ -120,9 +120,9 @@ type Config struct {
 	PrunerStaleDays              int
 	PrunerConflictSampleSize     int
 	PrunerLowConfidenceThreshold float64
-	PrunerConflictThreshold     float64
-	PrunerImportanceThreshold   float64
-	PrunerReembedInterval       time.Duration
+	PrunerConflictThreshold      float64
+	PrunerImportanceThreshold    float64
+	PrunerReembedInterval        time.Duration
 
 	// Automatic extraction from conversation turns
 	ExtractEnabled            bool
@@ -133,20 +133,20 @@ type Config struct {
 	ExtractPerSessionCooldown int
 
 	// Procedural memory extraction from session finalization
-	ProceduralEnabled          bool
-	ProceduralMinSteps         int
-	ProceduralDedupThreshold   float64
+	ProceduralEnabled        bool
+	ProceduralMinSteps       int
+	ProceduralDedupThreshold float64
 
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
-	LogStorePath        string          // explicit path for log.db; empty = heuristic
-	LogstoreMaxRows     int             // 0 = unlimited
+	LogStorePath             string  // explicit path for log.db; empty = heuristic
+	LogstoreMaxRows          int     // 0 = unlimited
 
 	// Optional — LLM
-	LLMProvider string
-	LLMBaseURL  string
-	LLMModel    string
-	LLMAPIKey   string
-	LLMTimeout      time.Duration
+	LLMProvider        string
+	LLMBaseURL         string
+	LLMModel           string
+	LLMAPIKey          string
+	LLMTimeout         time.Duration
 	EventWebhookURL    string
 	EventWebhookEvents []string
 
@@ -167,14 +167,14 @@ type Config struct {
 	AutoThreshold   float64
 
 	// Optional — Auth
-	AuthMode           string
-	AuthReadKey        string
-	AuthWriteKey       string
-	AuthJWTIssuer      string
-	AuthJWTAudience    string
-	AuthJWKSURL        string
-	AuthOIDCIssuer     string
-	AuthOIDCClientID   string
+	AuthMode            string
+	AuthReadKey         string
+	AuthWriteKey        string
+	AuthJWTIssuer       string
+	AuthJWTAudience     string
+	AuthJWKSURL         string
+	AuthOIDCIssuer      string
+	AuthOIDCClientID    string
 	AutoProvisionVaults bool
 
 	// Optional — Logging
@@ -415,9 +415,9 @@ func Load() (*Config, error) {
 		RateLimitFacts:    envInt("RAGAMUFFIN_RATE_LIMIT_FACTS", 30),
 		RateLimitLogs:     envInt("RAGAMUFFIN_RATE_LIMIT_LOGS", 60),
 		RateLimitSnapshot: envInt("RAGAMUFFIN_RATE_LIMIT_SNAPSHOT", 5),
-		RateLimitReindex:   envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
-		RateLimitIngest:    envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
-		RateLimitReview:    envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
+		RateLimitReindex:  envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
+		RateLimitIngest:   envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
+		RateLimitReview:   envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
 
 		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
 		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),
@@ -429,25 +429,25 @@ func Load() (*Config, error) {
 		PrunerExpiredInterval:        envDuration("RAGAMUFFIN_PRUNER_EXPIRED_INTERVAL", 24*time.Hour),
 		PrunerConflictSampleSize:     envInt("RAGAMUFFIN_PRUNER_CONFLICT_SAMPLE_SIZE", 50),
 		PrunerLowConfidenceThreshold: envFloat("RAGAMUFFIN_PRUNER_LOW_CONFIDENCE_THRESHOLD", 0.5),
-		PrunerImportanceThreshold:   envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
-		PrunerReembedInterval:       envDuration("RAGAMUFFIN_PRUNER_REEMBED_INTERVAL", 24*time.Hour),
-		ExtractEnabled:            envBool("RAGAMUFFIN_EXTRACT_ENABLED"),
-		ExtractWindow:             envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
-		ExtractMaxConfidence:      math.Min(envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85), 0.85),
-		ExtractDedupThreshold:     envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
-		ExtractConcurrency:        envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
-		ExtractPerSessionCooldown: envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),
-		ProceduralEnabled:          envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
-		ProceduralMinSteps:         envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
-		ProceduralDedupThreshold:   envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
+		PrunerImportanceThreshold:    envFloat("RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD", 0.0),
+		PrunerReembedInterval:        envDuration("RAGAMUFFIN_PRUNER_REEMBED_INTERVAL", 24*time.Hour),
+		ExtractEnabled:               envBool("RAGAMUFFIN_EXTRACT_ENABLED"),
+		ExtractWindow:                envInt("RAGAMUFFIN_EXTRACT_WINDOW", 10),
+		ExtractMaxConfidence:         math.Min(envFloat("RAGAMUFFIN_EXTRACT_MAX_CONFIDENCE", 0.85), 0.85),
+		ExtractDedupThreshold:        envFloat("RAGAMUFFIN_EXTRACT_DEDUP_THRESHOLD", 0.85),
+		ExtractConcurrency:           envInt("RAGAMUFFIN_EXTRACT_CONCURRENCY", 2),
+		ExtractPerSessionCooldown:    envInt("RAGAMUFFIN_EXTRACT_PER_SESSION_COOLDOWN", 30),
+		ProceduralEnabled:            envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
+		ProceduralMinSteps:           envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
+		ProceduralDedupThreshold:     envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
-		LogStorePath:        os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
-		LogstoreMaxRows:       envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+		LogStorePath:                 os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
+		LogstoreMaxRows:              envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
 
-		LLMProvider: os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
-		LLMBaseURL:  envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
-		LLMModel:    os.Getenv("RAGAMUFFIN_LLM_MODEL"),
-		LLMAPIKey:   os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
+		LLMProvider:        os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
+		LLMBaseURL:         envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
+		LLMModel:           os.Getenv("RAGAMUFFIN_LLM_MODEL"),
+		LLMAPIKey:          os.Getenv("RAGAMUFFIN_LLM_API_KEY"),
 		LLMTimeout:         envDuration("RAGAMUFFIN_LLM_TIMEOUT", 120*time.Second),
 		EventWebhookURL:    os.Getenv("RAGAMUFFIN_EVENT_WEBHOOK_URL"),
 		EventWebhookEvents: envCSV("RAGAMUFFIN_EVENT_WEBHOOK_EVENTS"),
@@ -462,15 +462,15 @@ func Load() (*Config, error) {
 		WebhookVaultMap: parseJSONMap("RAGAMUFFIN_WEBHOOK_VAULT_MAP"),
 		WebhookSecret:   os.Getenv("RAGAMUFFIN_WEBHOOK_SECRET"),
 
-		AuthMode:         envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
-		AuthReadKey:      os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
-		AuthWriteKey:     os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
-		AuthJWTIssuer:    os.Getenv("RAGAMUFFIN_AUTH_JWT_ISSUER"),
-		AuthJWTAudience:  os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
-		AuthJWKSURL:      os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
-		AuthOIDCIssuer:   os.Getenv("RAGAMUFFIN_AUTH_OIDC_ISSUER"),
+		AuthMode:            envOrDefault("RAGAMUFFIN_AUTH_MODE", "none"),
+		AuthReadKey:         os.Getenv("RAGAMUFFIN_AUTH_READ_KEY"),
+		AuthWriteKey:        os.Getenv("RAGAMUFFIN_AUTH_WRITE_KEY"),
+		AuthJWTIssuer:       os.Getenv("RAGAMUFFIN_AUTH_JWT_ISSUER"),
+		AuthJWTAudience:     os.Getenv("RAGAMUFFIN_AUTH_JWT_AUDIENCE"),
+		AuthJWKSURL:         os.Getenv("RAGAMUFFIN_AUTH_JWT_JWKS_URL"),
+		AuthOIDCIssuer:      os.Getenv("RAGAMUFFIN_AUTH_OIDC_ISSUER"),
 		AutoProvisionVaults: envBool("RAGAMUFFIN_AUTO_PROVISION_VAULTS"),
-	AuthOIDCClientID:    os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
+		AuthOIDCClientID:    os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
