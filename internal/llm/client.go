@@ -62,7 +62,9 @@ func (c *Client) Synthesize(ctx context.Context, query, context string) (string,
 
 	prompt := fmt.Sprintf(
 		"Using the following context from a knowledge base, answer the question. "+
-			"Be concise and cite specific sources when possible.\n\n"+
+			"Be concise and cite specific sources when possible. "+
+			"If multiple sources provide conflicting information about the same topic, "+
+			"prefer the information from the later chunk (higher chunk number or more recently stated).\n\n"+
 			"Context:\n%s\n\nQuestion: %s",
 		context, query,
 	)
