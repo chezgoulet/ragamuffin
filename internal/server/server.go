@@ -7,30 +7,30 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
 	"log/slog"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
-	"github.com/google/uuid"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
-	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
-	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
+	"github.com/chezgoulet/ragamuffin/web"
+	"github.com/google/uuid"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -48,56 +48,56 @@ var (
 
 // Server is the HTTP server.
 type Server struct {
-	cfg         *config.Config
-	qdrant      qdrant.FactStore
-	facts       qdrant.FactStore
-	embedder    embedding.Embedder
-	llm         llm.Synthesizer
-	indexers    *indexer.Manager
-	gitProvider git.Provider
-	ratelimit   *ratelimit.Limiter
-	watcher     watcher.Watcher
-	logStore    *logstore.Store
-	pruner      *pruner.Pruner
-	extractor   *extraction.Extractor
-	apiDriver   *ingress.APIIngestDriver
-	emitter     *events.Emitter // webhook + SSE event publisher
-	mcpHandler  *mcp.Handler
-	broker      *events.Broker  // SSE subscriber registry
-	logger      *slog.Logger
-	started     time.Time
-	mu          sync.Mutex
+	cfg           *config.Config
+	qdrant        qdrant.FactStore
+	facts         qdrant.FactStore
+	embedder      embedding.Embedder
+	llm           llm.Synthesizer
+	indexers      *indexer.Manager
+	gitProvider   git.Provider
+	ratelimit     *ratelimit.Limiter
+	watcher       watcher.Watcher
+	logStore      *logstore.Store
+	pruner        *pruner.Pruner
+	extractor     *extraction.Extractor
+	apiDriver     *ingress.APIIngestDriver
+	emitter       *events.Emitter // webhook + SSE event publisher
+	mcpHandler    *mcp.Handler
+	broker        *events.Broker // SSE subscriber registry
+	logger        *slog.Logger
+	started       time.Time
+	mu            sync.Mutex
 	requestCounts map[string]map[string]int64 // endpoint -> status -> count
 
 	shutdownCtx    context.Context // cancelled by Shutdown() (#420)
 	shutdownCancel context.CancelFunc
 
 	qdrantReconnecting bool
-	qdrantMu          sync.RWMutex
+	qdrantMu           sync.RWMutex
 }
 
 // New creates a new Server.
 func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec embedding.Embedder, lm llm.Synthesizer, idxm *indexer.Manager, gp git.Provider, rl *ratelimit.Limiter, w watcher.Watcher, logStore *logstore.Store, pr *pruner.Pruner, emitter *events.Emitter, br *events.Broker, logger *slog.Logger, ext *extraction.Extractor, apiDrv *ingress.APIIngestDriver) *Server {
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	s := &Server{
-		cfg:           cfg,
-		qdrant:        qc,
-		facts:         factsQc,
-		embedder:      ec,
-		llm:           lm,
-		indexers:      idxm,
-		gitProvider:   gp,
-		ratelimit:     rl,
-		watcher:       w,
-		logStore:      logStore,
-		pruner:        pr,
+		cfg:            cfg,
+		qdrant:         qc,
+		facts:          factsQc,
+		embedder:       ec,
+		llm:            lm,
+		indexers:       idxm,
+		gitProvider:    gp,
+		ratelimit:      rl,
+		watcher:        w,
+		logStore:       logStore,
+		pruner:         pr,
 		extractor:      ext,
-		apiDriver:     apiDrv,
-		emitter:       emitter,
-		broker:        br,
-		logger:        logger,
-		started:       time.Now(),
-		requestCounts: make(map[string]map[string]int64),
+		apiDriver:      apiDrv,
+		emitter:        emitter,
+		broker:         br,
+		logger:         logger,
+		started:        time.Now(),
+		requestCounts:  make(map[string]map[string]int64),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 	}
@@ -149,6 +149,8 @@ func (s *Server) Recovery(next http.Handler) http.Handler {
 // RegisterRoutes sets up all HTTP routes, wrapped with request ID tracing.
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Instance-wide routes (always registered)
+	mux.HandleFunc("/v1/briefing", s.withRequestID(s.withRateLimit("/v1/briefing", s.handleBriefing)))
+	mux.HandleFunc("/v1/hybrid", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/hybrid", s.handleHybrid))))
 	mux.HandleFunc("/health", s.withRequestID(s.handleHealth))
 	mux.HandleFunc("/stats", s.withRequestID(s.withQdrant(s.handleStats)))
 	mux.HandleFunc("/version", s.withRequestID(s.handleVersion))
@@ -179,6 +181,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/links/backlinks", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultBacklinks))))
 		mux.HandleFunc("/vault/{name}/v1/links/graph", s.withRequestID(s.withVault(s.withRateLimit("/v1/links", s.handleVaultLinkGraph))))
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.handleGraph)))
+		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.handleBriefing))))
+		mux.HandleFunc("/vault/{name}/v1/hybrid", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/hybrid", s.handleHybrid))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 	} else {
@@ -190,6 +194,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 			mux.HandleFunc("/vault/{name}"+pattern, s.withRequestID(s.withQdrant(s.withVaultRateLimit(pattern, s.requireVaultName(vaultName, handler)))))
 		}
 		vaultChain("/recall", s.handleVaultRecall)
+		vaultChain("/v1/hybrid", s.handleHybrid)
 		vaultChain("/ask", s.handleVaultAsk)
 		vaultChain("/draft", s.handleVaultDraft)
 		vaultChain("/audit", s.handleVaultAudit)
@@ -203,6 +208,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		vaultChain("/v1/links/backlinks", s.handleVaultBacklinks)
 		vaultChain("/v1/links/graph", s.handleVaultLinkGraph)
 		mux.HandleFunc("/vault/{name}/graph", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraph))))
+		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.requireVaultName(vaultName, s.handleBriefing)))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 
@@ -295,6 +301,11 @@ func (s *Server) BuildAuth() auth.Authenticator {
 
 	switch m {
 	case auth.ModeNone:
+		s.logger.Warn("⚠️  AUTH DISABLED — ALL ENDPOINTS ARE OPEN. Set RAGAMUFFIN_AUTH_MODE to api_key, jwt, or oidc in production.",
+			"host", s.cfg.Host, "port", s.cfg.Port)
+		if s.cfg.Host == "0.0.0.0" || s.cfg.Host == "" {
+			s.logger.Warn("⚠️  BINDING TO ALL INTERFACES WITH AUTH DISABLED — this is an SSRF and data-exposure risk")
+		}
 		return &auth.NoneAuthenticator{}
 	case auth.ModeAPIKey:
 		s.logger.Info("api_key auth enabled")
@@ -564,7 +575,6 @@ func (s *Server) ensureFactIndexes() {
 		}
 	}
 
-
 	indexes := map[string]string{
 		"status":            "keyword",
 		"source_type":       "keyword",
@@ -585,6 +595,92 @@ func (s *Server) ensureFactIndexes() {
 			s.logger.Warn("facts payload index not created (may already exist)",
 				"field", field, "error", err)
 		}
+	}
+
+	// ── Startup reembed scan for existing zero-vector facts ──
+	if s.embedder != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+
+			s.logger.Info("facts: scanning for zero-vector facts at startup")
+
+			// Scroll all facts, detect zero vectors, re-embed
+			var limit uint32 = 100
+			var offset string
+			var reembedded, skipped, failed, total int
+
+			for {
+				points, err := s.facts.ScrollFiltered(ctx, factsCollection, nil, limit, offset)
+				if err != nil {
+					s.logger.Error("facts: reembed scan scroll failed", "error", err)
+					break
+				}
+				if len(points) == 0 {
+					break
+				}
+
+				for _, pt := range points {
+					total++
+					vec := qdrant.GetPointVector(pt)
+					if vec == nil || qdrant.IsZeroVector(vec) {
+						// Re-embed this fact
+						val := pt.GetPayload()["fact_value"]
+						if val == nil {
+							skipped++
+							continue
+						}
+						value := val.GetStringValue()
+						if value == "" {
+							skipped++
+							continue
+						}
+
+						pointID := pt.GetId().GetUuid()
+						newVec, err := s.embedder.EmbedSingle(ctx, value)
+						if err != nil {
+							failed++
+							continue
+						}
+
+						pv := &pb.PointVectors{
+							Id: &pb.PointId{
+								PointIdOptions: &pb.PointId_Uuid{
+									Uuid: pointID,
+								},
+							},
+							Vectors: &pb.Vectors{
+								VectorsOptions: &pb.Vectors_Vector{
+									Vector: &pb.Vector{
+										Data: newVec,
+									},
+								},
+							},
+						}
+						if err := s.facts.UpdateVectors(ctx, factsCollection, []*pb.PointVectors{pv}); err != nil {
+							failed++
+							continue
+						}
+						reembedded++
+					}
+				}
+
+				// Advance to next page
+				if id := points[len(points)-1].GetId().GetUuid(); id != "" {
+					offset = id
+				} else {
+					break
+				}
+			}
+
+			if reembedded > 0 || failed > 0 || total > 0 {
+				s.logger.Info("facts: startup reembed scan complete",
+					"reembedded", reembedded,
+					"failed", failed,
+					"skipped", skipped,
+					"total_scanned", total)
+			}
+		}()
 	}
 }
 
@@ -719,10 +815,10 @@ func (s *Server) handleListVaults(w http.ResponseWriter, r *http.Request) {
 				{
 					"name":          "default",
 					"path":          s.cfg.VaultPath,
-					"indexed_files":  fileCount,
-					"total_chunks":   chunkCount,
-					"last_indexed":   lastIndexedStr,
-					"indexing":       indexing,
+					"indexed_files": fileCount,
+					"total_chunks":  chunkCount,
+					"last_indexed":  lastIndexedStr,
+					"indexing":      indexing,
 				},
 			},
 		})

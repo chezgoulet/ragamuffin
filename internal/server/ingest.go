@@ -88,7 +88,14 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Perform the ingest
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// Ingest timeout: use env var RAGAMUFFIN_INGEST_SERVER_TIMEOUT or default 120s
+	ingestTimeout := 120 * time.Second
+	if envStr := os.Getenv("RAGAMUFFIN_INGEST_SERVER_TIMEOUT"); envStr != "" {
+		if d, err := time.ParseDuration(envStr); err == nil {
+			ingestTimeout = d
+		}
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), ingestTimeout)
 	defer cancel()
 
 	if err := idx.Ingest(ctx, req.Content, req.Source, req.Tags, nil); err != nil {
@@ -206,5 +213,3 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 	s.log(ctx).Info("vault provisioned", "vault", name, "path", vaultPath, "collection", collectionName)
 	return idx
 }
-
-

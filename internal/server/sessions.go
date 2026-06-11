@@ -33,14 +33,14 @@ type appendTurnRequest struct {
 }
 
 type sessionResponse struct {
-	ID        string      `json:"id"`
-	Vault     string      `json:"vault"`
-	AgentID   string      `json:"agent_id"`
-	Source    string      `json:"source,omitempty"`
-	TurnCount int         `json:"turn_count"`
-	CreatedAt string      `json:"created_at"`
-	UpdatedAt string      `json:"updated_at"`
-	Turns     []turnResp  `json:"turns,omitempty"`
+	ID        string     `json:"id"`
+	Vault     string     `json:"vault"`
+	AgentID   string     `json:"agent_id"`
+	Source    string     `json:"source,omitempty"`
+	TurnCount int        `json:"turn_count"`
+	CreatedAt string     `json:"created_at"`
+	UpdatedAt string     `json:"updated_at"`
+	Turns     []turnResp `json:"turns,omitempty"`
 }
 
 type turnResp struct {
@@ -68,15 +68,15 @@ type batchSessionEntry struct {
 }
 
 type batchSessionRequest struct {
-	Vault    string               `json:"vault"`
+	Vault    string              `json:"vault"`
 	Sessions []batchSessionEntry `json:"sessions"`
 }
 
 type batchSessionResponse struct {
-	Status      string `json:"status"`
+	Status       string `json:"status"`
 	SessionCount int    `json:"session_count"`
-	TurnCount   int    `json:"turn_count"`
-	ChunkCount  int    `json:"chunk_count"`
+	TurnCount    int    `json:"turn_count"`
+	ChunkCount   int    `json:"chunk_count"`
 }
 
 // ── POST /v1/sessions/batch ────────────────────────────────────────────────────
@@ -565,8 +565,8 @@ func (s *Server) handleSessionFinalize(w http.ResponseWriter, r *http.Request, s
 	}
 
 	writeJSON(w, 200, map[string]interface{}{
-		"status":              "finalized",
-		"id":                  sessionID,
+		"status":                "finalized",
+		"id":                    sessionID,
 		"extracting_procedures": extracting,
 	})
 }
@@ -660,4 +660,3 @@ func (s *Server) extractProcedures(ctx context.Context, sessionID string) {
 		"updated", updated,
 	)
 }
-

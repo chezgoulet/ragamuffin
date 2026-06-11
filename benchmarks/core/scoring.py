@@ -1,75 +1,46 @@
-"""Scoring wrapper around the upstream evaluate_qa judge.
+"""Scoring wrapper for benchmark answers.
 
-evaluate_qa.py is the authoritative LongMemEval judge. This module wraps
-it for use in the benchmark harness.
+Uses LiteLLM judge for LLM-based scoring, with a simple
+string-match fallback.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import os
-import sys
 from typing import Dict, List
 
 from .types import Question, Result
 
 logger = logging.getLogger("ragamuffin.benchmark")
 
-# Path to upstream judge
-_EVALUATE_QA = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "evaluate_qa.py",
-)
-
-
-def _load_judge():
-    """Lazy-load the evaluate_qa judge module once."""
-    if _load_judge.cached is not None:
-        return _load_judge.cached
-
-    if not os.path.exists(_EVALUATE_QA):
-        logger.warning("evaluate_qa.py not found at %s — scoring disabled", _EVALUATE_QA)
-        _load_judge.cached = None
-        return None
-
-    spec = importlib.util.spec_from_file_location("evaluate_qa", _EVALUATE_QA)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["evaluate_qa"] = mod
-    spec.loader.exec_module(mod)
-    _load_judge.cached = mod
-    return mod
-
-
-_load_judge.cached = None  # type: ignore[attr-defined]
-
 
 def score_answer(question: Question, answer: str) -> float:
-    """Score a single answer against ground truth using the upstream judge.
+    """Score a single answer against ground truth.
 
+    Uses LiteLLM judge first, falls back to exact string match.
     Returns 0.0-1.0 where 1.0 is a perfect match.
-    Falls back to exact string match if judge is unavailable.
     """
-    judge = _load_judge()
+    # 1. Try LiteLLM judge
+    litellm_evaluate = None
+    try:
+        from .litellm_judge import evaluate as litellm_evaluate
+    except Exception as e:
+        logger.warning("LiteLLM judge unavailable: %s", e)
 
-    if judge is not None and hasattr(judge, "evaluate"):
+    if litellm_evaluate is not None:
         try:
-            result = judge.evaluate(
+            result = litellm_evaluate(
                 question.text,
                 answer,
                 question.ground_truth,
             )
-            if isinstance(result, (int, float)):
-                return float(min(max(result, 0.0), 1.0))
-            if isinstance(result, dict):
-                return float(min(max(result.get("score", 0.0), 0.0), 1.0))
-            if isinstance(result, bool):
-                return 1.0 if result else 0.0
+            return float(min(max(result, 0.0), 1.0))
         except Exception as e:
-            logger.warning("judge evaluate failed: %s", e)
+            logger.warning("LiteLLM judge failed: %s", e)
 
-    # Fallback: exact string match
+    # 2. Fallback: exact string match
     return 1.0 if answer.strip().lower() == question.ground_truth.strip().lower() else 0.0
 
 

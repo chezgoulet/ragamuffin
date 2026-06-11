@@ -1492,7 +1492,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_WATCHER_MODE` | no | `poll` | `poll` or `inotify` |
 | `RAGAMUFFIN_QDRANT_COLLECTION` | no | `ragamuffin` | Chunk/document Qdrant collection name |
 | `RAGAMUFFIN_FACTS_COLLECTION` | no | `ragamuffin_facts` | Structured facts Qdrant collection name |
-| `RAGAMUFFIN_FACTS_VECTOR_SIZE` | no | `4` | Fact point vector dimension (must be > 0) |
+| `RAGAMUFFIN_FACTS_VECTOR_SIZE` | no | falls back to `EMBEDDING_DIMS` → `1536` | Fact point vector dimension. If unset, uses `EMBEDDING_DIMS` (default 1536). Must match existing collection dimension. |
 | `RAGAMUFFIN_EMBEDDING_PROVIDER` | no | `openai` | Provider identifier |
 | `RAGAMUFFIN_EMBEDDING_MODEL` | no | `text-embedding-3-small` | Model name |
 | `RAGAMUFFIN_EMBEDDING_BASE_URL` | no | `https://api.openai.com/v1` | Base URL (include `/v1`) |

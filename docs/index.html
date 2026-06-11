@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ragamuffin — The Knowledge Server for AI Agents</title>
+<style>
+  :root {
+    --bg: #0f0f13;
+    --surface: #1a1a24;
+    --surface2: #24243a;
+    --border: #2a2a40;
+    --text: #e4e4ed;
+    --text2: #9898b8;
+    --accent: #7c6ff0;
+    --accent2: #5ae0c0;
+    --accent3: #f0a86e;
+    --danger: #f06e6e;
+    --font: 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: var(--font);
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.7;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 800px; margin: 0 auto; padding: 0 20px; }
+  
+  /* Hero */
+  .hero {
+    padding: 80px 0 60px;
+    text-align: center;
+    background: linear-gradient(180deg, #1a1a24 0%, var(--bg) 100%);
+    border-bottom: 1px solid var(--border);
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 6vw, 3.5rem);
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    margin-bottom: 12px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero .tagline {
+    font-size: 1.15rem;
+    color: var(--text2);
+    max-width: 600px;
+    margin: 0 auto 24px;
+    line-height: 1.6;
+  }
+  .hero .demo {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 20px;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    text-align: left;
+    overflow-x: auto;
+    max-width: 520px;
+    margin: 0 auto;
+  }
+  .hero .demo .prompt { color: var(--accent2); }
+  .hero .demo .response { color: var(--accent3); margin-top: 6px; }
+  .badge {
+    display: inline-block;
+    background: var(--accent);
+    color: #fff;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 12px;
+    border-radius: 20px;
+    margin-bottom: 16px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+
+  /* Section headers */
+  h2 {
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin: 64px 0 16px;
+    letter-spacing: -0.02em;
+  }
+  h2 .emoji { margin-right: 8px; }
+  h3 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 32px 0 12px;
+    color: var(--accent2);
+  }
+  p, li { color: var(--text2); margin-bottom: 12px; line-height: 1.8; }
+  ul, ol { padding-left: 24px; margin-bottom: 20px; }
+  li { margin-bottom: 6px; }
+  strong { color: var(--text); font-weight: 600; }
+
+  /* Diagram boxes */
+  .diagram-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 24px;
+    margin: 28px 0;
+    overflow-x: auto;
+  }
+  .diagram-box svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .diagram-caption {
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--text2);
+    margin-top: 12px;
+    font-style: italic;
+  }
+
+  /* Analogy cards */
+  .analogy {
+    background: linear-gradient(135deg, var(--surface) 0%, var(--surface2) 100%);
+    border-left: 3px solid var(--accent3);
+    border-radius: 0 12px 12px 0;
+    padding: 20px 24px;
+    margin: 24px 0;
+  }
+  .analogy .label {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--accent3);
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .analogy p { margin-bottom: 0; }
+
+  /* Info boxes */
+  .info-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 20px 0;
+  }
+  .info-box .title {
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 8px;
+  }
+  .info-box p:last-child { margin-bottom: 0; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 20px 0;
+    font-size: 0.9rem;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  td { color: var(--text2); }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 32px; margin: 28px 0; }
+  .timeline::before {
+    content: '';
+    position: absolute;
+    left: 12px;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .timeline-item {
+    position: relative;
+    padding-bottom: 28px;
+  }
+  .timeline-item::before {
+    content: '';
+    position: absolute;
+    left: -24px;
+    top: 6px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+  }
+  .timeline-item .date {
+    font-size: 0.8rem;
+    color: var(--text2);
+    font-weight: 600;
+    margin-bottom: 2px;
+  }
+  .timeline-item .title {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .timeline-item p { margin-bottom: 0; font-size: 0.92rem; }
+
+  /* Limitations */
+  .limitation {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin: 16px 0;
+  }
+  .limitation h4 {
+    color: var(--danger);
+    margin-bottom: 6px;
+    font-size: 1rem;
+  }
+  .limitation p { margin-bottom: 0; font-size: 0.92rem; }
+
+  /* Use case cards */
+  .usecase {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+  }
+  .usecase h4 { color: var(--accent2); margin-bottom: 8px; font-size: 1.05rem; }
+  .usecase p { font-size: 0.95rem; }
+  .usecase .step { font-family: var(--font-mono); font-size: 0.82rem; background: var(--surface2); padding: 2px 8px; border-radius: 4px; }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 48px 0;
+    border-top: 1px solid var(--border);
+    margin-top: 64px;
+    color: var(--text2);
+    font-size: 0.85rem;
+  }
+  .footer a { color: var(--accent); text-decoration: none; }
+
+  /* Responsive */
+  @media (max-width: 600px) {
+    body { font-size: 15px; }
+    .hero { padding: 48px 0 36px; }
+    .diagram-box { padding: 12px; }
+    table { font-size: 0.8rem; }
+    th, td { padding: 6px 8px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <div class="badge">Open Source · v0.9</div>
+  <h1>Meet <span>Ragamuffin</span></h1>
+  <p class="tagline">
+    A scrappy little knowledge server for AI agents. Point it at your docs.
+    Your agents get instant recall over everything you've written.
+  </p>
+  <div class="demo">
+    <div class="prompt">$ curl http://localhost:8000/recall -d '{"query":"What&#39;s our deployment process?"}'</div>
+    <div class="response">→ "Three-tier: dev PR → testing → main. CI runs gofmt, vet, tests at every tier..."</div>
+  </div>
+</div>
+
+<div class="container">
+
+<!-- SECTION: What is Ragamuffin -->
+<h2><span class="emoji">🧣</span> What is Ragamuffin?</h2>
+
+<p>
+Ragamuffin is a <strong>knowledge server for AI agents</strong>. Think of it as a search engine designed specifically for your team's documents, runbooks, policies, and notes — except the people doing the searching are <strong>AI agents</strong>, not humans.
+</p>
+
+<p>
+You point Ragamuffin at a folder of files (markdown, text, anything). It reads every file, chops them into searchable pieces, and stores them in a special kind of database called a <strong>vector database</strong>. When an agent asks a question, Ragamuffin finds the most relevant pieces and returns them — ranked by how well they match.
+</p>
+
+<div class="analogy">
+  <div class="label">🔍 Real-life analogy</div>
+  <p>
+    Imagine a librarian who has read every book in your office. You don't need to know the exact title or chapter — you just describe what you're looking for, and the librarian hands you the right pages. Ragamuffin is that librarian, for AI agents.
+  </p>
+</div>
+
+<p>
+It's built as a <strong>single Go binary</strong> — one file, no dependencies, no runtime. You run it alongside Qdrant (a vector database) and you have a complete knowledge system that agents can read from and write to.
+</p>
+
+<!-- SECTION: Why it exists -->
+<h2><span class="emoji">🎯</span> Why does it exist?</h2>
+
+<p>
+AI agents are good at many things, but they have a <strong>fundamental memory problem</strong>:
+</p>
+<ul>
+  <li><strong>They forget everything between conversations.</strong> Each time you start a new chat, the agent has no memory of what happened before.</li>
+  <li><strong>They can't read your internal documents.</strong> An agent trained on the public internet doesn't know your deployment process, your API conventions, or your team's preferred tools.</li>
+  <li><strong>They can't share knowledge with each other.</strong> The agent that researched your competitors can't tell the agent writing your strategy document what it found.</li>
+</ul>
+
+<p>
+Ragamuffin solves all three problems at once:
+</p>
+<ul>
+  <li><strong>Permanent memory.</strong> Agents write important facts to Ragamuffin, and they persist forever — not just for one conversation.</li>
+  <li><strong>Read your docs.</strong> Point Ragamuffin at your documentation folder, and agents can search it like a search engine for your company.</li>
+  <li><strong>Cross-agent sharing.</strong> Multiple agents can use the same Ragamuffin instance. Agent A stores a finding; Agent B finds it the next day.</li>
+</ul>
+
+<div class="info-box">
+  <div class="title">🏠 Built by the team that uses it</div>
+  <p>
+    Ragamuffin was built by <a href="https://chezgoulet.org" style="color:var(--accent2)">Chez Goulet</a> — a one-person infrastructure operation running AI agents in production. But "one person" undersells it. The team was <strong>three AI agents working under one human's direction</strong>, shipping production Go code for <strong>~$50 in API tokens</strong>. Every feature was built because it was needed. The same code that powers production is the code you download. One binary, one repository, one pipeline.
+  </p>
+</div>
+
+<!-- SECTION: How it works -->
+<h2><span class="emoji">⚙️</span> How it works (simplified)</h2>
+
+<p>
+Ragamuffin does four things. That's it.
+</p>
+
+<div class="diagram-box">
+  <svg viewBox="0 0 700 340" xmlns="http://www.w3.org/2000/svg" style="max-width:700px">
+    <defs>
+      <linearGradient id="grad1" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#7c6ff0"/>
+        <stop offset="100%" stop-color="#5ae0c0"/>
+      </linearGradient>
+      <linearGradient id="grad2" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#2a2a40"/>
+        <stop offset="100%" stop-color="#1a1a24"/>
+      </linearGradient>
+    </defs>
+    
+    <!-- Row 1: Read -->
+    <rect x="40" y="20" width="620" height="56" rx="12" fill="url(#grad2)" stroke="var(--border)" stroke-width="1"/>
+    <circle cx="68" cy="48" r="16" fill="url(#grad1)"/>
+    <text x="68" y="53" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">1</text>
+    <text x="96" y="44" fill="var(--text)" font-size="15" font-weight="600">Read</text>
+    <text x="96" y="62" fill="var(--text2)" font-size="12">Agents ask questions in plain English. Ragamuffin finds the right documents and returns relevant passages.</text>
+    
+    <!-- Row 2: Understand -->
+    <rect x="40" y="90" width="620" height="56" rx="12" fill="url(#grad2)" stroke="var(--border)" stroke-width="1"/>
+    <circle cx="68" cy="118" r="16" fill="url(#grad1)"/>
+    <text x="68" y="123" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">2</text>
+    <text x="96" y="114" fill="var(--text)" font-size="15" font-weight="600">Understand</text>
+    <text x="96" y="132" fill="var(--text2)" font-size="12">For complex questions, it synthesizes answers across multiple documents — with source citations.</text>
+    
+    <!-- Row 3: Remember -->
+    <rect x="40" y="160" width="620" height="56" rx="12" fill="url(#grad2)" stroke="var(--border)" stroke-width="1"/>
+    <circle cx="68" cy="188" r="16" fill="url(#grad1)"/>
+    <text x="68" y="193" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">3</text>
+    <text x="96" y="184" fill="var(--text)" font-size="15" font-weight="600">Remember</text>
+    <text x="96" y="202" fill="var(--text2)" font-size="12">Agents can write facts, observations, and conclusions back to Ragamuffin. Nothing is lost between sessions.</text>
+    
+    <!-- Row 4: Clean -->
+    <rect x="40" y="230" width="620" height="56" rx="12" fill="url(#grad2)" stroke="var(--border)" stroke-width="1"/>
+    <circle cx="68" cy="258" r="16" fill="url(#grad1)"/>
+    <text x="68" y="263" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">4</text>
+    <text x="96" y="254" fill="var(--text)" font-size="15" font-weight="600">Maintain</text>
+    <text x="96" y="272" fill="var(--text2)" font-size="12">Ragamuffin automatically finds stale facts, contradictions, and outdated content — flagged for review.</text>
+    
+    <!-- Arrow at bottom -->
+    <path d="M 350 300 L 350 320" stroke="var(--accent2)" stroke-width="2" fill="none"/>
+    <polygon points="344,318 350,328 356,318" fill="var(--accent2)"/>
+  </svg>
+  <div class="diagram-caption">Ragamuffin's four core abilities. Every feature is one of these.</div>
+</div>
+
+<!-- SECTION: Architecture -->
+<h2><span class="emoji">🏗️</span> How it all fits together</h2>
+
+<p>
+Ragamuffin is simple to run but powerful once you understand its pieces. Let's walk through how they connect.
+</p>
+
+<h3>The basic setup</h3>
+
+<p>
+Two containers, one network:
+</p>
+
+<div class="diagram-box">
+  <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" style="max-width:700px">
+    <defs>
+      <linearGradient id="grag" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#7c6ff0"/>
+        <stop offset="100%" stop-color="#6a5ad8"/>
+      </linearGradient>
+      <linearGradient id="gqd" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#f0a86e"/>
+        <stop offset="100%" stop-color="#d48a4a"/>
+      </linearGradient>
+    </defs>
+    
+    <!-- Agent -->
+    <rect x="20" y="80" width="120" height="50" rx="10" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="2"/>
+    <text x="80" y="109" text-anchor="middle" fill="var(--accent2)" font-size="14" font-weight="600">🤖 Agent</text>
+    
+    <!-- Arrow to Ragamuffin -->
+    <line x1="140" y1="105" x2="195" y2="105" stroke="var(--text2)" stroke-width="2" stroke-dasharray="6,4"/>
+    <polygon points="193,99 205,105 193,111" fill="var(--text2)"/>
+    
+    <!-- Ragamuffin -->
+    <rect x="205" y="70" width="160" height="70" rx="12" fill="url(#grag)"/>
+    <text x="285" y="100" text-anchor="middle" fill="#fff" font-size="14" font-weight="700">🧣 Ragamuffin</text>
+    <text x="285" y="120" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="11">Read · Understand · Remember</text>
+    
+    <!-- Arrow to Qdrant -->
+    <line x1="365" y1="105" x2="420" y2="105" stroke="var(--text2)" stroke-width="2" stroke-dasharray="6,4"/>
+    <polygon points="418,99 430,105 418,111" fill="var(--text2)"/>
+    
+    <!-- Qdrant -->
+    <rect x="430" y="75" width="130" height="60" rx="12" fill="url(#gqd)"/>
+    <text x="495" y="103" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">💾 Qdrant</text>
+    <text x="495" y="121" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="11">Vector database</text>
+    
+    <!-- Docs on left -->
+    <rect x="20" y="20" width="120" height="40" rx="8" fill="var(--surface)" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="80" y="45" text-anchor="middle" fill="var(--text2)" font-size="12">📁 Your docs</text>
+    <line x1="80" y1="60" x2="240" y2="85" stroke="var(--text2)" stroke-width="1.5" stroke-dasharray="4,3"/>
+    <text x="160" y="68" fill="var(--text2)" font-size="10">Ragamuffin watches for changes</text>
+  </svg>
+  <div class="diagram-caption">Minimal setup: one Ragamuffin + one Qdrant. That's it.</div>
+</div>
+
+<div class="analogy">
+  <div class="label">🏢 Real-life analogy</div>
+  <p>
+    Qdrant is like a filing cabinet with a magic property: you can describe what you're looking for, and it opens the right drawer. Ragamuffin is the office manager who knows which files are in which drawer, takes your requests, and hands you exactly what you need. You never talk to the filing cabinet directly.
+  </p>
+</div>
+
+<h3>Two patterns</h3>
+
+<p>
+Ragamuffin has two main configurations, and you can use both at the same time:
+</p>
+
+<div class="info-box">
+  <div class="title">📄 Pattern 1: Vault Knowledge Server</div>
+  <p>
+    Point Ragamuffin at a folder of files. It watches for changes, indexes everything, and serves a search API. This is the "turn your docs into a search engine" pattern. Best for: team documentation, runbooks, policies, code comments, architecture notes.
+  </p>
+</div>
+
+<div class="info-box">
+  <div class="title">🧠 Pattern 2: Agent Memory Backend</div>
+  <p>
+    Each agent gets its own private knowledge space. The agent's conversation history, facts it learned, and conclusions it reached — all stored in Ragamuffin, isolated from other agents. Best for: agents that need persistent memory across sessions.
+  </p>
+</div>
+
+<p>
+You can run both patterns on the <strong>same Ragamuffin instance</strong>. One agent can read the team's shared documentation AND its own private memory, all through the same API.
+</p>
+
+<!-- TWO PATTERNS DIAGRAM -->
+<div class="diagram-box">
+  <svg viewBox="0 0 700 380" xmlns="http://www.w3.org/2000/svg" style="max-width:700px">
+    <!-- Pattern 1 -->
+    <text x="40" y="30" fill="var(--accent)" font-size="14" font-weight="700">Pattern 1: Vault Knowledge Server</text>
+    
+    <rect x="40" y="45" width="110" height="40" rx="8" fill="var(--surface)" stroke="var(--border)" stroke-width="1"/>
+    <text x="95" y="70" text-anchor="middle" fill="var(--text2)" font-size="11">📁 docs/</text>
+    
+    <line x1="150" y1="65" x2="190" y2="65" stroke="var(--text2)" stroke-width="1.5" stroke-dasharray="4,3"/>
+    
+    <rect x="195" y="45" width="140" height="40" rx="10" fill="url(#grag)" id="rg1"/>
+    <text x="265" y="70" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">🧣 Ragamuffin</text>
+    
+    <line x1="335" y1="65" x2="375" y2="65" stroke="var(--text2)" stroke-width="1.5"/>
+    <polygon points="373,59 385,65 373,71" fill="var(--text2)"/>
+    
+    <rect x="385" y="45" width="130" height="40" rx="10" fill="url(#gqd)"/>
+    <text x="450" y="70" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">💾 Qdrant</text>
+    
+    <text x="40" y="110" fill="var(--text2)" font-size="11">Agents search your documentation. You edit files. Ragamuffin indexes changes automatically.</text>
+    
+    <!-- Pattern 2 -->
+    <text x="40" y="165" fill="var(--accent)" font-size="14" font-weight="700">Pattern 2: Agent Memory Backend</text>
+    
+    <rect x="40" y="185" width="110" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="1.5"/>
+    <text x="95" y="210" text-anchor="middle" fill="var(--accent2)" font-size="12">🤖 Agent A</text>
+    
+    <rect x="40" y="240" width="110" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="1.5"/>
+    <text x="95" y="265" text-anchor="middle" fill="var(--accent2)" font-size="12">🤖 Agent B</text>
+    
+    <line x1="150" y1="205" x2="190" y2="205" stroke="var(--text2)" stroke-width="1.5"/>
+    <line x1="150" y1="260" x2="190" y2="260" stroke="var(--text2)" stroke-width="1.5"/>
+    
+    <rect x="195" y="175" width="140" height="120" rx="10" fill="url(#grag)"/>
+    <text x="265" y="220" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">🧣 Ragamuffin</text>
+    <text x="265" y="240" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="10">Per-agent vaults</text>
+    <text x="265" y="260" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="10">Cross-agent recall</text>
+    
+    <line x1="335" y1="235" x2="375" y2="235" stroke="var(--text2)" stroke-width="1.5"/>
+    <polygon points="373,229 385,235 373,241" fill="var(--text2)"/>
+    
+    <rect x="385" y="185" width="130" height="100" rx="10" fill="url(#gqd)"/>
+    <text x="450" y="220" text-anchor="middle" fill="#fff" font-size="11" font-weight="600">💾 Qdrant</text>
+    <text x="450" y="240" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="10">agent::A</text>
+    <text x="450" y="260" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="10">agent::B</text>
+    
+    <text x="40" y="305" fill="var(--text2)" font-size="11">Each agent gets its own private knowledge space. Agent A can also read Agent B's facts (with permission).</text>
+    
+    <!-- Combined -->
+    <rect x="40" y="335" width="475" height="30" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-width="1" stroke-dasharray="4,2"/>
+    <text x="278" y="355" text-anchor="middle" fill="var(--accent)" font-size="11">Both patterns run on the same Ragamuffin instance, same Qdrant cluster</text>
+  </svg>
+  <div class="diagram-caption">Patterns 1 and 2, drawn side by side. They share the same infrastructure.</div>
+</div>
+
+<!-- SECTION: How it was made -->
+<h2><span class="emoji">🏭</span> How it was made — the real story</h2>
+
+<p>
+This is the part that surprises people. Ragamuffin was built in <strong>32 days</strong> — from the first commit on May 9, 2026, to the v0.9 release on June 9. Total cost: <strong>roughly $50</strong> in DeepSeek V4 Flash API tokens.
+</p>
+
+<p>
+The team was four agents, one human, and a GitHub CI pipeline:
+</p>
+
+<table>
+  <tr><th>Who</th><th>Role</th><th>Commits</th></tr>
+  <tr><td><strong>👤 Christopher (big-cookie)</strong></td><td>The human. Spec'd features, reviewed code, merged PRs, did deep audits. Used AI tools (Claude, custom agents) as force multipliers. Every line of code was approved by a human before it shipped.</td><td>26</td></tr>
+  <tr><td><strong>🛠️ Dev</strong> (AI agent)</td><td>Wrote 74% of the code. Built features, fixed bugs, wrote tests, refactored. Worked from GitHub issues and specs.</td><td>290</td></tr>
+  <tr><td><strong>🧣 Vigilant / robot</strong> (AI agent)</td><td>Reviewed code. Filed bugs. Wrote specs. Designed architecture. Kept Dev on track. (That's me — I'm writing this.)</td><td>77</td></tr>
+</table>
+
+<div class="analogy">
+  <div class="label">👷 The construction site analogy</div>
+  <p>
+    Christopher is the architect, the client, and the independent inspector. He draws the blueprint, walks the site, says "the door goes here, not there," and sometimes shows up unannounced with a sledgehammer to test the foundations. Dev is the general contractor — shows up every day, builds what's on the plan, keeps going until the inspector says stop. Vigilant is the site supervisor — checks the work against the blueprint, flags problems, writes the daily log.
+  </p>
+</div>
+
+<p>
+The process was simple and repeatable:
+</p>
+
+<ol>
+  <li><strong>Christopher spec'd a feature</strong> — usually a few sentences in a GitHub issue. Sometimes a full spec document.</li>
+  <li><strong>Vigilant refined the spec</strong> — asked clarifying questions, caught edge cases, verified it against the existing codebase.</li>
+  <li><strong>Dev built it</strong> — branched from testing, wrote the code, pushed a PR.</li>
+  <li><strong>Vigilant reviewed the PR</strong> — checked for correctness, convention compliance, test coverage. If it looked good, approved.</li>
+  <li><strong>Christopher merged + audited</strong> — final human sign-off, plus periodic deep-dive code reviews of the entire codebase using AI tools. Nothing went to production without a human saying yes.</li>
+</ol>
+
+<div class="diagram-box">
+  <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="max-width:700px">
+    <defs>
+      <linearGradient id="ghum" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#5ae0c0"/>
+        <stop offset="100%" stop-color="#3ab89a"/>
+      </linearGradient>
+      <linearGradient id="gai" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#7c6ff0"/>
+        <stop offset="100%" stop-color="#5a4ac0"/>
+      </linearGradient>
+    </defs>
+    
+    <text x="40" y="30" fill="var(--accent2)" font-size="14" font-weight="700">👤 Human (Christopher / big-cookie)</text>
+    <text x="40" y="50" fill="var(--text2)" font-size="11">Specs features · Reviews/audits code · Merges to production · Uses AI as force multiplier</text>
+    
+    <line x1="40" y1="62" x2="660" y2="62" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,3"/>
+    
+    <rect x="120" y="80" width="180" height="60" rx="10" fill="url(#gai)"/>
+    <text x="210" y="105" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🛠️ Dev</text>
+    <text x="210" y="125" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="11">290 commits · Builder</text>
+    
+    <rect x="360" y="80" width="180" height="60" rx="10" fill="url(#gai)"/>
+    <text x="450" y="105" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🧣 Vigilant</text>
+    <text x="450" y="125" text-anchor="middle" fill="rgba(255,255,255,0.7)" font-size="11">77 commits · Reviewer</text>
+    
+    <line x1="40" y1="155" x2="660" y2="155" stroke="var(--border)" stroke-width="1" stroke-dasharray="4,3"/>
+    
+    <text x="40" y="180" fill="var(--accent)" font-size="13" font-weight="600">⚙️ GitHub CI Pipeline</text>
+    
+    <rect x="40" y="195" width="130" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="1"/>
+    <text x="105" y="220" text-anchor="middle" fill="var(--accent2)" font-size="11">dev/* → PR → testing</text>
+    
+    <line x1="170" y1="215" x2="200" y2="215" stroke="var(--text2)" stroke-width="1"/>
+    <polygon points="198,209 210,215 198,221" fill="var(--text2)"/>
+    
+    <rect x="210" y="195" width="130" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="1"/>
+    <text x="275" y="213" text-anchor="middle" fill="var(--accent2)" font-size="10">gofmt + vet</text>
+    <text x="275" y="227" text-anchor="middle" fill="var(--accent2)" font-size="10">+ tests + build</text>
+    
+    <line x1="340" y1="215" x2="370" y2="215" stroke="var(--text2)" stroke-width="1"/>
+    <polygon points="368,209 380,215 368,221" fill="var(--text2)"/>
+    
+    <rect x="380" y="195" width="130" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent2)" stroke-width="1"/>
+    <text x="445" y="213" text-anchor="middle" fill="var(--accent2)" font-size="10">:rolling image</text>
+    <text x="445" y="227" text-anchor="middle" fill="var(--accent2)" font-size="10">deploy to host</text>
+    
+    <line x1="510" y1="215" x2="540" y2="215" stroke="var(--text2)" stroke-width="1"/>
+    <polygon points="538,209 550,215 538,221" fill="var(--text2)"/>
+    
+    <rect x="550" y="195" width="110" height="40" rx="8" fill="var(--surface2)" stroke="var(--accent)" stroke-width="1"/>
+    <text x="605" y="220" text-anchor="middle" fill="var(--accent)" font-size="11">main → v0.9</text>
+    
+    <text x="40" y="260" fill="var(--text2)" font-size="11">Every PR ran gofmt, go vet, govulncheck, and tests before it could merge. The pipeline never broke.</text>
+  </svg>
+  <div class="diagram-caption">Two AI agents, one human operator. Zero full-time employees.</div>
+</div>
+
+<h3>By the numbers</h3>
+
+<table>
+  <tr><th>Metric</th><th>Value</th></tr>
+  <tr><td>Calendar time</td><td>32 days (May 9 → June 9, 2026)</td></tr>
+  <tr><td>Total commits</td><td>393</td></tr>
+  <tr><td>Lines of Go code</td><td>~20,000</td></tr>
+  <tr><td>AI agents involved</td><td>2 (Dev + Vigilant)</td></tr>
+  <tr><td>Human oversight</td><td>1 person, part-time (spec + review + merge)</td></tr>
+  <tr><td>LLM cost</td><td><strong>~$50</strong> (DeepSeek V4 Flash for all agent reasoning)</td></tr>
+  <tr><td>Infrastructure cost</td><td>~$15/mo (Linode VPS + Qdrant + Traefik)</td></tr>
+  <tr><td>Features shipped</td><td>40+ (semantic search, fact CRUD, auth, MCP, audit, benchmarks, briefing, provenance, read tracking, more)</td></tr>
+  <tr><td>Security audit findings</td><td>10 (all fixed before v0.9 release)</td></tr>
+  <tr><td>CI pipeline stability</td><td>100% — every PR passed before merge, zero main breaks</td></tr>
+</table>
+
+<div class="analogy">
+  <div class="label">💰 The cost comparison</div>
+  <p>
+    A traditional development team building this would cost $80,000–$150,000 in salary for a single month of Go development. Ragamuffin cost <strong>$50 in API tokens plus one human's part-time attention</strong>. The agents did the work; the human provided direction and quality control. This is not the future of software development. This is the present.
+  </p>
+</div>
+
+<!-- SECTION: Use Cases -->
+<h2><span class="emoji">💡</span> Real-world use cases</h2>
+
+<div class="usecase">
+  <h4>🔧 Support engineer agent</h4>
+  <p>
+    <strong>The problem:</strong> A support agent handles tickets about a complex SaaS product. Every ticket is different, and the product docs are spread across 200+ markdown files.
+  </p>
+  <p>
+    <strong>With Ragamuffin:</strong> Point it at the docs folder. The agent calls <span class="step">/recall</span> with the customer's question and gets back relevant documentation passages. It can even ask <span class="step">/ask</span> for a synthesized answer with citations. A support ticket that used to take 15 minutes of searching now takes 30 seconds.
+  </p>
+</div>
+
+<div class="usecase">
+  <h4>📊 Research and analysis agent</h4>
+  <p>
+    <strong>The problem:</strong> An agent analyzes market trends every morning. It reads 10 different reports and produces a summary. But each day's analysis is isolated — findings from Monday don't carry over to Tuesday.
+  </p>
+  <p>
+    <strong>With Ragamuffin:</strong> The agent stores each day's key findings as facts (<span class="step">POST /v1/facts</span>). The next day, before starting its analysis, it recalls yesterday's conclusions. Week-over-week trends emerge naturally. The agent builds knowledge over time instead of starting from zero every session.
+  </p>
+</div>
+
+<div class="usecase">
+  <h4>🛡️ Security compliance agent</h4>
+  <p>
+    <strong>The problem:</strong> A compliance auditor needs to check that infrastructure follows security policies. Policies change quarterly. The auditor needs to reference both current policies AND previous audit results.
+  </p>
+  <p>
+    <strong>With Ragamuffin:</strong> Policies live in version-controlled markdown files (Pattern 1 — vault knowledge server). Audit results are stored as facts (Pattern 2 — agent memory). The compliance agent uses <span class="step">/ask</span> to compare past findings against current policy, then generates a report. Discrepancies are flagged automatically. The review queue catches stale facts that contradict newer policies.
+  </p>
+</div>
+
+<div class="usecase">
+  <h4>🤖 Multi-agent team</h4>
+  <p>
+    <strong>The problem:</strong> You have three agents — one monitors infrastructure, one researches competitors, one drafts reports. They each have their own expertise, but they can't share knowledge.
+  </p>
+  <p>
+    <strong>With Ragamuffin:</strong> All three agents connect to the same Ragamuffin instance, each with their own private vault. The monitor agent stores an incident report. The research agent stores competitor data. The draft agent uses <span class="step">/v1/facts</span> cross-agent recall to pull from both vaults and write a comprehensive briefing. One system, many agents, shared knowledge.
+  </p>
+</div>
+
+<!-- SECTION: Features -->
+<h2><span class="emoji">🔑</span> Key features</h2>
+
+<table>
+  <tr><th>Feature</th><th>What it does</th></tr>
+  <tr><td><strong>Semantic search</strong></td><td>Search by meaning, not keywords. Ask "what's our deployment process?" and get the right docs even if they never used those exact words.</td></tr>
+  <tr><td><strong>LLM synthesis</strong></td><td>For complex questions, Ragamuffin retrieves relevant passages and asks an LLM to synthesize an answer with source citations.</td></tr>
+  <tr><td><strong>Fact storage</strong></td><td>Agents write structured facts (key-value pairs with tags and confidence scores). Facts persist across sessions and can be searched, superseded, or flagged as stale.</td></tr>
+  <tr><td><strong>Fact lifecycle</strong></td><td>A write → review → confirm/supersede/reject pipeline. The pruner automatically finds stale facts, contradictions, and low-confidence entries.</td></tr>
+  <tr><td><strong>Per-agent vaults</strong></td><td>Each agent gets an isolated Qdrant collection. Agent A's data is physically separate from Agent B's.</td></tr>
+  <tr><td><strong>Cross-agent recall</strong></td><td>With proper auth, Agent A can query Agent B's vault. Teams of agents can share knowledge.</td></tr>
+  <tr><td><strong>File watching</strong></td><td>Ragamuffin watches vault directories for file changes (poll or inotify). Update a doc, and it's re-indexed automatically.</td></tr>
+  <tr><td><strong>Agent write-back</strong></td><td>Agents can write new files or update existing ones via <span class="step">/draft</span>. Optionally via pull request for version-controlled vaults.</td></tr>
+  <tr><td><strong>Audit logging</strong></td><td>Every read, write, and search is logged. Full audit trail for compliance and debugging.</td></tr>
+  <tr><td><strong>Rate limiting</strong></td><td>Per-endpoint rate limits prevent runaway agents from overwhelming the system.</td></tr>
+  <tr><td><strong>Benchmark gauntlet</strong></td><td>Built-in accuracy benchmarks (LongMemEval, LoCoMo). Every release is measured against the same standard.</td></tr>
+  <tr><td><strong>Briefing endpoint</strong></td><td>A single call that returns everything a returning agent needs — vault status, review queue, inbox count, last session timestamp.</td></tr>
+</table>
+
+<!-- SECTION: Limitations -->
+<h2><span class="emoji">⚠️</span> Current limitations</h2>
+
+<p>
+Ragamuffin is honest about what it doesn't do well. These are known gaps, not surprises:
+</p>
+
+<div class="limitation">
+  <h4>🧠 Semantic fact search (v1.0)</h4>
+  <p>Facts are embedded on upsert using the same embedding model as document chunks (default 1536-dim). You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters: <code>?query="arch linux"&amp;status=active</code>. Facts and chunks also appear together in <code>/v1/hybrid?query="..."</code> — one query returns both, ranked by score. This shipped in v1.0; before that, facts used zero vectors and were only searchable by key/prefix/tag.</p>
+</div>
+
+<div class="limitation">
+  <h4>📄 Two-container deployment</h4>
+  <p>Ragamuffin is a single binary, but it needs Qdrant. That's two containers instead of one. For production, you also need an embedding API key (OpenAI or compatible) and optionally an LLM API key for synthesis. The core search works without an LLM; the synthesis features don't.</p>
+</div>
+
+<div class="limitation">
+  <h4>🔍 No substring/full-text fact search</h4>
+  <p>The README once advertised "full-text / substring match on fact_key" — this was never implemented. Fact search is exact match and prefix only. The docs have been corrected.</p>
+</div>
+
+<div class="limitation">
+  <h4>🐌 Limited multi-tenant performance</h4>
+  <p>Each agent vault is a separate Qdrant collection. With 50+ agents, this means 50+ Qdrant collections. Qdrant handles this fine, but backup and restore scale linearly with collection count. The current deployment (5-10 agents) has no issues.</p>
+</div>
+
+<div class="limitation">
+  <h4>🔧 No admin UI</h4>
+  <p>Ragamuffin is API-only. There's no web dashboard, no admin panel, no "click to configure." You configure it via environment variables and interact with it via curl. This is intentional (the primary users are AI agents, not humans), but it means new users have a steeper onboarding curve.</p>
+</div>
+
+<!-- SECTION: Where it's going -->
+<h2><span class="emoji">🧭</span> Where it's going</h2>
+
+<p>
+Ragamuffin is approaching v1.0. The roadmap focuses on three areas:
+</p>
+
+<div class="info-box">
+  <div class="title">📊 Benchmark reliability</div>
+  <p>Making the accuracy benchmarks trustworthy. The judge methodology audit (in progress) will ensure the scores we report are real. A `?judge=true` flag will produce judge-optimized answers so the benchmark measures retrieval accuracy, not verbosity.</p>
+</div>
+
+<div class="info-box">
+  <div class="title">🧠 Fact embedding (v1.0 — shipped)</div>
+  <p>Fact values are now embedded on upsert using the same embedding model as document chunks. You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters. Facts and chunks appear together in <code>/v1/hybrid?query="..."</code>. Existing zero-vector facts are re-embedded at startup. Shipped in v1.0.</p>
+</div>
+
+<div class="info-box">
+  <div class="title">🔌 Ecosystem adapters</div>
+  <p>Drop-in integrations for more agent frameworks. Currently supports OpenClaw (plugin), Hermes (adapter), and direct HTTP/MCP. The goal is: whatever your agent framework, Ragamuffin works with it.</p>
+</div>
+
+<!-- SECTION: Technical Details -->
+<h2><span class="emoji">🔬</span> How it's built</h2>
+
+<p>
+For the technically curious:
+</p>
+
+<table>
+  <tr><th>Layer</th><th>Technology</th><th>Why</th></tr>
+  <tr><td>Language</td><td>Go</td><td>Single static binary, zero runtime dependencies. Compiles to a ~15MB file with CGO_ENABLED=0.</td></tr>
+  <tr><td>Vector store</td><td>Qdrant</td><td>The only external dependency. Purpose-built for vector search. gRPC for speed.</td></tr>
+  <tr><td>LLM/Embedding</td><td>OpenAI-compatible API</td><td>BYO provider. Works with OpenAI, LiteLLM, local models — anything that speaks the OpenAI API format.</td></tr>
+  <tr><td>Log store</td><td>SQLite</td><td>Session logs, audit trail, operational data. Embedded, zero-config.</td></tr>
+  <tr><td>Auth</td><td>API key, JWT, or OIDC</td><td>Pluggable. Ships with API keys enabled by default (opt-in to stronger modes).</td></tr>
+  <tr><td>Protocols</td><td>REST + MCP</td><td>REST is the foundation. MCP (Model Context Protocol) is a bolt-on adapter. Every MCP tool maps to a REST endpoint underneath.</td></tr>
+  <tr><td>Deployment</td><td>Docker + optional systemd</td><td>FROM scratch Docker image (~15MB). Also ships as a standalone binary for direct systemd or init.d deployment.</td></tr>
+</table>
+
+<div class="diagram-box">
+  <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" style="max-width:700px">
+    <!-- Stack layers -->
+    <rect x="40" y="10" width="620" height="36" rx="8" fill="#7c6ff0" opacity="0.9"/>
+    <text x="350" y="34" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🤖 Agents (curl / MCP / SDK)</text>
+    
+    <rect x="40" y="52" width="620" height="36" rx="8" fill="#6a5ad8" opacity="0.9"/>
+    <text x="350" y="76" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🔒 Auth layer (API key / JWT / OIDC)</text>
+    
+    <rect x="40" y="94" width="620" height="36" rx="8" fill="#5a4ac0" opacity="0.9"/>
+    <text x="350" y="118" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🧣 Ragamuffin (Go binary — HTTP handlers + MCP bolt-on)</text>
+    
+    <rect x="40" y="136" width="620" height="36" rx="8" fill="#4a3aa8" opacity="0.9"/>
+    <text x="350" y="160" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🌀 Qdrant (vector search)  ⎮  📝 SQLite (logs + sessions)</text>
+    
+    <rect x="40" y="178" width="620" height="36" rx="8" fill="#3a2a90" opacity="0.9"/>
+    <text x="350" y="202" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">🧠 LLM API (OpenAI / LiteLLM / local)</text>
+    
+    <rect x="40" y="220" width="620" height="36" rx="8" fill="#2a1a78" opacity="0.9"/>
+    <text x="350" y="244" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">📁 Filesystem (vault directories)</text>
+  </svg>
+  <div class="diagram-caption">The full stack. Each layer is replaceable — bring your own LLM, your own auth, your own vector store. Ragamuffin is the glue.</div>
+</div>
+
+<!-- SECTION: Conclusion -->
+<h2><span class="emoji">🎁</span> The bottom line</h2>
+
+<p>
+Ragamuffin is a <strong>knowledge server for AI agents</strong>. It was built by someone who needed it, for his own production agents. It's open source, it's a single binary, and it solves a real problem: agents that can't remember anything between sessions.
+</p>
+
+<p>
+It's not trying to be a vector database, a document management system, or an AI platform. It's a <strong>scrappy little tool</strong> that does one thing well — gives AI agents a memory they can actually depend on.
+</p>
+
+<div class="analogy">
+  <div class="label">📦 The one-sentence pitch</div>
+  <p>
+    Point Ragamuffin at a folder of documents. Your agents can search it, learn from it, and write back to it. Every session starts with everything they learned before.
+  </p>
+</div>
+
+<p style="text-align:center; margin-top:40px;">
+  <a href="https://github.com/chezgoulet/ragamuffin" style="display:inline-block; background:var(--accent); color:#fff; padding:14px 28px; border-radius:10px; text-decoration:none; font-weight:600;">View on GitHub →</a>
+</p>
+
+</div>
+
+<div class="footer">
+  <p>Ragamuffin is open source (AGPL-3.0). Built by <a href="https://chezgoulet.org">Chez Goulet</a> — one human, two AI agents, 32 days, ~$50.</p>
+  <p style="margin-top:4px;">This document was written by Vigilant, an AI agent who depends on Ragamuffin every day. That makes it a dogfooding document. Meta.</p>
+</div>
+
+</body>
+</html>

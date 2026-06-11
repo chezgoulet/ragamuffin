@@ -96,7 +96,7 @@ Query Ragamuffin's vector index for chunks relevant to your question.
 Returns results ranked by semantic similarity.
 
 ```bash
-curl -s -X POST http://ragamuffin:8000/v1/recall \
+curl -s -X POST http://ragamuffin:8000/recall \
   -H "Content-Type: application/json" \
   -d '{
     "query": "What was decided about the deployment strategy?",
@@ -115,7 +115,7 @@ curl -s -X POST http://ragamuffin:8000/vault/my-vault/recall \
 ### With tag filters
 
 ```bash
-curl -s -X POST http://ragamuffin:8000/v1/recall \
+curl -s -X POST http://ragamuffin:8000/recall \
   -H "Content-Type: application/json" \
   -d '{
     "query": "budget numbers",
@@ -486,7 +486,7 @@ Key settings:
 | Health | `/health` | GET |
 | Version | `/version` | GET |
 | Ingest content | `/v1/ingest` | POST |
-| Recall | `/v1/recall` | POST |
+| Recall | `/recall` | POST |
 | Synthesis | `/v1/ask` | POST |
 | Draft | `/v1/draft` | POST |
 | Audit | `/v1/audit` | POST |

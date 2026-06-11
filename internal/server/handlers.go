@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
@@ -86,6 +88,21 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		} else {
 			resp["indexed_files"] = 0
 		}
+	}
+
+	// ── Per-vault stats ──
+	vaults := make(map[string]map[string]any)
+	for _, name := range s.indexers.VaultNames() {
+		vs := s.indexers.Stats(name)
+		vaults[name] = map[string]any{
+			"chunk_count":  vs.ChunkCount,
+			"file_count":   vs.FileCount,
+			"last_indexed": vs.LastIndexed.Format(time.RFC3339),
+			"indexing":     vs.Indexing,
+		}
+	}
+	if len(vaults) > 0 {
+		resp["vaults"] = vaults
 	}
 
 	writeJSON(w, 200, resp)
@@ -160,15 +177,88 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, 200, map[string]any{
-		"vault_path":        vaultPath,
-		"indexed_files":     fileCount,
-		"total_chunks":      chunkCount,
+		"vault_path":           vaultPath,
+		"indexed_files":        fileCount,
+		"total_chunks":         chunkCount,
 		"chunk_count_reliable": chunkReliable,
-		"last_indexed":      lastIndexed.Format(time.RFC3339),
-		"qdrant_collection": s.cfg.QdrantCollection,
-		"embedding_provider": s.cfg.EmbeddingProvider,
-		"uptime_seconds":    int(time.Since(s.started).Seconds()),
+		"last_indexed":         lastIndexed.Format(time.RFC3339),
+		"qdrant_collection":    s.cfg.QdrantCollection,
+		"embedding_provider":   s.cfg.EmbeddingProvider,
+		"uptime_seconds":       int(time.Since(s.started).Seconds()),
+		"qdrant":               s.qdrantCollectionHealth(),
 	})
+}
+
+// qdrantCollectionHealth queries Qdrant's REST API for collection-level
+// health information (status, optimizer_status, segments_count).
+// Returns nil on failure (non-fatal — just missing from the stats response).
+func (s *Server) qdrantCollectionHealth() map[string]any {
+	qdrantURL := s.cfg.QdrantURL
+	if qdrantURL == "" {
+		qdrantURL = "http://qdrant:6333"
+	}
+
+	// Build the collection name — use configured or default
+	collectionName := s.cfg.QdrantCollection
+	if collectionName == "" {
+		collectionName = "ragamuffin_default"
+	}
+
+	restURL := fmt.Sprintf("%s/collections/%s", strings.TrimRight(qdrantURL, "/"), collectionName)
+	// Qdrant gRPC default port is 6334, REST is 6333 — strip gRPC port
+	restURL = strings.Replace(restURL, ":6334", ":6333", 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, restURL, nil)
+	if err != nil {
+		return nil
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var qresp struct {
+		Result struct {
+			Status          string `json:"status"`
+			OptimizerStatus string `json:"optimizer_status"`
+			SegmentsCount   int    `json:"segments_count"`
+			PointsCount     uint64 `json:"points_count"`
+			IndexedPoints   uint64 `json:"indexed_points"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &qresp); err != nil {
+		return nil
+	}
+
+	info := map[string]any{
+		"status":           qresp.Result.Status,
+		"optimizer_status": qresp.Result.OptimizerStatus,
+		"segments_count":   qresp.Result.SegmentsCount,
+		"points_count":     qresp.Result.PointsCount,
+		"indexed_points":   qresp.Result.IndexedPoints,
+	}
+
+	// Add a human-readable health summary
+	switch {
+	case qresp.Result.OptimizerStatus != "ok":
+		info["health"] = "optimizing"
+	case qresp.Result.Status != "green" && qresp.Result.Status != "grey":
+		info["health"] = "degraded"
+	default:
+		info["health"] = "ready"
+	}
+
+	return info
 }
 
 // ── /recall ────────────────────────────────────────────────────────────────────
@@ -267,7 +357,7 @@ func recallFilter(req recallRequest) *pb.Filter {
 		must = append(must, &pb.Condition{
 			ConditionOneOf: &pb.Condition_Field{
 				Field: &pb.FieldCondition{
-					Key:          "file_last_updated",
+					Key:           "file_last_updated",
 					DatetimeRange: dtr,
 				},
 			},
@@ -650,7 +740,6 @@ type askRequest struct {
 	TopK  int    `json:"top_k"`
 }
 
-
 // queryContext retrieves context text for /ask requests.
 // Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
 func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
@@ -673,19 +762,33 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			if r.Score > topScore {
 				topScore = r.Score
 			}
-			if src, ok := r.Payload["source_file"]; ok {
-				sv := src.GetStringValue()
+			src := ""
+			if s, ok := r.Payload["source_file"]; ok {
+				sv := s.GetStringValue()
 				if !seenSources[sv] {
 					sources = append(sources, sv)
 					seenSources[sv] = true
 				}
+				src = sv
 			}
+			ci := int64(0)
+			if c, ok := r.Payload["chunk_index"]; ok {
+				ci = c.GetIntegerValue()
+			}
+			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", src, ci, r.Score))
 			if text, ok := r.Payload["text"]; ok {
 				b.WriteString(text.GetStringValue())
 				b.WriteString("\n\n")
 			}
 		}
 		contextText = b.String()
+
+		// ── Fact retrieval for temporal context ──
+		if s.facts != nil && contextText != "" {
+			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+				contextText += "\n" + factText
+			}
+		}
 
 		if mode == "auto" && topScore >= float32(s.cfg.AutoThreshold) {
 			modeUsed = "rag"
@@ -737,6 +840,15 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 						sourceSet[sv] = true
 					}
 				}
+				var chunkSrc string
+				if s, ok := r.Payload["source_file"]; ok {
+					chunkSrc = s.GetStringValue()
+				}
+				chunkIdx := int64(0)
+				if c, ok := r.Payload["chunk_index"]; ok {
+					chunkIdx = c.GetIntegerValue()
+				}
+				b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d]\n", chunkSrc, chunkIdx))
 				if text, ok := r.Payload["text"]; ok {
 					b.WriteString(text.GetStringValue())
 					b.WriteString("\n\n")
@@ -744,12 +856,50 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 			}
 		}
 		contextText = b.String()
+
+		// ── Fact retrieval for temporal context ──
+		if s.facts != nil && contextText != "" {
+			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+				contextText += "\n" + factText
+			}
+		}
 	}
 
 	return contextText, sources, modeUsed, nil
 }
 
+// appendFactContext retrieves facts relevant to a query and returns a formatted
+// context block with temporal metadata (valid_from, valid_until).
+func (s *Server) appendFactContext(ctx context.Context, vector []float32, topK int) string {
 
+	factResults, err := s.factsQdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
+	if err != nil || len(factResults) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("\n── Facts ──\n\n")
+	for _, fr := range factResults {
+		payload := fr.GetPayload()
+		key, _ := qutil.GetPayloadString(payload, "fact_key")
+		value, _ := qutil.GetPayloadString(payload, "fact_value")
+		validFrom, _ := qutil.GetPayloadString(payload, "valid_from")
+		validUntil, _ := qutil.GetPayloadString(payload, "valid_until")
+		createdAt, _ := qutil.GetPayloadString(payload, "created_at")
+
+		b.WriteString(fmt.Sprintf("[Fact: %s | Created: %s", key, createdAt))
+		if validFrom != "" {
+			b.WriteString(fmt.Sprintf(" | Valid from: %s", validFrom))
+		}
+		if validUntil != "" {
+			b.WriteString(fmt.Sprintf(" | Valid until: %s", validUntil))
+		}
+		b.WriteString(fmt.Sprintf(" | Score: %.3f]\n", fr.GetScore()))
+		b.WriteString(value)
+		b.WriteString("\n\n")
+	}
+	return b.String()
+}
 
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {

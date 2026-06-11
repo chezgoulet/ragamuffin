@@ -15,8 +15,8 @@ import (
 type Manager struct {
 	mu           sync.RWMutex
 	indexers     map[string]*Indexer
-	clients      map[string]qdrant.FactStore  // chunk/doc Qdrant clients
-	factClients  map[string]qdrant.FactStore  // per-vault fact Qdrant clients
+	clients      map[string]qdrant.FactStore // chunk/doc Qdrant clients
+	factClients  map[string]qdrant.FactStore // per-vault fact Qdrant clients
 	llmClients   map[string]llm.Synthesizer
 	embedClients map[string]embedding.Embedder
 }

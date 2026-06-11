@@ -13,8 +13,8 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
-	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	pb "github.com/qdrant/go-client/qdrant"
 )
@@ -25,10 +25,10 @@ type mockFactStore struct {
 	qdrant.FactStore // embed so we only implement what we need
 	name             string
 
-	mu                sync.Mutex
-	upserted          []*pb.PointStruct
-	scrollFilteredFn  func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
-	getPointsFn       func(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
+	mu                 sync.Mutex
+	upserted           []*pb.PointStruct
+	scrollFilteredFn   func(ctx context.Context, collection string, filter *pb.Filter, limit uint32, offset string) ([]*pb.RetrievedPoint, error)
+	getPointsFn        func(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error)
 	updateVectorsCalls []*pb.PointVectors
 }
 
@@ -98,7 +98,7 @@ func (m *mockFactStore) SetPayload(_ context.Context, _ string, ids []*pb.PointI
 }
 
 func (m *mockFactStore) Health(_ context.Context) error { return nil }
-func (m *mockFactStore) Close() error                    { return nil }
+func (m *mockFactStore) Close() error                   { return nil }
 
 // ── Mock Embedder ─────────────────────────────────────────────────────────────
 
@@ -1046,22 +1046,22 @@ func TestProcessEvents_DrainsEvents(t *testing.T) {
 
 func TestParseVersionedKey(t *testing.T) {
 	tests := []struct {
-		key      string
-		prefix   string
-		version  int
+		key     string
+		prefix  string
+		version int
 	}{
 		{"org/v2/decision", "org", 2},
 		{"org/v10/decision", "org", 10},
 		{"project/feature/v3", "project/feature", 3},
 		{"v1/key", "", 1},
 		{"noversion/key", "", 0},
-		{"org/v/key", "", 0},         // no digits after v
-		{"org/v0/key", "", 0},        // v0 is not a version
+		{"org/v/key", "", 0},  // no digits after v
+		{"org/v0/key", "", 0}, // v0 is not a version
 		{"org/decision", "", 0},
 		{"", "", 0},
-		{"vegetables/price", "", 0},  // starts with v but not a version segment
+		{"vegetables/price", "", 0},                     // starts with v but not a version segment
 		{"api/v2/models/v3/config", "api/v2/models", 3}, // last segment wins
-		{"v1/api/v2", "v1/api", 2},  // last segment wins (middle + tail)
+		{"v1/api/v2", "v1/api", 2},                      // last segment wins (middle + tail)
 	}
 
 	for _, tt := range tests {

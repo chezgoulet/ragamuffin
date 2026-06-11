@@ -311,12 +311,12 @@ func (s *Server) doStore(ctx context.Context, content, source, vaultName string,
 
 // statsResult is the shared return type for vault statistics.
 type statsResult struct {
-	Vault          string `json:"vault"`
-	IndexedFiles   int    `json:"indexed_files"`
-	TotalChunks    int    `json:"total_chunks"`
-	TotalFacts     int    `json:"total_facts"`
-	LastIndexed    string `json:"last_indexed"`
-	VaultAgeDays   int    `json:"vault_age_days"`
+	Vault        string `json:"vault"`
+	IndexedFiles int    `json:"indexed_files"`
+	TotalChunks  int    `json:"total_chunks"`
+	TotalFacts   int    `json:"total_facts"`
+	LastIndexed  string `json:"last_indexed"`
+	VaultAgeDays int    `json:"vault_age_days"`
 }
 
 // doStats collects vault operational metrics. Shared by REST and MCP.

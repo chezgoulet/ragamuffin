@@ -246,7 +246,7 @@ detection. Its structure:
 
 ### How the baseline is used
 
-1. **Benchmark gauntlet CI** (`build.yml`) runs the full sweep on merge to `main`
+1. **Benchmark CI** (`build.yml`) runs on merge to `main` (benchmark suite can be triggered manually)
 2. Results are compared against `baseline.json` for each dimension
 3. **Regressions** (> 3 percentage point drop in any dimension) flag the run for
    review and can block the release PR

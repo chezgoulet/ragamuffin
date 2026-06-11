@@ -20,20 +20,36 @@ import (
 type mockQdrantStore struct{}
 
 func (m *mockQdrantStore) Upsert(_ context.Context, points []*qdrant.PointStruct) error { return nil }
-func (m *mockQdrantStore) Scroll(_ context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) { return nil, nil, nil }
-func (m *mockQdrantStore) Close() error { return nil }
-func (m *mockQdrantStore) Collection() string { return "test" }
+func (m *mockQdrantStore) Scroll(_ context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
+	return nil, nil, nil
+}
+func (m *mockQdrantStore) Close() error                                              { return nil }
+func (m *mockQdrantStore) Collection() string                                        { return "test" }
 func (m *mockQdrantStore) GetVectorSize(_ context.Context, _ string) (uint64, error) { return 0, nil }
-func (m *mockQdrantStore) GetPoints(_ context.Context, _ string, _ []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) { return nil, nil }
-func (m *mockQdrantStore) SetPayload(_ context.Context, _ string, _ []*qdrant.PointId, _ map[string]*qdrant.Value) error { return nil }
-func (m *mockQdrantStore) ScrollFiltered(_ context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) { return nil, nil }
-func (m *mockQdrantStore) Search(_ context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error) { return nil, nil }
+func (m *mockQdrantStore) GetPoints(_ context.Context, _ string, _ []*qdrant.PointId) ([]*qdrant.RetrievedPoint, error) {
+	return nil, nil
+}
+func (m *mockQdrantStore) SetPayload(_ context.Context, _ string, _ []*qdrant.PointId, _ map[string]*qdrant.Value) error {
+	return nil
+}
+func (m *mockQdrantStore) ScrollFiltered(_ context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
+	return nil, nil
+}
+func (m *mockQdrantStore) Search(_ context.Context, vector []float32, limit uint64, scoreThreshold float32, sourceFilter string, filter *qdrant.Filter) ([]*qdrant.ScoredPoint, error) {
+	return nil, nil
+}
 func (m *mockQdrantStore) DeleteBySource(_ context.Context, sourceFile string) error { return nil }
-func (m *mockQdrantStore) DeleteFiltered(_ context.Context, collection string, filter *qdrant.Filter) error { return nil }
-func (m *mockQdrantStore) Count(_ context.Context) (uint64, error) { return 0, nil }
+func (m *mockQdrantStore) DeleteFiltered(_ context.Context, collection string, filter *qdrant.Filter) error {
+	return nil
+}
+func (m *mockQdrantStore) Count(_ context.Context) (uint64, error)   { return 0, nil }
 func (m *mockQdrantStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
-func (m *mockQdrantStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error { return nil }
-func (m *mockQdrantStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error { return nil }
+func (m *mockQdrantStore) CreatePayloadIndex(_ context.Context, collection, field, fieldType string) error {
+	return nil
+}
+func (m *mockQdrantStore) UpdateVectors(_ context.Context, _ string, _ []*qdrant.PointVectors) error {
+	return nil
+}
 func (m *mockQdrantStore) Health(_ context.Context) error { return nil }
 
 // ── Test: extraction goroutine survives request context cancellation ──────────

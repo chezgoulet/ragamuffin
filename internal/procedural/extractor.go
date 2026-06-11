@@ -219,9 +219,9 @@ func buildProcedure(turns []Turn, seq []int) *Procedure {
 	}
 
 	return &Procedure{
-		Name:    name,
-		Trigger: trigger,
-		Steps:   steps,
+		Name:         name,
+		Trigger:      trigger,
+		Steps:        steps,
 		SuccessCount: 1,
 	}
 }

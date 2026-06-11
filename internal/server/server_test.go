@@ -395,9 +395,9 @@ func TestWithRateLimit_PassThrough(t *testing.T) {
 
 func TestLlmFor_NoContext_FallsToServerDefault(t *testing.T) {
 	srv := &Server{
-		cfg:       &config.Config{},
-		llm:       llm.New("test", "http://llm", "sk-1", "gpt", 30*time.Second),
-		indexers:  indexer.NewManager(),
+		cfg:      &config.Config{},
+		llm:      llm.New("test", "http://llm", "sk-1", "gpt", 30*time.Second),
+		indexers: indexer.NewManager(),
 	}
 
 	lm := srv.llmFor(context.Background())
@@ -475,9 +475,9 @@ func TestLlmFor_VaultContext_BothNil(t *testing.T) {
 
 func TestEmbeddingFor_NoContext_FallsToServerDefault(t *testing.T) {
 	srv := &Server{
-		cfg:       &config.Config{},
-		embedder:  embedding.New("http://embed", "sk-1", "model", 0),
-		indexers:  indexer.NewManager(),
+		cfg:      &config.Config{},
+		embedder: embedding.New("http://embed", "sk-1", "model", 0),
+		indexers: indexer.NewManager(),
 	}
 
 	ec := srv.embeddingFor(context.Background())

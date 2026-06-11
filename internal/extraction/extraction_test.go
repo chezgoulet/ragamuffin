@@ -10,16 +10,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 type mockSynthesizer struct {
-	result string
-	err    error
-	mu     sync.Mutex
-	called bool
+	result     string
+	err        error
+	mu         sync.Mutex
+	called     bool
 	lastPrompt string
 	lastSystem string
 }
@@ -42,9 +43,9 @@ func (m *mockSynthesizer) Health(_ context.Context) error {
 }
 
 type mockEmbedder struct {
-	vec   []float32
-	vecs  [][]float32
-	err   error
+	vec  []float32
+	vecs [][]float32
+	err  error
 }
 
 func (m *mockEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
@@ -65,7 +66,7 @@ func (m *mockEmbedder) EmbedSingle(_ context.Context, text string) ([]float32, e
 func (m *mockEmbedder) Health(_ context.Context) error { return m.err }
 
 type mockFactStore struct {
-	upsertErr       error
+	upsertErr            error
 	scrollFilteredResult []*pb.RetrievedPoint
 	scrollFilteredErr    error
 	collectionName       string
@@ -87,17 +88,23 @@ func (m *mockFactStore) Search(_ context.Context, _ []float32, _ uint64, _ float
 	return nil, nil
 }
 
-func (m *mockFactStore) DeleteBySource(_ context.Context, _ string) error { return nil }
+func (m *mockFactStore) DeleteBySource(_ context.Context, _ string) error               { return nil }
 func (m *mockFactStore) DeleteFiltered(_ context.Context, _ string, _ *pb.Filter) error { return nil }
-func (m *mockFactStore) Count(_ context.Context) (uint64, error) { return 0, nil }
-func (m *mockFactStore) CountFiles(_ context.Context) (int, error) { return 0, nil }
-func (m *mockFactStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error { return nil }
-func (m *mockFactStore) Health(_ context.Context) error { return nil }
-func (m *mockFactStore) Close() error { return nil }
-func (m *mockFactStore) GetVectorSize(_ context.Context, _ string) (uint64, error) { return 0, nil }
-func (m *mockFactStore) GetPoints(_ context.Context, _ string, _ []*pb.PointId) ([]*pb.RetrievedPoint, error) { return nil, nil }
-func (m *mockFactStore) SetPayload(_ context.Context, _ string, _ []*pb.PointId, _ map[string]*pb.Value) error { return nil }
-func (m *mockFactStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error { return nil }
+func (m *mockFactStore) Count(_ context.Context) (uint64, error)                        { return 0, nil }
+func (m *mockFactStore) CountFiles(_ context.Context) (int, error)                      { return 0, nil }
+func (m *mockFactStore) CreatePayloadIndex(_ context.Context, _, _, _ string) error     { return nil }
+func (m *mockFactStore) Health(_ context.Context) error                                 { return nil }
+func (m *mockFactStore) Close() error                                                   { return nil }
+func (m *mockFactStore) GetVectorSize(_ context.Context, _ string) (uint64, error)      { return 0, nil }
+func (m *mockFactStore) GetPoints(_ context.Context, _ string, _ []*pb.PointId) ([]*pb.RetrievedPoint, error) {
+	return nil, nil
+}
+func (m *mockFactStore) SetPayload(_ context.Context, _ string, _ []*pb.PointId, _ map[string]*pb.Value) error {
+	return nil
+}
+func (m *mockFactStore) UpdateVectors(_ context.Context, _ string, _ []*pb.PointVectors) error {
+	return nil
+}
 func (m *mockFactStore) Collection() string { return m.collectionName }
 
 // ── DefaultConfig ─────────────────────────────────────────────────────────────
@@ -663,14 +670,14 @@ func TestBuildExtractionPrompt_Empty(t *testing.T) {
 // ── getPointVector ────────────────────────────────────────────────────────────
 
 func TestGetPointVector_Nil(t *testing.T) {
-	if v := getPointVector(nil); v != nil {
+	if v := qdrant.GetPointVector(nil); v != nil {
 		t.Error("expected nil for nil point")
 	}
 }
 
 func TestGetPointVector_NoVectors(t *testing.T) {
 	pt := &pb.RetrievedPoint{}
-	if v := getPointVector(pt); v != nil {
+	if v := qdrant.GetPointVector(pt); v != nil {
 		t.Error("expected nil for point without vectors")
 	}
 }
@@ -685,7 +692,7 @@ func TestGetPointVector_HasVector(t *testing.T) {
 			},
 		},
 	}
-	v := getPointVector(pt)
+	v := qdrant.GetPointVector(pt)
 	if v == nil {
 		t.Fatal("expected non-nil vector")
 	}

@@ -27,24 +27,24 @@ import (
 
 // Config controls extraction behaviour.
 type Config struct {
-	Enabled            bool    // master switch (default false)
-	Window             int     // preceding turns in context (default 10)
-	MaxConfidence      float64 // hard ceiling (default 0.85)
-	DedupThreshold     float64 // cosine similarity (default 0.85)
-	Concurrency        int     // max concurrent extractions (default 2)
-	PerSessionCooldown int     // seconds between extractions for same session (default 30)
+	Enabled             bool    // master switch (default false)
+	Window              int     // preceding turns in context (default 10)
+	MaxConfidence       float64 // hard ceiling (default 0.85)
+	DedupThreshold      float64 // cosine similarity (default 0.85)
+	Concurrency         int     // max concurrent extractions (default 2)
+	PerSessionCooldown  int     // seconds between extractions for same session (default 30)
 	ImportanceThreshold float64 // minimum importance for auto-accepted facts (default 0.5)
 }
 
 // DefaultConfig returns sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		Enabled:            false,
-		Window:             10,
-		MaxConfidence:      0.85,
-		DedupThreshold:     0.85,
-		Concurrency:        2,
-		PerSessionCooldown: 30,
+		Enabled:             false,
+		Window:              10,
+		MaxConfidence:       0.85,
+		DedupThreshold:      0.85,
+		Concurrency:         2,
+		PerSessionCooldown:  30,
 		ImportanceThreshold: 0.5,
 	}
 }
@@ -55,7 +55,7 @@ type ExtractedFact struct {
 	Value      string  `json:"value"`
 	Confidence float64 `json:"confidence"` // 0.0–1.0
 	Category   string  `json:"category"`   // e.g., preference, knowledge, relationship
-	TTLDays    int     `json:"ttl_days"`    // 0 = no expiry
+	TTLDays    int     `json:"ttl_days"`   // 0 = no expiry
 }
 
 // extractRequest is the LLM prompt payload.
@@ -317,36 +317,36 @@ func (e *Extractor) writeFact(ctx context.Context, f ExtractedFact, sessionID st
 	nowStr := now.Format(time.RFC3339)
 
 	payload := map[string]*pb.Value{
-		"fact_key":              qutil.Nv(f.Key),
-		"fact_value":            qutil.Nv(f.Value),
-		"status":                qutil.Nv("active"),
-		"source_type":           qutil.Nv("extraction"),
-		"source":                qutil.Nv(fmt.Sprintf("session:%s", sessionID)),
-		"session_id":            qutil.Nv(sessionID),
-		"confidence":            qutil.Nv(f.Confidence),
-		"category":              qutil.Nv(f.Category),
-		"extracted":             qutil.Nv(true),
-		"created_at":            qutil.Nv(nowStr),
-		"updated_at":            qutil.Nv(nowStr),
+		"fact_key":    qutil.Nv(f.Key),
+		"fact_value":  qutil.Nv(f.Value),
+		"status":      qutil.Nv("active"),
+		"source_type": qutil.Nv("extraction"),
+		"source":      qutil.Nv(fmt.Sprintf("session:%s", sessionID)),
+		"session_id":  qutil.Nv(sessionID),
+		"confidence":  qutil.Nv(f.Confidence),
+		"category":    qutil.Nv(f.Category),
+		"extracted":   qutil.Nv(true),
+		"created_at":  qutil.Nv(nowStr),
+		"updated_at":  qutil.Nv(nowStr),
 
 		// Edge fields (empty by default)
-		"supersedes":            qutil.Nv(""),
-		"refines":               qutil.Nv(""),
-		"contradicts":           qutil.NvList([]string{}),
-		"supports":              qutil.NvList([]string{}),
-		"confirmation_count":    qutil.Nv(float64(1)),
-		"conflict_resolved":     qutil.Nv(true),
-		"superseded_by":         qutil.Nv(float64(0)),
-		"access_count":          qutil.Nv(float64(0)),
-		"last_accessed_at":      qutil.Nv(""),
-		"expires_at":            qutil.Nv(""),
-		"expires_at_unix":       qutil.Nv(float64(0)),
-		"version":               qutil.Nv(float64(0)),
-		"key_prefix":            qutil.Nv(f.Key),
-		"valid_from":            qutil.Nv(nowStr),
-		"valid_from_unix":       qutil.Nv(float64(now.Unix())),
-		"valid_until":           qutil.Nv(""),
-		"valid_until_unix":      qutil.Nv(float64(0)),
+		"supersedes":         qutil.Nv(""),
+		"refines":            qutil.Nv(""),
+		"contradicts":        qutil.NvList([]string{}),
+		"supports":           qutil.NvList([]string{}),
+		"confirmation_count": qutil.Nv(float64(1)),
+		"conflict_resolved":  qutil.Nv(true),
+		"superseded_by":      qutil.Nv(float64(0)),
+		"access_count":       qutil.Nv(float64(0)),
+		"last_accessed_at":   qutil.Nv(""),
+		"expires_at":         qutil.Nv(""),
+		"expires_at_unix":    qutil.Nv(float64(0)),
+		"version":            qutil.Nv(float64(0)),
+		"key_prefix":         qutil.Nv(f.Key),
+		"valid_from":         qutil.Nv(nowStr),
+		"valid_from_unix":    qutil.Nv(float64(now.Unix())),
+		"valid_until":        qutil.Nv(""),
+		"valid_until_unix":   qutil.Nv(float64(0)),
 	}
 
 	if f.TTLDays > 0 {
@@ -425,7 +425,7 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 
 	// Compare against existing fact vectors (stored in Qdrant points)
 	for _, pt := range points {
-		existingVec := getPointVector(pt)
+		existingVec := qdrant.GetPointVector(pt)
 		if existingVec == nil {
 			// Skip points with missing vectors
 			continue
@@ -449,22 +449,6 @@ func (e *Extractor) dedupCheck(ctx context.Context, key, value string) (bool, st
 }
 
 // cosineSimilarity computes the cosine of the angle between two vectors.
-// getPointVector extracts the stored vector from a Qdrant RetrievedPoint.
-// Returns nil if the point has no vector data.
-func getPointVector(pt *pb.RetrievedPoint) []float32 {
-	if pt == nil {
-		return nil
-	}
-	vectors := pt.GetVectors()
-	if vectors == nil {
-		return nil
-	}
-	v := vectors.GetVector()
-	if v == nil {
-		return nil
-	}
-	return v.GetData()
-}
 
 func cosineSimilarity(a, b []float32) float32 {
 	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {

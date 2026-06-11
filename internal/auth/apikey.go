@@ -14,7 +14,7 @@ type APIKeyAuthenticator struct {
 	readKey  string
 	writeKey string
 	// Per-vault scoped keys: vault name -> {read, write}
-	vaultKeys map[string]struct{ readKey, writeKey string }
+	vaultKeys  map[string]struct{ readKey, writeKey string }
 	writePaths map[string]bool // paths requiring write access
 }
 
@@ -65,7 +65,11 @@ func (a *APIKeyAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 
 	// Extract Bearer token
 	token := strings.TrimPrefix(authHeader, "Bearer ")
-	if token == authHeader {
+	// Reject when the prefix was absent (token == authHeader) or the token
+	// is empty ("Bearer " with nothing after it). An empty token must never
+	// reach the key comparison — subtle.ConstantTimeCompare("", "") == 1,
+	// so an empty token would otherwise match an unset key.
+	if token == authHeader || token == "" {
 		return nil, ErrUnauthenticated
 	}
 
@@ -97,6 +101,12 @@ func (a *APIKeyAuthenticator) Authenticate(r *http.Request) (*Claims, error) {
 // constantTimeEqual compares two strings in constant time to prevent timing attacks.
 // Returns false when lengths differ (short-circuit is safe — lengths are public).
 func constantTimeEqual(a, b string) bool {
+	// An unset (empty) configured key must never authenticate, regardless of
+	// the presented token. Guard here as defense-in-depth so every call site
+	// is covered, not just Authenticate.
+	if b == "" {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
 

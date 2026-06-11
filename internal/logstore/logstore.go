@@ -79,13 +79,13 @@ func Open(path string) (*Store, error) {
 
 // Session represents a conversation session.
 type Session struct {
-	ID         string `json:"id"`
-	Vault      string `json:"vault"`
-	AgentID    string `json:"agent_id"`
-	Source     string `json:"source,omitempty"`
-	TurnCount  int    `json:"turn_count"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	ID        string `json:"id"`
+	Vault     string `json:"vault"`
+	AgentID   string `json:"agent_id"`
+	Source    string `json:"source,omitempty"`
+	TurnCount int    `json:"turn_count"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 // Turn represents a single message in a session.
@@ -577,6 +577,7 @@ func (s *Store) Flush() error {
 func (s *Store) SetLogger(l *slog.Logger) {
 	s.logger = l
 }
+
 // Close closes the database connection.
 // Resolution records a single review queue resolution.
 type Resolution struct {
@@ -590,12 +591,12 @@ type Resolution struct {
 
 // ThresholdRecommendation is a single suggested threshold adjustment.
 type ThresholdRecommendation struct {
-	ReasonType     string  `json:"reason_type"`
-	Recommended    float64 `json:"recommended"`
-	Current        float64 `json:"current"`
-	AcceptRate     float64 `json:"accept_rate"`
-	SampleSize     int     `json:"sample_size"`
-	Rationale      string  `json:"rationale"`
+	ReasonType  string  `json:"reason_type"`
+	Recommended float64 `json:"recommended"`
+	Current     float64 `json:"current"`
+	AcceptRate  float64 `json:"accept_rate"`
+	SampleSize  int     `json:"sample_size"`
+	Rationale   string  `json:"rationale"`
 }
 
 // RecordResolution inserts a review resolution record into the logstore.

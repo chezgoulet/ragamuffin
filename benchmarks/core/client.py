@@ -21,7 +21,20 @@ logger = logging.getLogger("ragamuffin.benchmark")
 
 DEFAULT_BASE_URL = os.environ.get("RAGAMUFFIN_URL", "http://localhost:8000")
 HTTP_TIMEOUT = int(os.environ.get("RAGAMUFFIN_HTTP_TIMEOUT", "30"))
+_raw_ingest = os.environ.get("RAGAMUFFIN_INGEST_TIMEOUT", "")
+INGEST_TIMEOUT = int(_raw_ingest) if _raw_ingest else (HTTP_TIMEOUT or 120)
+_raw_ask = os.environ.get("RAGAMUFFIN_ASK_TIMEOUT", "")
+ASK_TIMEOUT = int(_raw_ask) if _raw_ask else (HTTP_TIMEOUT or 30)
 MAX_RETRIES = int(os.environ.get("RAGAMUFFIN_MAX_RETRIES", "3"))
+
+# Ingest pacing
+INGEST_DELAY = float(os.environ.get("RAGAMUFFIN_INGEST_DELAY", "0"))
+
+# Qdrant health check URL (separate from Ragamuffin)
+QDRANT_HEALTH_URL = os.environ.get(
+    "RAGAMUFFIN_QDRANT_URL",
+    "http://qdrant:6333",
+).rstrip("/")
 
 
 # ── Client ──────────────────────────────────────────────────────────────────────
@@ -37,12 +50,16 @@ class RagamuffinClient:
     def __init__(
         self,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: int = HTTP_TIMEOUT,
+        timeout: Optional[int] = None,
+        ingest_timeout: Optional[int] = None,
+        ask_timeout: Optional[int] = None,
         max_retries: int = MAX_RETRIES,
         api_key: Optional[str] = None,
     ):
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = int(timeout or HTTP_TIMEOUT)
+        self.ingest_timeout = int(ingest_timeout or INGEST_TIMEOUT)
+        self.ask_timeout = int(ask_timeout or ASK_TIMEOUT)
         self.max_retries = max_retries
         self.api_key = api_key or os.environ.get("RAGAMUFFIN_API_KEY", "")
         self.litellm_key = os.environ.get("LITELLM_API_KEY", "")
@@ -56,6 +73,50 @@ class RagamuffinClient:
             return data is not None
         except Exception:
             return False
+
+    def qdrant_health(self) -> Tuple[bool, Optional[str]]:
+        """Check if Qdrant is healthy and ready for writes.
+
+        Returns (is_healthy, status_or_reason).
+        Checks Qdrant REST API health endpoint.
+        """
+        try:
+            req = urllib.request.Request(f"{QDRANT_HEALTH_URL}/healthz")
+            resp = urllib.request.urlopen(req, timeout=5)
+            if resp.status == 200:
+                return True, None
+            return False, f"HTTP {resp.status}"
+        except Exception as e:
+            return False, str(e)[:100]
+
+    def qdrant_collection_status(self, collection: str) -> Tuple[bool, Optional[str]]:
+        """Check Qdrant collection status for optimizer health.
+
+        Returns (is_ready, optimizer_status_or_reason).
+        If optimizer_status != "ok" or status == "yellow", not ready.
+        """
+        try:
+            req = urllib.request.Request(f"{QDRANT_HEALTH_URL}/collections/{collection}")
+            resp = urllib.request.urlopen(req, timeout=5)
+            data = json.loads(resp.read())
+            if not isinstance(data, dict):
+                return False, f"unexpected response: {str(data)[:100]}"
+            result = data.get("result", {})
+            coll_status = result.get("status", "")
+            opt_status = result.get("optimizer_status", "")
+            is_ready = (
+                coll_status in ("green", "grey")
+                and opt_status == "ok"
+            )
+            reason = f"status={coll_status}, optimizer={opt_status}" if not is_ready else None
+            return is_ready, reason
+        except Exception as e:
+            return False, str(e)[:100]
+
+    def clear_vault(self, name: str) -> Dict:
+        """Clear all data in a vault. Requires confirmation."""
+        data, status = self._request("POST", f"/v1/vaults/{name}/clear", body={"confirm": True})
+        return data if isinstance(data, dict) else {"status": str(status)}
 
     def list_vaults(self) -> List[str]:
         """List available vault names."""
@@ -140,8 +201,12 @@ class RagamuffinClient:
         source: str,
         vault: str,
         tags: Optional[List[str]] = None,
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Ingest content into a vault. Tags must be a list of strings."""
+        """Ingest content into a vault. Tags must be a list of strings.
+
+        Uses ingest_timeout (default 120s) unless timeout kwarg is provided.
+        """
         body = {
             "content": content,
             "source": source,
@@ -149,7 +214,8 @@ class RagamuffinClient:
         }
         if tags:
             body["tags"] = tags
-        data, status = self._request("POST", "/v1/ingest", body=body)
+        effective = timeout if timeout is not None else self.ingest_timeout
+        data, status = self._request("POST", "/v1/ingest", body=body, timeout=effective)
         return data if isinstance(data, dict) else {"status": str(status)}
 
     def recall(
@@ -192,11 +258,16 @@ class RagamuffinClient:
         query: str,
         vault: str,
         mode: str = "rag",
+        timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
-        """Ask a question against a vault."""
+        """Ask a question against a vault.
+
+        Uses ask_timeout (default 30s) unless timeout kwarg is provided.
+        """
         path = f"/vault/{vault}/ask"
         body = {"query": query, "mode": mode}
-        data, _ = self._request("POST", path, body=body)
+        effective = timeout if timeout is not None else self.ask_timeout
+        data, _ = self._request("POST", path, body=body, timeout=effective)
         return data if isinstance(data, dict) else {"answer": str(data)}
 
     # ── Internal ──────────────────────────────────────────────────────────────
@@ -206,11 +277,15 @@ class RagamuffinClient:
         method: str,
         path: str,
         body: Optional[Dict] = None,
+        timeout: Optional[int] = None,
     ) -> tuple[Any, int]:
         """Make an HTTP request with retry logic.
 
+        Falls back to self.timeout if no per-method timeout given.
         Returns (parsed_json_body, status_code).
         """
+
+        effective_timeout = timeout if timeout is not None else self.timeout
 
         def do_request() -> tuple[Any, int]:
             url = self.base_url + path
@@ -230,7 +305,7 @@ class RagamuffinClient:
             )
 
             try:
-                resp = urllib.request.urlopen(req, timeout=self.timeout)
+                resp = urllib.request.urlopen(req, timeout=effective_timeout)
                 status = resp.status
                 raw = resp.read()
                 result = json.loads(raw.decode()) if raw.strip() else {}

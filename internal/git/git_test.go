@@ -69,9 +69,6 @@ func TestNew_Gitea(t *testing.T) {
 	}
 }
 
-
-
-
 // ── GitHub provider direct test ─────────────────────────────────────────────
 
 func TestGithubProvider_Do_Success(t *testing.T) {

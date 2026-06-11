@@ -114,6 +114,34 @@ func TestSafeVaultPath_EmptyRequestedPath(t *testing.T) {
 	}
 }
 
+// ── Security regression: Finding 4 — symlink escape via non-existent leaf (#696) ──
+
+// TestSafeVaultPath_SymlinkParentEscape tests that writing a new file through
+// a symlinked parent directory (e.g., /vault/link/newfile.md where link->/outside)
+// is rejected even though the leaf doesn't exist yet.
+func TestSafeVaultPath_SymlinkParentEscape(t *testing.T) {
+	dir := t.TempDir()
+	outsider := t.TempDir()
+
+	// Create a symlinked subdirectory inside vault that points outside
+	subdir := filepath.Join(dir, "subdir")
+	if err := os.Symlink(outsider, subdir); err != nil {
+		t.Skip("symlink not supported on this system")
+	}
+
+	// The path traverses through the parent symlink to a non-existent leaf
+	_, err := safeVaultPath(dir, "subdir/newfile.md")
+	if err == nil {
+		t.Fatal("expected error for symlink parent escape via new file, got nil")
+	}
+
+	// Also verify a direct escape still works
+	_, err = safeVaultPath(dir, "subdir")
+	if err == nil {
+		t.Fatal("expected error for direct symlink escape, got nil")
+	}
+}
+
 func TestSafeVaultPath_DotPath(t *testing.T) {
 	dir := t.TempDir()
 	full, err := safeVaultPath(dir, ".")

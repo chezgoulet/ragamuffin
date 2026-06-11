@@ -13,6 +13,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
@@ -21,9 +22,10 @@ import (
 // ── Fact Data Model ──────────────────────────────────────────────────────
 
 // Facts use a separate Qdrant collection (configurable via RAGAMUFFIN_FACTS_COLLECTION).
-// Vector dimension is set by RAGAMUFFIN_FACTS_VECTOR_SIZE (default 4).
-// Facts use zero vectors (no semantic search), but the dimension must match
-// what the Qdrant collection was created with.
+// Vector dimension is set by RAGAMUFFIN_FACTS_VECTOR_SIZE (default: EMBEDDING_DIMS = 1536).
+// Facts are embedded on upsert for semantic search via the ?query= parameter.
+// Prior to v1.0, facts used zero vectors — existing zero-vector facts are
+// re-embedded at startup by the pruner's reembed scan.
 //
 // v0.5 extends the payload with lifecycle fields:
 //   - source, source_type, confidence, ttl_days — client-supplied, optional
@@ -39,58 +41,69 @@ type factPayload struct {
 	Source     string   `json:"source,omitempty"`
 	SourceType string   `json:"source_type,omitempty"`
 
-	Confidence    *float64 `json:"confidence,omitempty"` // 0.0–1.0; default 1.0
-	TTLDays       *int     `json:"ttl_days,omitempty"`    // days; 0 = never expire
-	Version       *int     `json:"version,omitempty"`     // >0 = versioned; 0/omitted = unversioned
+	Confidence    *float64 `json:"confidence,omitempty"`     // 0.0–1.0; default 1.0
+	TTLDays       *int     `json:"ttl_days,omitempty"`       // days; 0 = never expire
+	Version       *int     `json:"version,omitempty"`        // >0 = versioned; 0/omitted = unversioned
 	RelatedChunks []string `json:"related_chunks,omitempty"` // server-populated; ignored on upsert
-	ValidFrom     *string  `json:"valid_from,omitempty"`   // RFC 3339; default = created_at
-	ValidUntil    *string  `json:"valid_until,omitempty"`  // RFC 3339; null = no expiry
+	ValidFrom     *string  `json:"valid_from,omitempty"`     // RFC 3339; default = created_at
+	ValidUntil    *string  `json:"valid_until,omitempty"`    // RFC 3339; null = no expiry
 }
 
 // factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
-	Key              string   `json:"key"`
-	Value            string   `json:"value"`
-	Tags             []string `json:"tags,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	SourceType       string   `json:"source_type,omitempty"`
-	Confidence       *float64 `json:"confidence,omitempty"`
-	Status           string   `json:"status"`
-	Version          int      `json:"version,omitempty"`
-	Supersedes       string   `json:"supersedes"`
-	SupersededBy     int      `json:"superseded_by,omitempty"`
-	Contradicts      []string `json:"contradicts,omitempty"`
-	Refines          string   `json:"refines"`
-	Supports         []string `json:"supports,omitempty"`
-	ConflictResolved bool     `json:"conflict_resolved"`
-	ConfirmationCount int     `json:"confirmation_count"`
-	LastConfirmedAt  string   `json:"last_confirmed_at,omitempty"`
-	CreatedAt        string   `json:"created_at,omitempty"`
-	UpdatedAt        string   `json:"updated_at"`
-	ExpiresAt        string   `json:"expires_at,omitempty"`
-	RelatedChunks    []string `json:"related_chunks,omitempty"`
-	ValidFrom        string   `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
-	ValidUntil       string   `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Key               string           `json:"key"`
+	Value             string           `json:"value"`
+	Tags              []string         `json:"tags,omitempty"`
+	Source            string           `json:"source,omitempty"`
+	SourceType        string           `json:"source_type,omitempty"`
+	Confidence        *float64         `json:"confidence,omitempty"`
+	Status            string           `json:"status"`
+	Version           int              `json:"version,omitempty"`
+	Supersedes        string           `json:"supersedes"`
+	SupersededBy      int              `json:"superseded_by,omitempty"`
+	Contradicts       []string         `json:"contradicts,omitempty"`
+	Refines           string           `json:"refines"`
+	Supports          []string         `json:"supports,omitempty"`
+	ConflictResolved  bool             `json:"conflict_resolved"`
+	ConfirmationCount int              `json:"confirmation_count"`
+	LastConfirmedAt   string           `json:"last_confirmed_at,omitempty"`
+	CreatedAt         string           `json:"created_at,omitempty"`
+	UpdatedAt         string           `json:"updated_at"`
+	ExpiresAt         string           `json:"expires_at,omitempty"`
+	RelatedChunks     []string         `json:"related_chunks,omitempty"`
+	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Provenance        *provenanceEntry `json:"provenance,omitempty"`
+	Score             float64          `json:"score,omitempty"`
+	ReadCount         int              `json:"read_count,omitempty"`
+	LastReadAt        string           `json:"last_read_at,omitempty"`
+}
+
+// provenanceEntry is a resolved provenance link from a fact to its source.
+type provenanceEntry struct {
+	Target   string `json:"target"`
+	Type     string `json:"type"`
+	Resolved bool   `json:"resolved"`
 }
 
 // factUpdateRequest is the JSON body for PUT /v1/facts (partial update).
 // Pointer fields distinguish "omitted" (nil) from "set to zero/empty" (non-nil).
 type factUpdateRequest struct {
-	Value            *string   `json:"value,omitempty"`
-	Tags             *[]string `json:"tags,omitempty"`
-	Source           *string   `json:"source,omitempty"`
-	SourceType       *string   `json:"source_type,omitempty"`
-	Status           *string   `json:"status,omitempty"`
-	Supersedes       *string   `json:"supersedes,omitempty"`
-	Refines          *string   `json:"refines,omitempty"`
-	Supports         *[]string `json:"supports,omitempty"`
-	Confidence       *float64  `json:"confidence,omitempty"`
-	ConflictResolved *bool     `json:"conflict_resolved,omitempty"`
-	ConfirmationCount *int     `json:"confirmation_count,omitempty"`
-	LastConfirmedAt  *string   `json:"last_confirmed_at,omitempty"`
-	TTLDays          *int      `json:"ttl_days,omitempty"`
-	ValidFrom        *string   `json:"valid_from,omitempty"`  // RFC 3339; set to "" to clear
-	ValidUntil       *string   `json:"valid_until,omitempty"` // RFC 3339; set to "" to clear
+	Value             *string   `json:"value,omitempty"`
+	Tags              *[]string `json:"tags,omitempty"`
+	Source            *string   `json:"source,omitempty"`
+	SourceType        *string   `json:"source_type,omitempty"`
+	Status            *string   `json:"status,omitempty"`
+	Supersedes        *string   `json:"supersedes,omitempty"`
+	Refines           *string   `json:"refines,omitempty"`
+	Supports          *[]string `json:"supports,omitempty"`
+	Confidence        *float64  `json:"confidence,omitempty"`
+	ConflictResolved  *bool     `json:"conflict_resolved,omitempty"`
+	ConfirmationCount *int      `json:"confirmation_count,omitempty"`
+	LastConfirmedAt   *string   `json:"last_confirmed_at,omitempty"`
+	TTLDays           *int      `json:"ttl_days,omitempty"`
+	ValidFrom         *string   `json:"valid_from,omitempty"`  // RFC 3339; set to "" to clear
+	ValidUntil        *string   `json:"valid_until,omitempty"` // RFC 3339; set to "" to clear
 }
 
 // factBulkUpdateRequest is the JSON body for PATCH /v1/facts (bulk update).
@@ -145,8 +158,8 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 }
 
 // zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
-// configured facts vector dimension. Facts are payload-only (no semantic search),
-// but Qdrant requires vectors to match the collection's configured dimension.
+// configured facts vector dimension. Used as fallback when the embedder is
+// unavailable (degraded mode).
 func (s *Server) zeroFactVector() *qdrant.Vectors {
 	return &qdrant.Vectors{
 		VectorsOptions: &qdrant.Vectors_Vector{
@@ -155,6 +168,25 @@ func (s *Server) zeroFactVector() *qdrant.Vectors {
 			},
 		},
 	}
+}
+
+// embedFactVector embeds a fact value and returns a Vectors wrapper.
+// Falls back to zeroFactVector if the embedder is unavailable or embedding fails.
+func (s *Server) embedFactVector(ctx context.Context, value string) *qdrant.Vectors {
+	if s.embedder != nil && value != "" {
+		vec, err := s.embedder.EmbedSingle(ctx, value)
+		if err == nil {
+			return &qdrant.Vectors{
+				VectorsOptions: &qdrant.Vectors_Vector{
+					Vector: &qdrant.Vector{
+						Data: vec,
+					},
+				},
+			}
+		}
+		s.log(ctx).Warn("fact embed failed, using zero vector", "error", err)
+	}
+	return s.zeroFactVector()
 }
 
 // computeExpiresAt returns an ISO8601 timestamp for (now + ttl_days), or "" if 0.
@@ -281,31 +313,31 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := qdrant.NewValueMap(map[string]any{
-		"fact_key":          fp.Key,
-		"key_prefix":        versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
-		"fact_value":        fp.Value,
-		"source":            fp.Source,
-		"source_type":       fp.SourceType,
-		"confidence":        confidence,
-		"version":           version,
-		"status":            "active",
-		"supersedes":        "",
-		"superseded_by":     0,
-		"refines":           "",
-		"conflict_resolved": true,
+		"fact_key":           fp.Key,
+		"key_prefix":         versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
+		"fact_value":         fp.Value,
+		"source":             fp.Source,
+		"source_type":        fp.SourceType,
+		"confidence":         confidence,
+		"version":            version,
+		"status":             "active",
+		"supersedes":         "",
+		"superseded_by":      0,
+		"refines":            "",
+		"conflict_resolved":  true,
 		"confirmation_count": 1,
-		"last_confirmed_at": now,
-		"access_count":      0,
-		"last_accessed_at":  "",
-		"created_at":        createdAt,
-		"updated_at":        now,
-		"ttl_days":          intValue(fp.TTLDays),
-		"expires_at":        expiresAt,
-		"expires_at_unix":   expiresAtUnix,
-		"valid_from":        validFrom,
-		"valid_from_unix":   validFromUnix,
-		"valid_until":       validUntil,
-		"valid_until_unix":  validUntilUnix,
+		"last_confirmed_at":  now,
+		"access_count":       0,
+		"last_accessed_at":   "",
+		"created_at":         createdAt,
+		"updated_at":         now,
+		"ttl_days":           intValue(fp.TTLDays),
+		"expires_at":         expiresAt,
+		"expires_at_unix":    expiresAtUnix,
+		"valid_from":         validFrom,
+		"valid_from_unix":    validFromUnix,
+		"valid_until":        validUntil,
+		"valid_until_unix":   validUntilUnix,
 	})
 	// Contradicts: empty list (server-managed)
 	payload["contradicts"] = &qdrant.Value{
@@ -337,7 +369,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: s.embedFactVector(r.Context(), fp.Value),
 	}
 
 	qc := s.factsQdrantFor(r.Context())
@@ -357,6 +389,11 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	vaultName := vaultFromContext(r.Context())
 	if s.embedder != nil && fp.Value != "" && !s.QdrantReconnecting() && s.facts != nil {
 		go s.linkFactToChunks(fp.Key, fp.Value, vaultName)
+	}
+
+	// Background provenance link: if source is set, register a resolvable link
+	if fp.Source != "" && s.logStore != nil {
+		go s.registerProvenanceLink(s.shutdownCtx, fp.Key, fp.Source, vaultName)
 	}
 
 	// Emit fact lifecycle event
@@ -403,7 +440,119 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		// Track access for importance scoring
 		go s.incrementFactAccess(s.shutdownCtx, key)
+
+		// Resolve provenance from link index
+		if s.logStore != nil {
+			provenance := s.resolveFactProvenance(r.Context(), key, vaultFromContext(r.Context()))
+			resp.Provenance = provenance
+		}
+
 		writeJSON(w, 200, resp)
+		return
+	}
+
+	// ── Semantic vector search ──────────────────────────────────────────
+	query := r.URL.Query().Get("query")
+	if query != "" {
+		queryLimit := 100
+		if l := r.URL.Query().Get("limit"); l != "" {
+			if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 1000 {
+				queryLimit = v
+			}
+		}
+
+		// Embed the query
+		eb := s.embeddingFor(r.Context())
+		if eb == nil {
+			writeError(w, 500, "EMBEDDER_UNAVAILABLE", "embedder not configured")
+			return
+		}
+		vector, err := eb.EmbedSingle(r.Context(), query)
+		if err != nil {
+			writeError(w, 500, "EMBED_FAILED", fmt.Sprintf("failed to embed query: %v", err))
+			return
+		}
+
+		// Build filter from optional scalar params
+		var conditions []*qdrant.Condition
+		if tag != "" {
+			conditions = append(conditions, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "fact_tags",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: tag,
+							},
+						},
+					},
+				},
+			})
+		}
+		if status != "" {
+			conditions = append(conditions, &qdrant.Condition{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "status",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{
+								Keyword: status,
+							},
+						},
+					},
+				},
+			})
+		}
+		if conflictResolvedStr != "" {
+			cr, err := strconv.ParseBool(conflictResolvedStr)
+			if err == nil {
+				conditions = append(conditions, &qdrant.Condition{
+					ConditionOneOf: &qdrant.Condition_Field{
+						Field: &qdrant.FieldCondition{
+							Key: "conflict_resolved",
+							Match: &qdrant.Match{
+								MatchValue: &qdrant.Match_Boolean{
+									Boolean: cr,
+								},
+							},
+						},
+					},
+				})
+			}
+		}
+		tf, err := timeFilter(timeFilterMode)
+		if err != nil {
+			writeError(w, 400, "INVALID_TIME_FILTER", err.Error())
+			return
+		}
+		if tf != nil {
+			conditions = append(conditions, tf)
+		}
+
+		var filter *qdrant.Filter
+		if len(conditions) > 0 {
+			filter = &qdrant.Filter{Must: conditions}
+		}
+
+		// Search facts collection
+		qc := s.factsQdrantFor(r.Context())
+		points, err := qc.Search(r.Context(), vector, uint64(queryLimit), 0.0, "", filter)
+		if err != nil {
+			writeError(w, 500, "SEARCH_FAILED", fmt.Sprintf("fact search failed: %v", err))
+			return
+		}
+
+		resp := make([]factResponse, 0, len(points))
+		for _, p := range points {
+			key, _ := qutil.GetPayloadString(p.GetPayload(), "fact_key")
+			fr := pointToFactResponse(p.GetPayload(), key)
+			if fr != nil {
+				fr.Score = float64(p.GetScore())
+				resp = append(resp, *fr)
+			}
+		}
+
+		writeJSON(w, 200, map[string]any{"entries": resp})
 		return
 	}
 
@@ -645,6 +794,12 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 
 	payload["updated_at"] = qutil.Nv(now)
 
+	// Read the final fact value from the updated payload for embedding
+	finalValue := ""
+	if v := payload["fact_value"]; v != nil {
+		finalValue = v.GetStringValue()
+	}
+
 	point := &qdrant.PointStruct{
 		Id: &qdrant.PointId{
 			PointIdOptions: &qdrant.PointId_Uuid{
@@ -652,7 +807,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		Payload: payload,
-		Vectors: s.zeroFactVector(),
+		Vectors: s.embedFactVector(r.Context(), finalValue),
 	}
 
 	qc := s.factsQdrantFor(r.Context())
@@ -660,6 +815,12 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		s.log(r.Context()).Error("facts put failed", "error", err)
 		writeError(w, 500, "UPSERT_FAILED", "failed to update fact")
 		return
+	}
+
+	// If source was updated, refresh the provenance link
+	if req.Source != nil && s.logStore != nil {
+		vaultName := vaultFromContext(r.Context())
+		go s.registerProvenanceLink(s.shutdownCtx, key, *req.Source, vaultName)
 	}
 
 	resp := pointToFactResponse(payload, key)
@@ -1184,7 +1345,7 @@ func (s *Server) migrateFacts() {
 			}
 
 			point := &qdrant.PointStruct{
-				Id: p.Id,
+				Id:      p.Id,
 				Payload: payload,
 				Vectors: s.zeroFactVector(),
 			}
@@ -1290,6 +1451,8 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.RelatedChunks = qutil.GetPayloadStringList(payload, "related_chunks")
 	fr.ValidFrom, _ = qutil.GetPayloadString(payload, "valid_from")
 	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
+	fr.ReadCount, _ = qutil.GetPayloadInt(payload, "access_count")
+	fr.LastReadAt, _ = qutil.GetPayloadString(payload, "last_accessed_at")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1299,6 +1462,43 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 }
 
 // applyFieldUpdate sets payload[key] = qutil.Nv(*val) when val is non-nil.
+// registerProvenanceLink registers a resolvable provenance link from a fact to
+// its source in the link index. Runs as a background goroutine.
+func (s *Server) registerProvenanceLink(ctx context.Context, factKey, source, vaultName string) {
+	if s.logStore == nil {
+		return
+	}
+	err := s.logStore.WriteLinks(ctx, vaultName, []logstore.LinkRecord{{
+		SourcePath: "fact:" + factKey,
+		TargetPath: source,
+		LinkType:   "provenance",
+		Context:    "fact: " + factKey,
+	}})
+	if err != nil {
+		s.logger.Warn("provenance: write link failed", "fact", factKey, "error", err)
+	}
+}
+
+// resolveFactProvenance looks up the provenance link for a fact from the link index.
+// Returns nil if no provenance link exists.
+func (s *Server) resolveFactProvenance(ctx context.Context, factKey, vaultName string) *provenanceEntry {
+	links, err := s.logStore.GetOutboundLinks(ctx, "fact:"+factKey, vaultName)
+	if err != nil {
+		s.logger.Warn("provenance: lookup failed", "fact", factKey, "error", err)
+		return nil
+	}
+	for _, l := range links {
+		if l.Type == "provenance" {
+			return &provenanceEntry{
+				Target:   l.Target,
+				Type:     l.Type,
+				Resolved: l.Target != "",
+			}
+		}
+	}
+	return nil
+}
+
 // linkFactToChunks embeds the fact value, searches the vault's chunk collection
 // for semantically similar chunks (score > 0.7), and stores the top chunk IDs
 // in the fact's related_chunks payload field. Runs as a background goroutine.
@@ -1410,6 +1610,7 @@ func intValue(p *int) int {
 //   - "active_at:2006-01-02T15:04:05Z": effective at a specific point in time
 //   - "active_at:2006-01-02": also accepted, midnight UTC
 //   - "all": no filter (returns nil, nil)
+//
 // Returns an error for malformed active_at values.
 func timeFilter(mode string) (*qdrant.Condition, error) {
 	if mode == "all" {
@@ -1421,14 +1622,14 @@ func timeFilter(mode string) (*qdrant.Condition, error) {
 
 	if mode != "" {
 		if strings.HasPrefix(mode, "active_at:") {
-		ts := strings.TrimPrefix(mode, "active_at:")
-		if t, err := time.Parse(time.RFC3339, ts); err == nil {
-			target = t
-		} else if t, err := time.Parse("2006-01-02", ts); err == nil {
-			target = t
-		} else {
-			return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
-		}
+			ts := strings.TrimPrefix(mode, "active_at:")
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				target = t
+			} else if t, err := time.Parse("2006-01-02", ts); err == nil {
+				target = t
+			} else {
+				return nil, fmt.Errorf("invalid timestamp in active_at: %q (expected RFC 3339 or YYYY-MM-DD)", ts)
+			}
 		} else {
 			return nil, fmt.Errorf("unknown time filter mode: %q", mode)
 		}
@@ -1528,11 +1729,26 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 
 	// Read current access_count or default 0
 	currentCount := qutil.GetPayloadIntValue(pt.GetPayload(), "access_count")
-	now := time.Now().UTC().Format(time.RFC3339)
+	lastAccessStr, _ := qutil.GetPayloadString(pt.GetPayload(), "last_accessed_at")
+	now := time.Now().UTC()
+	nowStr := now.Format(time.RFC3339)
+
+	// Debounce: skip write if read within the last 60 seconds, unless it's
+	// every 5th read (to keep the count roughly accurate).
+	newCount := currentCount + 1
+	if lastAccessStr != "" {
+		lastAccess, err := time.Parse(time.RFC3339, lastAccessStr)
+		if err == nil && now.Sub(lastAccess) < 60*time.Second && newCount%5 != 0 {
+			// Too soon since last write — skip the Qdrant write but still
+			// count in-the-money for the caller's perspective.
+			// After 5 reads the write goes through regardless.
+			return
+		}
+	}
 
 	setPayload := map[string]*qdrant.Value{
-		"access_count":     qutil.Nv(float64(currentCount + 1)),
-		"last_accessed_at": qutil.Nv(now),
+		"access_count":     qutil.Nv(float64(newCount)),
+		"last_accessed_at": qutil.Nv(nowStr),
 	}
 	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)

@@ -196,13 +196,13 @@ func TestPrunerIntegration_StaleScan(t *testing.T) {
 
 	// Expired: ttl_days > 0, expires_at_unix in the past
 	expired := testPoint("fact/stale/expired", "expired", map[string]*pb.Value{
-		"ttl_days":       qutil.Nv(float64(30)),
+		"ttl_days":        qutil.Nv(float64(30)),
 		"expires_at_unix": qutil.Nv(float64(now.Unix() - 86400)),
 	})
 
 	// Fresh: ttl_days > 0, expires_at_unix in the future
 	fresh := testPoint("fact/fresh", "fresh", map[string]*pb.Value{
-		"ttl_days":       qutil.Nv(float64(30)),
+		"ttl_days":        qutil.Nv(float64(30)),
 		"expires_at_unix": qutil.Nv(float64(now.Unix() + 86400)),
 	})
 

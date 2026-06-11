@@ -3,6 +3,7 @@ package pruner
 import (
 	"context"
 
+	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	pb "github.com/qdrant/go-client/qdrant"
 )
 
@@ -30,8 +31,8 @@ func (p *Pruner) reembedScan(ctx context.Context) {
 
 	var reembedded, skipped, failed int
 	for _, pt := range facts {
-		vec := getPointVector(pt)
-		if vec == nil || !isZeroVector(vec) {
+		vec := qdrant.GetPointVector(pt)
+		if vec == nil || !qdrant.IsZeroVector(vec) {
 			continue // only re-embed zero-vector points
 		}
 
@@ -101,30 +102,4 @@ func (p *Pruner) reembedScan(ctx context.Context) {
 	} else {
 		p.logger.Debug("reembedScan: no zero-vector facts found", "total_scanned", len(facts))
 	}
-}
-
-// isZeroVector returns true if all elements of the vector are zero.
-func isZeroVector(vec []float32) bool {
-	for _, v := range vec {
-		if v != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// getPointVector extracts the vector data from a RetrievedPoint.
-func getPointVector(pt *pb.RetrievedPoint) []float32 {
-	if pt == nil {
-		return nil
-	}
-	vecs := pt.GetVectors()
-	if vecs == nil {
-		return nil
-	}
-	vec := vecs.GetVector()
-	if vec == nil {
-		return nil
-	}
-	return vec.GetData()
 }

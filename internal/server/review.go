@@ -13,21 +13,22 @@ import (
 	"github.com/qdrant/go-client/qdrant"
 )
 
-
 // ── Request/Response types ────────────────────────────────────────────────────
 
 type reviewResponse struct {
-	Key           string         `json:"key"`
-	Value         string         `json:"value"`
-	Tags          []string       `json:"tags,omitempty"`
-	Source        string         `json:"source,omitempty"`
-	SourceType    string         `json:"source_type,omitempty"`
-	Confidence    *float64       `json:"confidence,omitempty"`
-	Status        string         `json:"status"`
-	ReviewReasons []reviewReason `json:"review_reasons,omitempty"`
-	LastConfirmedAt string       `json:"last_confirmed_at,omitempty"`
-	CreatedAt     string         `json:"created_at,omitempty"`
-	UpdatedAt     string         `json:"updated_at"`
+	Key             string         `json:"key"`
+	Value           string         `json:"value"`
+	Tags            []string       `json:"tags,omitempty"`
+	Source          string         `json:"source,omitempty"`
+	SourceType      string         `json:"source_type,omitempty"`
+	Confidence      *float64       `json:"confidence,omitempty"`
+	Status          string         `json:"status"`
+	ReviewReasons   []reviewReason `json:"review_reasons,omitempty"`
+	LastConfirmedAt string         `json:"last_confirmed_at,omitempty"`
+	CreatedAt       string         `json:"created_at,omitempty"`
+	UpdatedAt       string         `json:"updated_at"`
+	ReadCount       int            `json:"read_count,omitempty"`
+	LastReadAt      string         `json:"last_read_at,omitempty"`
 }
 
 type reviewReason struct {
@@ -37,24 +38,24 @@ type reviewReason struct {
 }
 
 type reviewResolveRequest struct {
-	Action          string   `json:"action"` // confirm | supersede | reject | reclassify
-	Confidence      *float64 `json:"confidence,omitempty"`
-	NewKey          string   `json:"new_key,omitempty"`
-	NewValue        string   `json:"new_value,omitempty"`
-	Note            string   `json:"note,omitempty"`
-	ConflictResolved *bool   `json:"conflict_resolved,omitempty"`
-	TTLDays         *int     `json:"ttl_days,omitempty"`
-	Tags            []string `json:"tags,omitempty"`
-	Source          string   `json:"source,omitempty"`
-	SourceType      string   `json:"source_type,omitempty"`
+	Action           string   `json:"action"` // confirm | supersede | reject | reclassify
+	Confidence       *float64 `json:"confidence,omitempty"`
+	NewKey           string   `json:"new_key,omitempty"`
+	NewValue         string   `json:"new_value,omitempty"`
+	Note             string   `json:"note,omitempty"`
+	ConflictResolved *bool    `json:"conflict_resolved,omitempty"`
+	TTLDays          *int     `json:"ttl_days,omitempty"`
+	Tags             []string `json:"tags,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	SourceType       string   `json:"source_type,omitempty"`
 }
 
 type reviewStatsResponse struct {
-	TotalNeedsReview int                         `json:"total_needs_review"`
-	ByReason         map[string]int              `json:"by_reason"`
-	BySourceType     map[string]int              `json:"by_source_type"`
-	OldestItem       string                      `json:"oldest_item,omitempty"`
-	AvgPendingDays   float64                     `json:"avg_pending_days,omitempty"`
+	TotalNeedsReview int            `json:"total_needs_review"`
+	ByReason         map[string]int `json:"by_reason"`
+	BySourceType     map[string]int `json:"by_source_type"`
+	OldestItem       string         `json:"oldest_item,omitempty"`
+	AvgPendingDays   float64        `json:"avg_pending_days,omitempty"`
 }
 
 // ── GET /v1/review ────────────────────────────────────────────────────────────
@@ -192,16 +193,18 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfid
 		confidence = &c
 	}
 	r := &reviewResponse{
-		Key:     key,
-		Value:   value,
-		Tags:    qutil.GetPayloadStringList(payload, "fact_tags"),
-		Source:  qutil.GetPayloadStringValue(payload, "source"),
-		SourceType: qutil.GetPayloadStringValue(payload, "source_type"),
-		Confidence: confidence,
-		Status:  status,
+		Key:             key,
+		Value:           value,
+		Tags:            qutil.GetPayloadStringList(payload, "fact_tags"),
+		Source:          qutil.GetPayloadStringValue(payload, "source"),
+		SourceType:      qutil.GetPayloadStringValue(payload, "source_type"),
+		Confidence:      confidence,
+		Status:          status,
 		LastConfirmedAt: qutil.GetPayloadStringValue(payload, "last_confirmed_at"),
-		CreatedAt: qutil.GetPayloadStringValue(payload, "created_at"),
-		UpdatedAt: qutil.GetPayloadStringValue(payload, "updated_at"),
+		CreatedAt:       qutil.GetPayloadStringValue(payload, "created_at"),
+		UpdatedAt:       qutil.GetPayloadStringValue(payload, "updated_at"),
+		ReadCount:       qutil.GetPayloadIntValue(payload, "access_count"),
+		LastReadAt:      qutil.GetPayloadStringValue(payload, "last_accessed_at"),
 	}
 
 	// Compute review reasons dynamically from payload fields
@@ -246,6 +249,25 @@ func pointToReviewEntry(p *qdrant.RetrievedPoint, reasonFilter string, minConfid
 			Type:   "supersession",
 			Detail: fmt.Sprintf("Supersedes fact: %s", supersedes),
 		})
+	}
+
+	// Unread check: fact has never been read or not read in 30+ days
+	lastReadAt := qutil.GetPayloadStringValue(payload, "last_accessed_at")
+	readCount := qutil.GetPayloadIntValue(payload, "access_count")
+	if readCount == 0 && r.CreatedAt != "" {
+		if created, err := time.Parse(time.RFC3339, r.CreatedAt); err == nil && now.Sub(created) > 30*24*time.Hour {
+			reasons = append(reasons, reviewReason{
+				Type:   "unread",
+				Detail: fmt.Sprintf("Never read (created %s ago)", now.Sub(created).Truncate(time.Hour).String()),
+			})
+		}
+	} else if lastReadAt != "" {
+		if lastRead, err := time.Parse(time.RFC3339, lastReadAt); err == nil && now.Sub(lastRead) > 30*24*time.Hour {
+			reasons = append(reasons, reviewReason{
+				Type:   "unread",
+				Detail: fmt.Sprintf("Last read %s ago (%d total reads)", now.Sub(lastRead).Truncate(time.Hour).String(), readCount),
+			})
+		}
 	}
 
 	// Filter by reason type if requested
@@ -643,6 +665,3 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 405, "METHOD_NOT_ALLOWED", "use GET or POST")
 	}
 }
-
-
-

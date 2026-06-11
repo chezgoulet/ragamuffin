@@ -45,7 +45,7 @@
      -H "Content-Type: application/json" \
      -d '{"content": "Hello world", "source": "test.md"}'
 
-   curl -s -X POST http://ragamuffin:8000/v1/recall \
+   curl -s -X POST http://ragamuffin:8000/recall \
      -H "Content-Type: application/json" \
      -d '{"query": "hello"}'
    ```

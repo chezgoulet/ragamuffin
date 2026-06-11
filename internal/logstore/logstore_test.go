@@ -38,10 +38,10 @@ func TestEncodeID_Format(t *testing.T) {
 
 func TestDecodeID_Invalid(t *testing.T) {
 	cases := []string{
-		"",                   // empty
-		"xyz",                // short + non-hex
-		"000000000000000z",   // 16 chars but has non-hex
-		"nothex",             // short
+		"",                 // empty
+		"xyz",              // short + non-hex
+		"000000000000000z", // 16 chars but has non-hex
+		"nothex",           // short
 	}
 	for _, c := range cases {
 		_, err := decodeID(c)
@@ -497,8 +497,6 @@ func TestLogEntry_RoundTrip(t *testing.T) {
 }
 
 // ── Error handling ──────────────────────────────────────────────────────────
-
-
 
 // ctx is a shorthand for context.Background.
 func ctx() context.Context {

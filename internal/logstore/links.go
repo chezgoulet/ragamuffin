@@ -197,15 +197,15 @@ func (s *Store) GetLinkGraph(ctx context.Context, seedPath string, depth, vault 
 
 		for _, source := range current {
 			var q string
-				var a []any
-				if vault != "" {
-					q = "SELECT target_path, link_type FROM link_index WHERE source_path = ? AND vault = ?"
-					a = []any{source, vault}
-				} else {
-					q = "SELECT target_path, link_type FROM link_index WHERE source_path = ?"
-					a = []any{source}
-				}
-				rows, err := s.db.QueryContext(ctx, q, a...)
+			var a []any
+			if vault != "" {
+				q = "SELECT target_path, link_type FROM link_index WHERE source_path = ? AND vault = ?"
+				a = []any{source, vault}
+			} else {
+				q = "SELECT target_path, link_type FROM link_index WHERE source_path = ?"
+				a = []any{source}
+			}
+			rows, err := s.db.QueryContext(ctx, q, a...)
 			if err != nil {
 				return nil, fmt.Errorf("links: graph query at depth %d: %w", hop, err)
 			}

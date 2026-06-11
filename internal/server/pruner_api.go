@@ -52,20 +52,20 @@ func (s *Server) handlePrunerAutoTune(w http.ResponseWriter, r *http.Request) {
 
 	// Per-recommendation response type with applied status
 	type recEntry struct {
-		ReasonType     string  `json:"reason_type"`
-		Current        float64 `json:"current"`
-		Recommended    float64 `json:"recommended"`
-		AcceptRate     float64 `json:"accept_rate"`
-		SampleSize     int     `json:"sample_size"`
-		Rationale      string  `json:"rationale"`
-		Applied        bool    `json:"applied"`
-		Note           string  `json:"note,omitempty"`
+		ReasonType  string  `json:"reason_type"`
+		Current     float64 `json:"current"`
+		Recommended float64 `json:"recommended"`
+		AcceptRate  float64 `json:"accept_rate"`
+		SampleSize  int     `json:"sample_size"`
+		Rationale   string  `json:"rationale"`
+		Applied     bool    `json:"applied"`
+		Note        string  `json:"note,omitempty"`
 	}
 
 	type autoTuneResponse struct {
-		DryRun         bool       `json:"dry_run"`
+		DryRun          bool       `json:"dry_run"`
 		Recommendations []recEntry `json:"recommendations"`
-		SampleCount    int        `json:"sample_count"`
+		SampleCount     int        `json:"sample_count"`
 	}
 
 	// Build per-recommendation entries
@@ -102,9 +102,9 @@ func (s *Server) handlePrunerAutoTune(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := autoTuneResponse{
-		DryRun:         dryRun,
+		DryRun:          dryRun,
 		Recommendations: entries,
-		SampleCount:    len(entries),
+		SampleCount:     len(entries),
 	}
 
 	writeJSON(w, 200, resp)

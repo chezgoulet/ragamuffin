@@ -3,8 +3,8 @@ package pruner
 import (
 	"context"
 
-	pb "github.com/qdrant/go-client/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	pb "github.com/qdrant/go-client/qdrant"
 )
 
 // lowConfidenceFilter builds a Qdrant filter for active facts with confidence

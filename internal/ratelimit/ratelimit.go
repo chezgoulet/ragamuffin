@@ -8,10 +8,10 @@ import (
 
 // Limiter tracks rate limits for multiple keys using token buckets.
 type Limiter struct {
-	mu       sync.Mutex
-	limits   map[string]int // key → requests per minute
-	buckets  map[string]*bucket
-	enabled  bool
+	mu      sync.Mutex
+	limits  map[string]int // key → requests per minute
+	buckets map[string]*bucket
+	enabled bool
 }
 
 type bucket struct {

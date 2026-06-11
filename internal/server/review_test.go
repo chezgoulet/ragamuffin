@@ -16,9 +16,9 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
-	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
-	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	internalQdrant "github.com/chezgoulet/ragamuffin/internal/qdrant"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
 	qdrant "github.com/qdrant/go-client/qdrant"
 )
 
@@ -28,9 +28,9 @@ type reviewMockStore struct {
 	internalQdrant.FactStore
 	mu sync.Mutex
 
-	collection     string
-	points         []*qdrant.RetrievedPoint // stored state
-	upserted       []*qdrant.PointStruct     // what was last upserted
+	collection       string
+	points           []*qdrant.RetrievedPoint // stored state
+	upserted         []*qdrant.PointStruct    // what was last upserted
 	scrollFilteredFn func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error)
 }
 
@@ -138,8 +138,8 @@ func (m *reviewMockStore) Health(_ context.Context) error { return nil }
 // review helpers
 func newReviewServer(store *reviewMockStore) *Server {
 	cfg := &config.Config{
-		VaultPath:        "/test/vault",
-		FactsCollection:  "test_facts",
+		VaultPath:       "/test/vault",
+		FactsCollection: "test_facts",
 	}
 	rl := ratelimit.New(false)
 	idxm := indexer.NewManager()
@@ -150,24 +150,24 @@ func newReviewServer(store *reviewMockStore) *Server {
 
 func makeNeedsReviewPoint(id, key, value string, overrides map[string]any) *qdrant.RetrievedPoint {
 	payload := map[string]*qdrant.Value{
-		"fact_key":          nv(key),
-		"fact_value":        nv(value),
-		"status":            nv("needs_review"),
-		"confidence":        nv(0.3),
-		"conflict_resolved": nv(false),
-		"created_at":        nv(time.Now().UTC().Format(time.RFC3339)),
-		"updated_at":        nv(time.Now().UTC().Format(time.RFC3339)),
-		"source":            nv(""),
-		"source_type":       nv(""),
-		"supersedes":        nv(""),
-		"contradicts":       nvList([]string{}),
-		"ttl_days":          nv(float64(0)),
-		"expires_at":        nv(""),
-		"expires_at_unix":   nv(float64(0)),
+		"fact_key":           nv(key),
+		"fact_value":         nv(value),
+		"status":             nv("needs_review"),
+		"confidence":         nv(0.3),
+		"conflict_resolved":  nv(false),
+		"created_at":         nv(time.Now().UTC().Format(time.RFC3339)),
+		"updated_at":         nv(time.Now().UTC().Format(time.RFC3339)),
+		"source":             nv(""),
+		"source_type":        nv(""),
+		"supersedes":         nv(""),
+		"contradicts":        nvList([]string{}),
+		"ttl_days":           nv(float64(0)),
+		"expires_at":         nv(""),
+		"expires_at_unix":    nv(float64(0)),
 		"confirmation_count": nv(float64(0)),
-		"last_confirmed_at": nv(""),
-		"version":           nv(float64(0)),
-		"superseded_by":     nv(float64(0)),
+		"last_confirmed_at":  nv(""),
+		"version":            nv(float64(0)),
+		"superseded_by":      nv(float64(0)),
 	}
 	for k, v := range overrides {
 		switch val := v.(type) {
@@ -216,8 +216,6 @@ func nvList(items []string) *qdrant.Value {
 		},
 	}
 }
-
-
 
 // ── GET /v1/review ────────────────────────────────────────────────────────────
 

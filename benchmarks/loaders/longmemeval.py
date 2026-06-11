@@ -1,8 +1,12 @@
 """LongMemEval dataset loader.
 
-Loads conversations from the LongMemEval S/ directory structure:
-  S/{session_id}/conversation.json — list of turns
-  S/{session_id}/questions.json   — list of question objects with ground truth
+Loads conversations from the LongMemEval S/ directory structure.
+All sessions share a single vault so the retriever sees the full
+cross-session context for each question.
+
+Expected structure:
+    <dataset_path>/S/<session_id>/conversation.json
+    <dataset_path>/S/<session_id>/questions.json
 """
 
 from __future__ import annotations
@@ -19,11 +23,11 @@ logger = logging.getLogger("ragamuffin.benchmark")
 
 
 class LongMemEvalLoader(DatasetLoader):
-    """Loads the LongMemEval dataset from a local directory.
+    """Loads the LongMemEval dataset from a local S/ directory.
 
-    Expected structure:
-        <dataset_path>/S/<session_id>/conversation.json
-        <dataset_path>/S/<session_id>/questions.json
+    All conversations are ingested into vault="lme-v1" for shared context.
+    Questions are deduplicated by question_id across sessions.
+    Only the first conversation processed returns questions.
     """
 
     def __init__(
@@ -36,18 +40,22 @@ class LongMemEvalLoader(DatasetLoader):
         self.vault_prefix = vault_prefix
         self.config_label = config_label
 
-    # ── DatasetLoader interface ──────────────────────────────────────────────
-
     def name(self) -> str:
         return "longmemeval"
 
     def load(self) -> List[Conversation]:
-        """Discover all sessions and load their conversations."""
+        """Discover all sessions and load their conversations into one vault."""
+        self._loaded_questions: Dict[str, Question] = {}
         sessions = self._discover_sessions()
+        if not sessions:
+            return []
+
+        # Shared vault across all configs — config differences are in ask_mode
+        shared_vault = f"{self.vault_prefix}-v1"
         conversations = []
 
         for session_id in sessions:
-            conv_path = os.path.join(self.dataset_path, session_id, "conversation.json")
+            conv_path = os.path.join(self.dataset_path, "S", session_id, "conversation.json")
             if not os.path.exists(conv_path):
                 logger.warning("missing conversation.json for session %s", session_id)
                 continue
@@ -58,18 +66,28 @@ class LongMemEvalLoader(DatasetLoader):
                 logger.warning("skipping session %s: %s", session_id, e)
                 continue
 
-            vault = self._vault_name(session_id)
             messages = self._normalize_messages(data)
             conversations.append(
                 Conversation(
                     id=session_id,
                     messages=messages,
-                    vault=vault,
+                    vault=shared_vault,
                     source=f"longmemeval/{session_id}",
                 )
             )
 
-        logger.info("loaded %d conversations from LongMemEval", len(conversations))
+            # Collect questions deduped by question_id
+            qs = self._load_session_questions(session_id)
+            for q in qs:
+                if q.id not in self._loaded_questions:
+                    self._loaded_questions[q.id] = q
+
+        logger.info(
+            "loaded %d conversations, %d unique questions (vault=%s)",
+            len(conversations),
+            len(self._loaded_questions),
+            shared_vault,
+        )
         return conversations
 
     def ingest_strategy(
@@ -85,36 +103,17 @@ class LongMemEvalLoader(DatasetLoader):
         )
 
     def questions(self, conversation: Conversation) -> List[Question]:
-        """Load questions for a single session."""
-        session_id = conversation.id
-        q_path = os.path.join(self.dataset_path, session_id, "questions.json")
-        if not os.path.exists(q_path):
+        """Return all unique questions for the first conversation, empty for rest."""
+        if not hasattr(self, "_returned_questions"):
+            self._returned_questions = False
+        if self._returned_questions:
             return []
-
-        with open(q_path) as f:
-            data = json.load(f)
-
-        # Handle both list-of-objects and single-object formats
-        raw_questions = data if isinstance(data, list) else [data]
-
-        return [
-            Question(
-                id=f"lme-{session_id}-{i}",
-                benchmark="longmemeval",
-                config_label=self.config_label,
-                question_type=self._infer_type(q),
-                text=q.get("question", q.get("text", "")),
-                ground_truth=q.get("answer", q.get("ground_truth", "")),
-                conversation_id=session_id,
-            )
-            for i, q in enumerate(raw_questions)
-            if q.get("question", q.get("text", ""))
-        ]
+        self._returned_questions = True
+        return list(self._loaded_questions.values())
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _discover_sessions(self) -> List[str]:
-        """Return sorted list of session IDs from the S/ directory."""
         sessions_dir = os.path.join(self.dataset_path, "S")
         if not os.path.isdir(sessions_dir):
             logger.error("LongMemEval S/ directory not found at %s", sessions_dir)
@@ -122,34 +121,54 @@ class LongMemEvalLoader(DatasetLoader):
         entries = sorted(os.listdir(sessions_dir))
         return [e for e in entries if os.path.isdir(os.path.join(sessions_dir, e))]
 
-    def _vault_name(self, session_id: str) -> str:
-        return f"{self.vault_prefix}-{session_id}"
+    def _load_session_questions(self, session_id: str) -> List[Question]:
+        q_path = os.path.join(self.dataset_path, "S", session_id, "questions.json")
+        if not os.path.exists(q_path):
+            return []
+        with open(q_path) as f:
+            raw = json.load(f)
+        raw_questions = raw if isinstance(raw, list) else [raw]
+        out = []
+        seen_ids = set()
+        for q in raw_questions:
+            qid = q.get("question_id", "")
+            if not qid or qid in seen_ids:
+                continue
+            seen_ids.add(qid)
+            text = q.get("question", q.get("text", ""))
+            if not text:
+                continue
+            out.append(
+                Question(
+                    id=f"lme-{qid}",
+                    benchmark="longmemeval",
+                    config_label=self.config_label,
+                    question_type=self._infer_type(q),
+                    text=text,
+                    ground_truth=str(q.get("answer", q.get("ground_truth", ""))),
+                    conversation_id=session_id,
+                )
+            )
+        return out
 
-    def _normalize_messages(self, data) -> List[Dict]:
-        """Normalize conversation data into a list of message dicts.
-
-        LongMemEval conversations come in two formats:
-        - flat list of {"role": ..., "content": ...}
-        - nested {"messages": [...]}
-        """
+    @staticmethod
+    def _normalize_messages(data) -> List[Dict]:
         if isinstance(data, list):
             return data
         if isinstance(data, dict):
             for key in ("messages", "conversation", "turns"):
                 if key in data and isinstance(data[key], list):
                     return data[key]
-            # Single-turn format
             if "role" in data:
                 return [data]
-        logger.warning("unrecognized conversation format for %s", data.get("id", "unknown"))
+        logger.warning("unrecognized conversation format")
         return []
 
-    def _infer_type(self, q: Dict) -> str:
-        """Infer question type from the question object."""
+    @staticmethod
+    def _infer_type(q: Dict) -> str:
         known = q.get("type", q.get("category", ""))
         if known:
-            return known.lower().replace(" ", "-")
-        # Fall back to heuristic from question text
+            return str(known).lower().replace(" ", "-")
         text = q.get("question", q.get("text", "")).lower()
         if any(w in text for w in ["before", "after", "how many", "how long", "when"]):
             return "temporal-reasoning"

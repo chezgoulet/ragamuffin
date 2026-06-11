@@ -1,22 +1,29 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 )
 
 func TestDetectProvider(t *testing.T) {
 	tests := []struct {
-		name       string
-		header     string
-		value      string
-		wantProv   string
-		wantEvent  string
+		name      string
+		header    string
+		value     string
+		wantProv  string
+		wantEvent string
 	}{
 		{"github push", "X-GitHub-Event", "push", "github", "push"},
 		{"github ping", "X-GitHub-Event", "ping", "github", "ping"},
@@ -325,5 +332,210 @@ func TestURLPathEscape(t *testing.T) {
 	}
 	if !strings.Contains(event.Files[0].RawURL, "path%20with%20spaces.md") {
 		t.Errorf("rawURL should URL-encode spaces, got %q", event.Files[0].RawURL)
+	}
+}
+
+// ── Security regression: Finding 2 — webhook signature verification (#694) ──
+
+func TestVerifyWebhookSignature_GitHubHMAC(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main","after":"abc123"}`)
+	secret := "my-secret"
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	validSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-Hub-Signature-256", validSig)
+	r.Header.Set("X-GitHub-Event", "push")
+
+	provider, _ := detectProvider(r)
+	if !verifyWebhookSignature(provider, secret, body, r) {
+		t.Fatal("expected valid signature to pass verification")
+	}
+}
+
+func TestVerifyWebhookSignature_WrongSecret(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main"}`)
+	mac := hmac.New(sha256.New, []byte("real-secret"))
+	mac.Write(body)
+	wrongSig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-Hub-Signature-256", wrongSig)
+	r.Header.Set("X-GitHub-Event", "push")
+
+	provider, _ := detectProvider(r)
+	if verifyWebhookSignature(provider, "different-secret", body, r) {
+		t.Fatal("expected signature with wrong secret to fail verification")
+	}
+}
+
+func TestVerifyWebhookSignature_MissingSignature(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main"}`)
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-GitHub-Event", "push")
+
+	provider, _ := detectProvider(r)
+	if verifyWebhookSignature(provider, "secret", body, r) {
+		t.Fatal("expected missing signature header to fail verification")
+	}
+}
+
+func TestVerifyWebhookSignature_GitLabToken(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main"}`)
+	secret := "shared-token"
+
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-Gitlab-Event", "Push Hook")
+	r.Header.Set("X-Gitlab-Token", secret)
+
+	provider, _ := detectProvider(r)
+	if !verifyWebhookSignature(provider, secret, body, r) {
+		t.Fatal("expected valid GitLab token to pass verification")
+	}
+}
+
+func TestVerifyWebhookSignature_EmptySecretRejected(t *testing.T) {
+	body := []byte(`{}`)
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-GitHub-Event", "push")
+
+	provider, _ := detectProvider(r)
+	if verifyWebhookSignature(provider, "", body, r) {
+		t.Fatal("expected empty secret to fail verification")
+	}
+}
+
+// ── Security regression: Finding 2 — SSRF egress guard (#694) ────────────────
+
+func TestIsDisallowedIP_Loopback(t *testing.T) {
+	if !isDisallowedIP(net.ParseIP("127.0.0.1")) {
+		t.Error("loopback should be disallowed")
+	}
+	if !isDisallowedIP(net.ParseIP("::1")) {
+		t.Error("IPv6 loopback should be disallowed")
+	}
+}
+
+func TestIsDisallowedIP_Private(t *testing.T) {
+	if !isDisallowedIP(net.ParseIP("10.0.0.1")) {
+		t.Error("10.0.0.0/8 should be disallowed")
+	}
+	if !isDisallowedIP(net.ParseIP("172.16.0.1")) {
+		t.Error("172.16.0.0/12 should be disallowed")
+	}
+	if !isDisallowedIP(net.ParseIP("192.168.1.1")) {
+		t.Error("192.168.0.0/16 should be disallowed")
+	}
+}
+
+func TestIsDisallowedIP_Public(t *testing.T) {
+	if isDisallowedIP(net.ParseIP("8.8.8.8")) {
+		t.Error("public IP should not be disallowed")
+	}
+}
+
+func TestIsDisallowedIP_LinkLocal(t *testing.T) {
+	if !isDisallowedIP(net.ParseIP("169.254.1.1")) {
+		t.Error("link-local should be disallowed")
+	}
+	if !isDisallowedIP(net.ParseIP("fe80::1")) {
+		t.Error("IPv6 link-local should be disallowed")
+	}
+}
+
+func TestIsDisallowedIP_Unspecified(t *testing.T) {
+	if !isDisallowedIP(net.ParseIP("0.0.0.0")) {
+		t.Error("unspecified IP should be disallowed")
+	}
+}
+
+func TestWebhookHTTPClient_RejectsRedirects(t *testing.T) {
+	redirectCheck := webhookHTTPClient.CheckRedirect
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/redirect", nil)
+	err := redirectCheck(req, []*http.Request{req})
+	if err == nil {
+		t.Error("expected redirects to be rejected")
+	}
+}
+
+func TestDownloadFile_InvalidURLRejected(t *testing.T) {
+	_, err := downloadFile(context.Background(), "ftp://malicious.com/file", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "invalid or disallowed") {
+		t.Errorf("expected invalid URL error, got %v", err)
+	}
+}
+
+func TestDownloadFile_RelativePathRejected(t *testing.T) {
+	_, err := downloadFile(context.Background(), "/etc/passwd", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "invalid or disallowed") {
+		t.Errorf("expected invalid URL error, got %v", err)
+	}
+}
+
+func TestWebhookHTTPClient_NoDefaultClient(t *testing.T) {
+	if webhookHTTPClient.Transport == nil {
+		t.Error("webhookHTTPClient should have a custom Transport")
+	}
+}
+
+func TestWebhook_HandleRequiresSecret(t *testing.T) {
+	srv := &Server{
+		cfg:    minimalConfig(),
+		logger: testMCPLogger(t),
+	}
+	body := bytes.NewReader([]byte(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/git", body)
+	req.Header.Set("X-GitHub-Event", "push")
+	w := httptest.NewRecorder()
+	srv.handleWebhookGit(w, req)
+	if w.Code != 403 {
+		t.Errorf("expected 403 when no webhook secret configured, got %d", w.Code)
+	}
+}
+
+func TestWebhook_HandleRejectsBadSignature(t *testing.T) {
+	srv := &Server{
+		cfg: &config.Config{
+			WebhookSecret: "configured-secret",
+		},
+		logger: testMCPLogger(t),
+	}
+	body := bytes.NewReader([]byte(`{}`))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/git", body)
+	req.Header.Set("X-GitHub-Event", "push")
+	req.Header.Set("X-Hub-Signature-256", "sha256=invalid")
+	w := httptest.NewRecorder()
+	srv.handleWebhookGit(w, req)
+	if w.Code != 401 {
+		t.Errorf("expected 401 for bad signature, got %d", w.Code)
+	}
+}
+
+func TestWebhook_HandleValidSignaturePassesAuth(t *testing.T) {
+	body := []byte(`{"ref":"refs/heads/main","after":"abc123","before":"def456","commits":[],"repository":{"full_name":"test/repo","clone_url":"https://github.com/test/repo.git"}}`)
+	secret := "my-secret"
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(body)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	srv := &Server{
+		cfg: &config.Config{
+			WebhookSecret:   secret,
+			WebhookVaultMap: map[string]string{"https://github.com/test/repo": "test-vault"},
+		},
+		logger: testMCPLogger(t),
+	}
+
+	r := httptest.NewRequest(http.MethodPost, "/webhook/git", bytes.NewReader(body))
+	r.Header.Set("X-GitHub-Event", "push")
+	r.Header.Set("X-Hub-Signature-256", sig)
+
+	w := httptest.NewRecorder()
+	srv.handleWebhookGit(w, r)
+	// Should NOT get auth error (should get downstream error about missing vault/service)
+	if w.Code == 401 || w.Code == 403 {
+		t.Errorf("got auth error %d when signature was valid", w.Code)
 	}
 }
