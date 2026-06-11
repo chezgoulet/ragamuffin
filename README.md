@@ -1180,6 +1180,10 @@ curl -s http://localhost:8000/v1/review/stats
 }
 ```
 
+> 📖 See [docs/fact-lifecycle.md](docs/fact-lifecycle.md) for the complete fact lifecycle
+> guide — pruner config, auto-tune, worked examples (contradiction resolution,
+> daily archival check, threshold tuning), and pruner env var reference.
+
 #### `POST /v1/logs` — Append a log entry
 
 ```bash
