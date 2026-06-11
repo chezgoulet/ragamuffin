@@ -7,9 +7,19 @@ Config via environment variables (profile-scoped via each profile's .env):
   RAGAMUFFIN_ENDPOINT    — Ragamuffin server URL (default: http://ragamuffin:8000)
   RAGAMUFFIN_AUTH_TOKEN  — API key / JWT for authenticated deployments (optional)
   RAGAMUFFIN_VAULT_PREFIX— Prefix for agent vault names (default: agent::)
+  RAGAMUFFIN_CONFIG      — Path to JSON config file (optional, overrides HERMES_HOME/ragamuffin.json)
+
+Config file ($HERMES_HOME/ragamuffin.json) — matches honcho.json structure:
+  {
+    "endpoint": "http://ragamuffin:8000",
+    "auth_token": "...",
+    "vault_prefix": "agent::"
+  }
+
+Environment variables override config file values.
 
 Lifecycle:
-  initialize()     → POST /v1/vaults (create/confirm vault)
+  initialize()     → POST /v1/vaults (create/confirm vault), load config
   prefetch(query)  → returns cached result from background thread
   queue_prefetch() → background thread → POST /v1/recall
   sync_turn()      → background thread → POST /v1/ingest
@@ -17,7 +27,14 @@ Lifecycle:
   handle_tool_call → POST /v1/recall against specified vault
 
 Tool schemas:
-  ragamuffin_recall — search any agent's vault (cross-agent recall)
+  ragamuffin_recall     — search any agent's vault (cross-agent recall)
+  ragamuffin_search    — alias for ragamuffin_recall
+  ragamuffin_ask       — synthesis with citations (supports reasoning_effort)
+  ragamuffin_profile   — get/set agent peer card
+  ragamuffin_context   — composite context (card + summary + recall)
+  ragamuffin_learn     — store a conclusion as a fact
+  ragamuffin_fact_*    — fact CRUD and graph operations
+  ragamuffin_review_*  — review queue management
 """
 
 from __future__ import annotations
@@ -41,6 +58,7 @@ _DEFAULT_ENDPOINT = "http://ragamuffin:8000"
 _VAULT_PREFIX = "agent::"
 _REQUEST_TIMEOUT = 15.0  # seconds
 _PREFETCH_TIMEOUT = 3.0  # seconds to wait for background thread
+_PEER_CARD_PREFIX = "peer/{agent}/card/"  # peer card fact key prefix
 
 # ---------------------------------------------------------------------------
 # Tool schema
@@ -64,6 +82,40 @@ RECALL_SCHEMA = {
                     "Use 'agent::<name>' format. "
                     "Common values: agent::dev, agent::robot, agent::scout, "
                     "agent::press, agent::pulse. "
+                    "Omit to search your own vault."
+                ),
+            },
+            "query": {
+                "type": "string",
+                "description": "Natural language search query.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum results to return (1-20, default 5).",
+            },
+            "min_score": {
+                "type": "number",
+                "description": "Minimum relevance threshold 0.0-1.0 (default 0.0).",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+SEARCH_SCHEMA = {
+    "name": "ragamuffin_search",
+    "description": (
+        "Alias for ragamuffin_recall. Semantic search across any agent's "
+        "Ragamuffin vault. Returns ranked text excerpts with relevance scores."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "vault": {
+                "type": "string",
+                "description": (
+                    "Target agent vault to search. "
+                    "Use 'agent::<name>' format. "
                     "Omit to search your own vault."
                 ),
             },
@@ -108,8 +160,83 @@ ASK_SCHEMA = {
                 "type": "integer",
                 "description": "Number of relevant chunks to retrieve (1-20, default 5).",
             },
+            "reasoning_effort": {
+                "type": "string",
+                "description": "Reasoning effort / depth for synthesis (default: 'auto').",
+                "enum": ["auto", "low", "medium", "high"],
+            },
         },
         "required": ["query"],
+    },
+}
+
+PROFILE_SCHEMA = {
+    "name": "ragamuffin_profile",
+    "description": (
+        "Get or update the agent's peer profile card. "
+        "Without a value, returns the current card. "
+        "With a value, updates the card with a description of what this "
+        "agent knows, does, and how to interact with it."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "value": {
+                "type": "string",
+                "description": "New profile card content (omit to read current card).",
+            },
+        },
+    },
+}
+
+CONTEXT_SCHEMA = {
+    "name": "ragamuffin_context",
+    "description": (
+        "Get a composite context bundle for this agent: the peer card, "
+        "session summary, and relevant recalled information. "
+        "Use this to quickly orient yourself to an agent's state."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Optional query to focus recall within the context bundle.",
+            },
+            "top_k": {
+                "type": "integer",
+                "description": "Number of recall results to include (1-10, default 3).",
+            },
+        },
+    },
+}
+
+LEARN_SCHEMA = {
+    "name": "ragamuffin_learn",
+    "description": (
+        "Store a conclusion or learned fact from the current conversation. "
+        "Use this when you discover something the agent should remember "
+        "permanently - a user preference, a decision, an observation. "
+        "The statement is saved as a persisted fact."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "statement": {
+                "type": "string",
+                "description": "The conclusion or fact to remember.",
+            },
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional tags for categorization.",
+            },
+            "confidence": {
+                "type": "number",
+                "description": "Confidence 0.0-1.0 (default 0.7).",
+            },
+        },
+        "required": ["statement"],
     },
 }
 
@@ -137,7 +264,7 @@ FACT_PUT_SCHEMA = {
     "name": "ragamuffin_fact_put",
     "description": (
         "Write or update a fact in the agent's own vault. "
-        "Use to record persistent knowledge — user preferences, "
+        "Use to record persistent knowledge - user preferences, "
         "decisions made, learned patterns, or any structured information "
         "the agent should remember across sessions."
     ),
@@ -177,7 +304,7 @@ FACT_PUT_SCHEMA = {
 FACT_GRAPH_SCHEMA = {
     "name": "ragamuffin_fact_graph",
     "description": (
-        "Get the lineage graph of a fact — what it supersedes, "
+        "Get the lineage graph of a fact - what it supersedes, "
         "contradicts, or refines. Use to understand how a fact has "
         "evolved over time or to resolve conflicting information."
     ),
@@ -244,7 +371,11 @@ REVIEW_RESOLVE_SCHEMA = {
 
 ALL_TOOL_SCHEMAS = [
     RECALL_SCHEMA,
+    SEARCH_SCHEMA,
     ASK_SCHEMA,
+    PROFILE_SCHEMA,
+    CONTEXT_SCHEMA,
+    LEARN_SCHEMA,
     FACT_GET_SCHEMA,
     FACT_PUT_SCHEMA,
     FACT_GRAPH_SCHEMA,
@@ -293,6 +424,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._agent_vault = ""   # resolved vault name, e.g. "agent::dev"
         self._agent_identity = ""  # e.g. "dev"
         self._requests = None
+        self._config_path = ""
 
         # Liveness tracking
         self._available = False
@@ -309,6 +441,9 @@ class RagamuffinMemoryProvider(MemoryProvider):
         # Turn tracking for session end
         self._turn_counter = 0
         self._session_id = ""
+
+        # Context bundle cache
+        self._context_bundle: Dict[str, Any] = {}
 
     # -- Identity -----------------------------------------------------------
 
@@ -353,13 +488,55 @@ class RagamuffinMemoryProvider(MemoryProvider):
             },
         ]
 
+    # -- Config file loading -------------------------------------------------
+
+    def _load_config_file(self) -> None:
+        """Load config from $HERMES_HOME/ragamuffin.json if present.
+
+        File format (matches honcho.json structure):
+        {
+          "endpoint": "http://ragamuffin:8000",
+          "auth_token": "...",
+          "vault_prefix": "agent::"
+        }
+
+        Environment variables take precedence over file values.
+        """
+        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        if not config_path:
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                config_path = os.path.join(hermes_home, "ragamuffin.json")
+
+        if not config_path or not os.path.exists(config_path):
+            return
+
+        self._config_path = config_path
+        try:
+            with open(config_path, "r") as f:
+                cfg = json.load(f)
+
+            # Apply file values only when env var is not set
+            if "endpoint" in cfg and "RAGAMUFFIN_ENDPOINT" not in os.environ:
+                self._endpoint = cfg["endpoint"]
+            if "auth_token" in cfg and "RAGAMUFFIN_AUTH_TOKEN" not in os.environ:
+                self._auth_token = cfg["auth_token"]
+            if "vault_prefix" in cfg and "RAGAMUFFIN_VAULT_PREFIX" not in os.environ:
+                self._vault_prefix = cfg["vault_prefix"]
+
+            logger.debug("Loaded Ragamuffin config from %s", config_path)
+        except Exception as e:
+            logger.warning(
+                "Failed to load Ragamuffin config from %s: %s", config_path, e
+            )
+
     # -- Core lifecycle -----------------------------------------------------
 
     def initialize(self, session_id: str, **kwargs) -> None:
         """Create/confirm the agent's vault and warm up.
 
-        Reads config from env vars. Derives vault name from
-        agent_identity (kwargs) or session_id.
+        Reads config from env vars (overrides) or $HERMES_HOME/ragamuffin.json.
+        Derives vault name from agent_identity (kwargs) or session_id.
         """
         self._endpoint = os.environ.get("RAGAMUFFIN_ENDPOINT", _DEFAULT_ENDPOINT)
         self._auth_token = os.environ.get("RAGAMUFFIN_AUTH_TOKEN", "")
@@ -372,9 +549,14 @@ class RagamuffinMemoryProvider(MemoryProvider):
             self._requests = _get_requests()
 
         if self._requests is None:
-            logger.warning("requests library not installed — Ragamuffin plugin disabled")
+            logger.warning(
+                "requests library not installed - Ragamuffin plugin disabled"
+            )
             self._available = False
             return
+
+        # Try loading from $HERMES_HOME/ragamuffin.json (env vars override)
+        self._load_config_file()
 
         # Resolve agent identity for vault naming
         agent_identity = kwargs.get("agent_identity", "")
@@ -384,8 +566,10 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._agent_identity = agent_identity
         self._agent_vault = f"{self._vault_prefix}{agent_identity}"
         logger.debug(
-            "Ragamuffin initialized for agent '%s' → vault '%s' at %s",
-            agent_identity, self._agent_vault, self._endpoint,
+            "Ragamuffin initialized for agent '%s' -> vault '%s' at %s",
+            agent_identity,
+            self._agent_vault,
+            self._endpoint,
         )
 
         # Provision vault
@@ -421,7 +605,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                     )
                     return True
                 else:
-                    # Vault not found — try creating it dynamically
+                    # Vault not found - try creating it dynamically
                     logger.info(
                         "Ragamuffin vault '%s' not found, attempting creation",
                         self._agent_vault,
@@ -430,7 +614,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
             else:
                 logger.warning(
                     "Ragamuffin vault check failed: %s %s",
-                    resp.status_code, resp.text,
+                    resp.status_code,
+                    resp.text,
                 )
                 return False
         except Exception as e:
@@ -458,7 +643,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 return True
             logger.warning(
                 "Ragamuffin vault creation failed: %s %s",
-                resp.status_code, resp.text,
+                resp.status_code,
+                resp.text,
             )
             return False
         except Exception as e:
@@ -472,7 +658,10 @@ class RagamuffinMemoryProvider(MemoryProvider):
         return (
             "# Ragamuffin Agent Memory\n"
             "Active. All turns are automatically persisted.\n"
-            "Use `ragamuffin_recall` to search any agent's vault.\n"
+            "Use `ragamuffin_recall` or `ragamuffin_search` to search any agent's vault.\n"
+            "Use `ragamuffin_profile` to view or update this agent's peer card.\n"
+            "Use `ragamuffin_context` for a composite context bundle.\n"
+            "Use `ragamuffin_learn` to store a conclusion as a persistent fact.\n"
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -501,7 +690,9 @@ class RagamuffinMemoryProvider(MemoryProvider):
             try:
                 if self._requests is None:
                     return
-                url = _build_endpoint(self._endpoint, f"/vault/{self._agent_vault}/recall")
+                url = _build_endpoint(
+                    self._endpoint, f"/vault/{self._agent_vault}/recall"
+                )
                 headers = _build_headers(self._auth_token)
                 payload = {
                     "query": query,
@@ -531,8 +722,13 @@ class RagamuffinMemoryProvider(MemoryProvider):
         )
         self._prefetch_thread.start()
 
-    def sync_turn(self, user_content: str, assistant_content: str,
-                  *, session_id: str = "") -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+    ) -> None:
         """Persist a completed turn asynchronously."""
         if not self._available or not self._vault_ready:
             return
@@ -553,7 +749,10 @@ class RagamuffinMemoryProvider(MemoryProvider):
                     "tags": ["session", self._agent_identity],
                 }
                 self._requests.post(
-                    url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=_REQUEST_TIMEOUT,
                 )
             except Exception as e:
                 logger.debug("Ragamuffin sync_turn error: %s", e)
@@ -582,8 +781,19 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         # Extract key topics mentioned across the conversation
         topics = []
-        topic_keywords = ["decision", "question", "task", "issue", "problem",
-                         "bug", "feature", "design", "PR", "merge", "deploy"]
+        topic_keywords = [
+            "decision",
+            "question",
+            "task",
+            "issue",
+            "problem",
+            "bug",
+            "feature",
+            "design",
+            "PR",
+            "merge",
+            "deploy",
+        ]
         seen_topics = set()
         for m in messages:
             if isinstance(m, dict):
@@ -616,7 +826,10 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "tags": [self._session_id or "session", self._agent_identity],
             }
             self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
             )
             logger.debug("Ragamuffin session summary indexed: %s", doc_id)
         except Exception as e:
@@ -626,13 +839,78 @@ class RagamuffinMemoryProvider(MemoryProvider):
         """Return tool schemas this provider exposes."""
         return ALL_TOOL_SCHEMAS
 
-    def handle_tool_call(self, tool_name: str, args: Dict[str, Any],
-                         **kwargs) -> str:
+    # -- Peer cards --------------------------------------------------------
+
+    def _get_peer_card_key(self) -> str:
+        """Return the fact key for this agent's peer card."""
+        prefix = _PEER_CARD_PREFIX.format(agent=self._agent_identity)
+        return f"{prefix}profile"
+
+    def _get_peer_card(self) -> str:
+        """Retrieve this agent's peer card from facts."""
+        if not self._requests:
+            return ""
+        key = self._get_peer_card_key()
+        try:
+            url = _build_endpoint(self._endpoint, f"/v1/facts/{key}")
+            headers = _build_headers(self._auth_token)
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return data.get("value", "") or data.get("fact", {}).get(
+                    "value", ""
+                )
+            return ""
+        except Exception as e:
+            logger.debug("Peer card read error: %s", e)
+            return ""
+
+    def _set_peer_card(self, value: str) -> bool:
+        """Set this agent's peer card via facts."""
+        if not self._requests:
+            return False
+        key = self._get_peer_card_key()
+        try:
+            url = _build_endpoint(self._endpoint, "/v1/facts")
+            headers = _build_headers(self._auth_token)
+            payload = {
+                "key": key,
+                "value": value,
+                "vault": self._agent_vault,
+                "tags": ["peer_card", self._agent_identity],
+                "source": "ragamuffin_profile",
+            }
+            resp = self._requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            return resp.status_code in (200, 201)
+        except Exception as e:
+            logger.debug("Peer card write error: %s", e)
+            return False
+
+    # -- Tool dispatch -----------------------------------------------------
+
+    def handle_tool_call(
+        self, tool_name: str, args: Dict[str, Any], **kwargs
+    ) -> str:
         """Handle a tool call for one of this provider's tools."""
         if tool_name == "ragamuffin_recall":
             return self._handle_recall(args)
+        elif tool_name == "ragamuffin_search":
+            return self._handle_recall(args)  # alias
         elif tool_name == "ragamuffin_ask":
             return self._handle_ask(args)
+        elif tool_name == "ragamuffin_profile":
+            return self._handle_profile(args)
+        elif tool_name == "ragamuffin_context":
+            return self._handle_context(args)
+        elif tool_name == "ragamuffin_learn":
+            return self._handle_learn(args)
         elif tool_name == "ragamuffin_fact_get":
             return self._handle_fact_get(args)
         elif tool_name == "ragamuffin_fact_put":
@@ -646,6 +924,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
         raise NotImplementedError(
             f"Ragamuffin provider does not handle tool '{tool_name}'"
         )
+
+    # -- Tool handlers -----------------------------------------------------
 
     def _handle_recall(self, args: Dict[str, Any]) -> str:
         """POST /vault/{name}/recall against the specified vault."""
@@ -670,39 +950,49 @@ class RagamuffinMemoryProvider(MemoryProvider):
             }
 
             resp = self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
             )
             if resp.status_code == 200:
                 data = resp.json()
                 results = data.get("results", [])
                 if not results:
-                    return json.dumps({"matches": [], "note": "No relevant results found."})
+                    return json.dumps(
+                        {"matches": [], "note": "No relevant results found."}
+                    )
 
                 formatted = []
                 for r in results:
-                    formatted.append({
-                        "text": r.get("text", ""),
-                        "score": r.get("score", 0.0),
-                        "metadata": r.get("metadata", {}),
-                    })
+                    formatted.append(
+                        {
+                            "text": r.get("text", ""),
+                            "score": r.get("score", 0.0),
+                            "metadata": r.get("metadata", {}),
+                        }
+                    )
                 return json.dumps({"matches": formatted}, indent=2)
             else:
-                return json.dumps({
-                    "error": f"Recall failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Recall failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin recall error: %s", e)
             return json.dumps({"error": f"Recall failed: {e}"})
 
     def _handle_ask(self, args: Dict[str, Any]) -> str:
-        """POST /ask — synthesis with citations."""
+        """POST /ask - synthesis with citations."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
         query = args.get("query", "")
         mode = args.get("mode", "standard")
         top_k = args.get("top_k", 5)
+        reasoning_effort = args.get("reasoning_effort", "auto")
 
         if not query:
             return json.dumps({"error": "Query is required"})
@@ -716,28 +1006,212 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "top_k": min(max(top_k, 1), 20),
                 "vault": self._agent_vault,
             }
+            if reasoning_effort != "auto":
+                payload["reasoning_effort"] = reasoning_effort
 
             resp = self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
             )
             if resp.status_code == 200:
                 return json.dumps(resp.json(), indent=2)
             elif resp.status_code == 503:
-                return json.dumps({
-                    "error": "ASK_UNAVAILABLE",
-                    "detail": "LLM not configured",
-                })
+                return json.dumps(
+                    {
+                        "error": "ASK_UNAVAILABLE",
+                        "detail": "LLM not configured",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": f"Ask failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Ask failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin ask error: %s", e)
             return json.dumps({"error": f"Ask failed: {e}"})
 
+    def _handle_profile(self, args: Dict[str, Any]) -> str:
+        """Get or update the agent's peer card."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        value = args.get("value", "")
+
+        if value:
+            # Write mode
+            success = self._set_peer_card(value)
+            if success:
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "agent": self._agent_identity,
+                        "card": value,
+                    },
+                    indent=2,
+                )
+            return json.dumps(
+                {
+                    "error": "Failed to update peer card",
+                    "agent": self._agent_identity,
+                }
+            )
+        else:
+            # Read mode
+            card = self._get_peer_card()
+            if card:
+                return json.dumps(
+                    {
+                        "agent": self._agent_identity,
+                        "card": card,
+                    },
+                    indent=2,
+                )
+            return json.dumps(
+                {
+                    "agent": self._agent_identity,
+                    "card": None,
+                    "note": "No peer card set. Use ragamuffin_profile with a 'value' to create one.",
+                },
+                indent=2,
+            )
+
+    def _handle_context(self, args: Dict[str, Any]) -> str:
+        """Get composite context bundle (card + summary + recall)."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        query = args.get("query", "")
+        top_k = args.get("top_k", 3)
+
+        bundle = {
+            "agent": self._agent_identity,
+            "vault": self._agent_vault,
+        }
+
+        # Get peer card
+        card = self._get_peer_card()
+        if card:
+            bundle["card"] = card
+
+        # Get session summary (from context_bundle cache or facts prefix search)
+        try:
+            url = _build_endpoint(
+                self._endpoint,
+                f"/v1/facts?prefix=session/{self._session_id}",
+            )
+            headers = _build_headers(self._auth_token)
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                facts = data.get("facts", []) or data.get("results", [])
+                if facts:
+                    bundle["session_summary"] = facts[-1].get("value", "")
+        except Exception as e:
+            logger.debug("Context summary fetch error: %s", e)
+
+        # Get recall results if query provided
+        if query:
+            try:
+                url = _build_endpoint(
+                    self._endpoint, f"/vault/{self._agent_vault}/recall"
+                )
+                headers = _build_headers(self._auth_token)
+                payload = {
+                    "query": query,
+                    "top_k": min(max(top_k, 1), 10),
+                    "score_threshold": 0.0,
+                }
+                resp = self._requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    results = data.get("results", [])
+                    if results:
+                        bundle["recall"] = [
+                            {
+                                "text": r.get("text", ""),
+                                "score": r.get("score", 0.0),
+                            }
+                            for r in results
+                        ]
+            except Exception as e:
+                logger.debug("Context recall fetch error: %s", e)
+
+        return json.dumps(bundle, indent=2)
+
+    def _handle_learn(self, args: Dict[str, Any]) -> str:
+        """Store a conclusion as a persistent fact."""
+        if not self._requests:
+            return json.dumps({"error": "Ragamuffin client not available"})
+
+        statement = args.get("statement", "")
+        if not statement:
+            return json.dumps({"error": "Statement is required"})
+
+        # Generate a key from the statement
+        import hashlib
+
+        key_hash = hashlib.sha256(statement.encode()).hexdigest()[:12]
+        key = f"conclusion/{self._session_id or 'session'}/{key_hash}"
+
+        try:
+            url = _build_endpoint(self._endpoint, "/v1/facts")
+            headers = _build_headers(self._auth_token)
+            payload: Dict[str, Any] = {
+                "key": key,
+                "value": statement,
+                "vault": self._agent_vault,
+                "tags": ["conclusion", self._agent_identity],
+                "source": "ragamuffin_learn",
+            }
+            if "confidence" in args:
+                payload["confidence"] = min(
+                    max(float(args["confidence"]), 0.0), 1.0
+                )
+            if "tags" in args:
+                existing_tags = payload.get("tags", [])
+                payload["tags"] = existing_tags + list(args["tags"])
+
+            resp = self._requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            if resp.status_code in (200, 201):
+                result = resp.json()
+                return json.dumps(
+                    {
+                        "status": "ok",
+                        "key": key,
+                        "statement": statement,
+                    },
+                    indent=2,
+                )
+            else:
+                return json.dumps(
+                    {
+                        "error": f"Learn failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
+        except Exception as e:
+            logger.debug("Ragamuffin learn error: %s", e)
+            return json.dumps({"error": f"Learn failed: {e}"})
+
     def _handle_fact_get(self, args: Dict[str, Any]) -> str:
-        """GET /v1/facts/{key} — retrieve a fact by key."""
+        """GET /v1/facts/{key} - retrieve a fact by key."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
@@ -755,39 +1229,47 @@ class RagamuffinMemoryProvider(MemoryProvider):
             if resp.status_code == 200:
                 return json.dumps(resp.json(), indent=2)
             elif resp.status_code == 404:
-                return json.dumps({
-                    "error": "NOT_FOUND",
-                    "detail": f"Fact '{key}' not found",
-                })
+                return json.dumps(
+                    {
+                        "error": "NOT_FOUND",
+                        "detail": f"Fact '{key}' not found",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": f"Fact get failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Fact get failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin fact_get error: %s", e)
             return json.dumps({"error": f"Fact get failed: {e}"})
 
     def _handle_fact_put(self, args: Dict[str, Any]) -> str:
-        """POST /v1/facts — write/upsert a fact."""
+        """POST /v1/facts - write/upsert a fact."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
         key = args.get("key", "")
         value = args.get("value", "")
         if not key or not value:
-            return json.dumps({"error": "Both 'key' and 'value' are required"})
+            return json.dumps(
+                {"error": "Both 'key' and 'value' are required"}
+            )
 
         try:
             url = _build_endpoint(self._endpoint, "/v1/facts")
             headers = _build_headers(self._auth_token)
-            payload = {
+            payload: Dict[str, Any] = {
                 "key": key,
                 "value": value,
                 "vault": self._agent_vault,
             }
             if "confidence" in args:
-                payload["confidence"] = min(max(float(args["confidence"]), 0.0), 1.0)
+                payload["confidence"] = min(
+                    max(float(args["confidence"]), 0.0), 1.0
+                )
             if "ttl_days" in args:
                 payload["ttl_days"] = int(args["ttl_days"])
             if "tags" in args:
@@ -796,21 +1278,26 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 payload["source"] = args["source"]
 
             resp = self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
             )
             if resp.status_code in (200, 201):
                 return json.dumps(resp.json(), indent=2)
             else:
-                return json.dumps({
-                    "error": f"Fact put failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Fact put failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin fact_put error: %s", e)
             return json.dumps({"error": f"Fact put failed: {e}"})
 
     def _handle_fact_graph(self, args: Dict[str, Any]) -> str:
-        """GET /v1/facts/{key}/graph — fact lineage."""
+        """GET /v1/facts/{key}/graph - fact lineage."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
@@ -828,21 +1315,25 @@ class RagamuffinMemoryProvider(MemoryProvider):
             if resp.status_code == 200:
                 return json.dumps(resp.json(), indent=2)
             elif resp.status_code == 404:
-                return json.dumps({
-                    "error": "NOT_FOUND",
-                    "detail": f"Fact '{key}' not found",
-                })
+                return json.dumps(
+                    {
+                        "error": "NOT_FOUND",
+                        "detail": f"Fact '{key}' not found",
+                    }
+                )
             else:
-                return json.dumps({
-                    "error": f"Fact graph failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Fact graph failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin fact_graph error: %s", e)
             return json.dumps({"error": f"Fact graph failed: {e}"})
 
     def _handle_review_list(self, args: Dict[str, Any]) -> str:
-        """GET /v1/review — list flagged facts."""
+        """GET /v1/review - list flagged facts."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
@@ -862,53 +1353,66 @@ class RagamuffinMemoryProvider(MemoryProvider):
             if resp.status_code == 200:
                 return json.dumps(resp.json(), indent=2)
             else:
-                return json.dumps({
-                    "error": f"Review list failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Review list failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin review_list error: %s", e)
             return json.dumps({"error": f"Review list failed: {e}"})
 
     def _handle_review_resolve(self, args: Dict[str, Any]) -> str:
-        """POST /v1/review/{point_id}/resolve — resolve a flagged fact."""
+        """POST /v1/review/{point_id}/resolve - resolve a flagged fact."""
         if not self._requests:
             return json.dumps({"error": "Ragamuffin client not available"})
 
         point_id = args.get("point_id", "")
         action = args.get("action", "")
         if not point_id or not action:
-            return json.dumps({"error": "Both 'point_id' and 'action' are required"})
+            return json.dumps(
+                {"error": "Both 'point_id' and 'action' are required"}
+            )
 
         if action not in ("confirm", "supersede", "reject"):
-            return json.dumps({
-                "error": "INVALID_ACTION",
-                "detail": "Action must be 'confirm', 'supersede', or 'reject'",
-            })
+            return json.dumps(
+                {
+                    "error": "INVALID_ACTION",
+                    "detail": "Action must be 'confirm', 'supersede', or 'reject'",
+                }
+            )
 
         try:
-            url = _build_endpoint(self._endpoint, f"/v1/review/{point_id}/resolve")
+            url = _build_endpoint(
+                self._endpoint, f"/v1/review/{point_id}/resolve"
+            )
             headers = _build_headers(self._auth_token)
-            payload = {"action": action}
+            payload: Dict[str, Any] = {"action": action}
             if "correction" in args and action == "supersede":
                 payload["correction"] = args["correction"]
 
             resp = self._requests.post(
-                url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT
+                url,
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
             )
             if resp.status_code == 200:
                 return json.dumps(resp.json(), indent=2)
             else:
-                return json.dumps({
-                    "error": f"Review resolve failed: HTTP {resp.status_code}",
-                    "detail": resp.text[:500],
-                })
+                return json.dumps(
+                    {
+                        "error": f"Review resolve failed: HTTP {resp.status_code}",
+                        "detail": resp.text[:500],
+                    }
+                )
         except Exception as e:
             logger.debug("Ragamuffin review_resolve error: %s", e)
             return json.dumps({"error": f"Review resolve failed: {e}"})
 
     def shutdown(self) -> None:
-        """Clean shutdown — wait for pending syncs."""
+        """Clean shutdown - wait for pending syncs."""
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=2.0)
         if self._prefetch_thread and self._prefetch_thread.is_alive():
