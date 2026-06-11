@@ -1,5 +1,52 @@
 # Changelog
 
+## v1.0.0-rc.1
+
+### Features
+- **Hermes memory adapter Phase 1**: Peer card abstraction, `ragamuffin_profile`/`context`/`learn`/`search` tools, `reasoning_effort` param, `ragamuffin.json` config loading. (#688, #749)
+- **Semantic fact search**: Full-text + semantic search across facts via `/v1/facts?prefix=`. Qdrant token-based matching with hash-based dedup. (#725)
+- **Fact lifecycle subsystem**: Briefing endpoint (`GET /v1/briefing`) for returning agents, hybrid recall (`POST /v1/hybrid`), resolvable provenance links on facts (`provenance` payload field). (#708, #709, #710)
+- **Read tracking**: Facts now track `read_count`, `last_read_at`, unread review reason for facts never read or not read in 30+ days. (#711)
+- **Fact mode routing**: `RAGAMUFFIN_FACTS_MODE` env var — vault/global/both modes for fact CRUD routing. (#703)
+- **Temporal awareness in `/ask`**: Parallel fact retrieval separated from document recall, chunk position metadata in synthesized context, temporal prompt improvements for better date-aware answers.
+- **Chunking during ingest**: `--chunks` flag for splitting conversations during session ingestion.
+- **Vault cleanup**: `--clean` flag for vault reset, unique per-run vault names in benchmark mode. (#724)
+- **Separate timeouts for ingest vs ask**: `RAGAMUFFIN_INGEST_SERVER_TIMEOUT` and `RAGAMUFFIN_ASK_TIMEOUT` env vars. (#723)
+- **Per-vault health stats**: `/health` now includes per-vault metrics. (#729)
+- **CLI argument support**: `--help` and proper CLI argument parsing for runner. (#726, #727)
+- **Procedural memory extraction**: Extracts step-by-step procedures from session traces, stored as facts with `type: procedure` payload. (#317)
+- **Cross-file link index**: Links between related documents stored in Qdrant. Enriched recall with related chunks. (#314)
+- **Benchmark v2.0 rewrite**: Reliable logging, checkpoint-based resume, circuit breaker, LLM judge replacing fuzzy matcher for scoring. (#647)
+- **Benchmark Phase 1-2 suites**: 6 new benchmarks (rate-limit, large-vault, draft-audit, event-stream, LongMemEval, LoCoMo). (#647)
+- **Optimized embedding**: Avoids redundant `EmbedSingle` in `appendFactContext` by caching embeddings. (#733)
+- **Ingest pacing**: Configurable ingest delay between chunks (`--ingest-delay`), Qdrant health gate fire suppression for transient connection drops. (#748, #751)
+
+### Bug Fixes
+- **Security hardening (Phases 1-4)**: Critical-to-medium security fixes, CI hardening, security regression test suite, archived stale SPEC files. (#700, #701, #702)
+- **CloudEvents fixes**: Payload validation checks envelope not inner data, emitter source set to `'ragamuffin'` in multi-tenant mode, vault file change events emit correctly, bare `/draft` and `/audit` routes registered in all modes. (#660, #661, #662, #669, #676)
+- **Vault-scoped Qdrant client**: Fact CRUD writes now use vault-scoped Qdrant client instead of global client. (#656)
+- **Benchmark route fixes**: Uses vault-prefixed routes for fact CRUD operations. (#654)
+- **Rate-limit benchmark**: Handles disabled rate limiting and malformed request bodies gracefully. (#658)
+- **Benchmark `list_vaults`**: Returns vault names not dicts. (#659)
+- **Zero-vector reembed scanner**: Retries zero-vector embeddings with scanner and retry logic. (#672)
+- **golang-jwt upgrade**: v5.2.1 → v5.2.2 (GO-2025-3553).
+- **gofmt alignment**: All 55 Go files reformatted.
+- **Miscellaneous**: CI test failures in procedural package, gofmt CI failure for trailing blank lines, Qdrant health gate fire suppression when `--ingest-delay > 0`. (#751)
+
+### Documentation
+- **README rewrite**: Complete rewrite with human-readable intro, tiered recall, fact extraction section, MCP tools list. (#679, #561)
+- **API reference**: Full 13700-line reference covering all 40+ endpoints including health, vaults, facts CRUD + graph, sessions, documents, review queue, pruner, inbox, auth, MCP. (#565)
+- **OpenClaw agent integration**: Reference agent implementation with tools, config example, and skill definitions. (#566)
+- **Temporal awareness spec**: New SPEC-temporal-awareness-complete.md documenting temporal reasoning architecture.
+- **Benchmarks README**: New file documenting benchmark harness usage, four configs (A-D), LongMemEval + LoCoMo, v2 architecture. (#566)
+- **Archive cleanup**: 31 stale SPEC files from v0.x era moved to `specs/archive/`. (#702)
+- **Various**: Docs for procedural memory extraction, cross-file link index, pr.go purpose, stale fact vector comments. (#683)
+
+### Build & Testing
+- **Test coverage expansion**: Facts handler tests (#675), MCP handler tests (#674), sessions handler tests (#673).
+- **Consolidated CI build**: 5 merged PRs consolidated into one CI build for `:rolling` tag. (#440)
+- **Security regression tests**: Dedicated test suite for security invariants. (#701)
+
 ## v0.9.0-rc.1
 
 ### Bug Fixes

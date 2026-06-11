@@ -12,7 +12,7 @@ curl -s http://localhost:8000/recall \
   -d '{"query":"what should I know about this project?"}'
 ```
 
-**What makes this different:** we bet our own infrastructure on it. Every agent in the [Chez Goulet](https://chezgoulet.org) system — real agents answering real questions every day — runs on this single binary. The same code that powers production is the code you download. The benchmarks that gate our releases are public. The bugs we find get filed as open issues and fixed.
+**What makes this different:** we bet our own infrastructure on it. Every agent in the [Chez Goulet](https://chezgoulet.org) system — real agents answering real questions every day — runs on this single binary. The same code that powers production is the code you download. Benchmark results are published alongside each release. The bugs we find get filed as open issues and fixed.
 
 **One Docker command.** No separate enterprise version and open-source version. There's one binary.
 
@@ -92,7 +92,7 @@ Ragamuffin uses a **staged-branch workflow** with three tiers:
      │ go test + vet        │ testing-push.yml    │ build.yml
      │ (PR check)           │ Docker :rolling     │ Docker :latest+version tag
      ▼                      ▼                     ▼
- CI passes             Deploy for val.      Benchmark + release
+ CI passes             Deploy for val.      Tag & release
 ```
 
 **Tier 1 — Feature branches (`dev/*`)**
@@ -878,7 +878,7 @@ Key is hashed (SHA-256) → deterministic UUID is used as the Qdrant point ID. R
 # Exact key lookup
 curl -s "http://localhost:8000/v1/facts?key=deployment/url"
 
-# Search by text fragment (full-text / substring match on fact_key)
+# Search by prefix (Qdrant full-text token match on fact_key)
 curl -s "http://localhost:8000/v1/facts?prefix=deploy"
 
 # Filter by tag
@@ -892,15 +892,15 @@ curl -s "http://localhost:8000/v1/facts?limit=20&before=<next_token>"
 | Param | Description | Default |
 |---|---|---|
 | `key` | Exact fact_key match | — |
-| `prefix` | Full-text/substring match on fact_key (see note) | — |
+| `prefix` | Prefix match on fact_key via Qdrant full-text token filter (see note) | — |
 | `tag` | Exact tag keyword filter | — |
 | `status` | Filter by lifecycle status (active, needs_review, superseded, rejected) | — |
 | `limit` | Max results per page (1–1000) | 100 |
 | `before` | Cursor from previous response `next_token` | — |
 
-> ⚠️ `prefix=` performs Qdrant full-text/substring matching, not true prefix matching.
-> A query for `prefix=user/` will also match `prefix=superuser/settings` due to Qdrant's
-> tokenizer behavior. For exact prefix filtering, a Qdrant payload index with a keyword
+> ⚠️ `prefix=` uses Qdrant's `MatchText` token filter, not string prefix matching.
+> A query for `prefix=deploy` matches tokens containing "deploy" (e.g. "deployment/url",
+> "re-deploy"). For exact string prefix matching, a Qdrant payload index with a keyword
 > tokenizer would be needed.
 
 **Response:**
@@ -1438,10 +1438,10 @@ Replace `{NAME}` with the uppercase vault name (e.g. `RAGAMUFFIN_VAULT_DOCS_CHUN
 
 ## CI & Dependencies
 
-Ragamuffin uses a **staged-branch pipeline** to keep `:latest` always benchmarked:
+Ragamuffin uses a **staged-branch pipeline** with quality gates at each tier:
 
 ```
-dev/* → PR → testing (tests + build :rolling) → PR → main (gauntlet + :latest + release tag)
+dev/* → PR → testing (tests + build :rolling) → PR → main (quality gates + :latest + release tag)
 ```
 
 Three external dependencies: [Qdrant gRPC](https://github.com/qdrant/go-client), [pure-Go SQLite](https://gitlab.com/cznic/sqlite), [JWT verification](https://github.com/golang-jwt/jwt). No ORM, no web framework.
