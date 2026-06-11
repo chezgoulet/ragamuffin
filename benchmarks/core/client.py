@@ -27,6 +27,15 @@ _raw_ask = os.environ.get("RAGAMUFFIN_ASK_TIMEOUT", "")
 ASK_TIMEOUT = int(_raw_ask) if _raw_ask else (HTTP_TIMEOUT or 30)
 MAX_RETRIES = int(os.environ.get("RAGAMUFFIN_MAX_RETRIES", "3"))
 
+# Ingest pacing
+INGEST_DELAY = float(os.environ.get("RAGAMUFFIN_INGEST_DELAY", "0"))
+
+# Qdrant health check URL (separate from Ragamuffin)
+QDRANT_HEALTH_URL = os.environ.get(
+    "RAGAMUFFIN_QDRANT_URL",
+    "http://qdrant:6333",
+).rstrip("/")
+
 
 # ── Client ──────────────────────────────────────────────────────────────────────
 
@@ -64,6 +73,45 @@ class RagamuffinClient:
             return data is not None
         except Exception:
             return False
+
+    def qdrant_health(self) -> Tuple[bool, Optional[str]]:
+        """Check if Qdrant is healthy and ready for writes.
+
+        Returns (is_healthy, status_or_reason).
+        Checks Qdrant REST API health endpoint.
+        """
+        try:
+            req = urllib.request.Request(f"{QDRANT_HEALTH_URL}/healthz")
+            resp = urllib.request.urlopen(req, timeout=5)
+            if resp.status == 200:
+                return True, None
+            return False, f"HTTP {resp.status}"
+        except Exception as e:
+            return False, str(e)[:100]
+
+    def qdrant_collection_status(self, collection: str) -> Tuple[bool, Optional[str]]:
+        """Check Qdrant collection status for optimizer health.
+
+        Returns (is_ready, optimizer_status_or_reason).
+        If optimizer_status != "ok" or status == "yellow", not ready.
+        """
+        try:
+            req = urllib.request.Request(f"{QDRANT_HEALTH_URL}/collections/{collection}")
+            resp = urllib.request.urlopen(req, timeout=5)
+            data = json.loads(resp.read())
+            if not isinstance(data, dict):
+                return False, f"unexpected response: {str(data)[:100]}"
+            result = data.get("result", {})
+            coll_status = result.get("status", "")
+            opt_status = result.get("optimizer_status", "")
+            is_ready = (
+                coll_status in ("green", "grey")
+                and opt_status == "ok"
+            )
+            reason = f"status={coll_status}, optimizer={opt_status}" if not is_ready else None
+            return is_ready, reason
+        except Exception as e:
+            return False, str(e)[:100]
 
     def clear_vault(self, name: str) -> Dict:
         """Clear all data in a vault. Requires confirmation."""

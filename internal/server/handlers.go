@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -184,7 +185,80 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"qdrant_collection":    s.cfg.QdrantCollection,
 		"embedding_provider":   s.cfg.EmbeddingProvider,
 		"uptime_seconds":       int(time.Since(s.started).Seconds()),
+		"qdrant":               s.qdrantCollectionHealth(),
 	})
+}
+
+// qdrantCollectionHealth queries Qdrant's REST API for collection-level
+// health information (status, optimizer_status, segments_count).
+// Returns nil on failure (non-fatal — just missing from the stats response).
+func (s *Server) qdrantCollectionHealth() map[string]any {
+	qdrantURL := s.cfg.QdrantURL
+	if qdrantURL == "" {
+		qdrantURL = "http://qdrant:6333"
+	}
+
+	// Build the collection name — use configured or default
+	collectionName := s.cfg.QdrantCollection
+	if collectionName == "" {
+		collectionName = "ragamuffin_default"
+	}
+
+	restURL := fmt.Sprintf("%s/collections/%s", strings.TrimRight(qdrantURL, "/"), collectionName)
+	// Qdrant gRPC default port is 6334, REST is 6333 — strip gRPC port
+	restURL = strings.Replace(restURL, ":6334", ":6333", 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, restURL, nil)
+	if err != nil {
+		return nil
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+
+	var qresp struct {
+		Result struct {
+			Status           string `json:"status"`
+			OptimizerStatus  string `json:"optimizer_status"`
+			SegmentsCount    int    `json:"segments_count"`
+			PointsCount      uint64 `json:"points_count"`
+			IndexedPoints    uint64 `json:"indexed_points"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &qresp); err != nil {
+		return nil
+	}
+
+	info := map[string]any{
+		"status":          qresp.Result.Status,
+		"optimizer_status": qresp.Result.OptimizerStatus,
+		"segments_count":  qresp.Result.SegmentsCount,
+		"points_count":    qresp.Result.PointsCount,
+		"indexed_points":  qresp.Result.IndexedPoints,
+	}
+
+	// Add a human-readable health summary
+	switch {
+	case qresp.Result.OptimizerStatus != "ok":
+		info["health"] = "optimizing"
+	case qresp.Result.Status != "green" && qresp.Result.Status != "grey":
+		info["health"] = "degraded"
+	default:
+		info["health"] = "ready"
+	}
+
+	return info
 }
 
 // ── /recall ────────────────────────────────────────────────────────────────────

@@ -95,6 +95,17 @@ Examples:
         default=0,
         help="Split each conversation into N chunks during ingest (default: 1 blob per conversation)",
     )
+    parser.add_argument(
+        "--ingest-delay",
+        type=float,
+        default=0.0,
+        help="Delay (seconds) between ingest calls — paces writes to reduce Qdrant contention (default: 0)",
+    )
+    parser.add_argument(
+        "--qdrant-url",
+        default=None,
+        help="Qdrant REST API URL for health checks (default: http://qdrant:6333)",
+    )
     return parser.parse_args()
 
 
@@ -221,11 +232,15 @@ def _flatten_messages(messages: List[Dict]) -> str:
     return "\n\n".join(parts)
 
 
-def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str, chunk_size: int = 0):
+def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str, chunk_size: int = 0, ingest_delay: float = 0.0):
     """Ingest all conversations into a vault. Reports progress reliably.
 
     When chunk_size > 0, split each conversation's messages into that many
     roughly equal chunks before ingesting. Each chunk gets a unique source ID.
+
+    When ingest_delay > 0, sleeps between each ingest call to pace writes
+    and reduce Qdrant segment-flush contention. Also checks Qdrant health
+    periodically and backs off if Qdrant is in a recovery state.
     """
     if chunk_size:
         total_chunks = sum(max(1, len(c.messages) // (len(c.messages) // chunk_size + 1))
@@ -256,6 +271,27 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
             content = _flatten_messages(group)
             if not content:
                 continue
+
+            # ── Qdrant health gate ────────────────────────────────────
+            # Check Qdrant health periodically; back off during
+            # segment-flush cycles to avoid "Storage timeout" errors.
+            if ingest_delay > 0 or (progress_count % 50 == 0):
+                healthy, reason = client.qdrant_collection_status(f"ragamuffin_{vault}")
+                if not healthy:
+                    reason_str = reason or "unknown"
+                    log(f"  ⏳ Qdrant not ready ({reason_str}) — waiting 5s...")
+                    for _ in range(12):  # up to 60s
+                        time.sleep(5)
+                        healthy, reason = client.qdrant_collection_status(f"ragamuffin_{vault}")
+                        if healthy:
+                            log(f"  ✓ Qdrant ready, resuming ingest")
+                            break
+                    else:
+                        log(f"  ⚠ Qdrant still not ready after 60s — continuing anyway")
+
+            # ── Ingest pacing ──────────────────────────────────────────
+            if ingest_delay > 0:
+                time.sleep(ingest_delay)
 
             # Unique source per chunk within a conversation
             source = f"{conv.source or conv.id}/chunk-{gi}" if chunk_size else (conv.source or conv.id)
@@ -546,6 +582,7 @@ def run_benchmark(
     skip_ingest: bool = False,
     skip_configs: Optional[List[str]] = None,
     chunk_size: int = 0,
+    ingest_delay: float = 0.0,
 ) -> Dict[str, Dict]:
     """Run full benchmark (ingest + all configs). Returns scores dict."""
     if skip_configs is None:
@@ -556,7 +593,7 @@ def run_benchmark(
     # Phase 1: Ingest
     if not skip_ingest:
         convs, qdata = loader_fn()
-        ingest_all(client, convs, vault, label, chunk_size=chunk_size)
+        ingest_all(client, convs, vault, label, chunk_size=chunk_size, ingest_delay=ingest_delay)
     else:
         # Just load questions, no conversations needed
         _, qdata = loader_fn()
@@ -581,7 +618,7 @@ def run_benchmark(
     return scores
 
 
-def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str], chunk_size: int = 0):
+def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs: List[str], datasets: List[str], chunk_size: int = 0, ingest_delay: float = 0.0):
     """Run a single dataset, respecting --datasets filter."""
     if label not in datasets:
         log(f"  Skipping {label} (not selected)")
@@ -616,6 +653,7 @@ def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs:
         skip_ingest=False,
         skip_configs=skip_configs,
         chunk_size=chunk_size,
+        ingest_delay=ingest_delay,
     )
 
 
@@ -672,18 +710,24 @@ def main():
         locomo_vault = f"locomo-bench-{RUN_ID}"
         log(f"Unique vault names: {lme_vault}, {locomo_vault}")
 
+    # Set Qdrant health check URL if provided
+    if args.qdrant_url:
+        os.environ["RAGAMUFFIN_QDRANT_URL"] = args.qdrant_url
+
     # ── Run selected datasets ──────────────────────────────────────────
     lme_scores = _run_dataset(
         "longmemeval", lme_vault, client,
         skip_configs=[],
         datasets=args.datasets,
         chunk_size=args.chunks,
+        ingest_delay=args.ingest_delay,
     )
     locomo_scores = _run_dataset(
         "locomo", locomo_vault, client,
         skip_configs=[],
         datasets=args.datasets,
         chunk_size=args.chunks,
+        ingest_delay=args.ingest_delay,
     )
 
     # ── Summary ─────────────────────────────────────────────────────────
