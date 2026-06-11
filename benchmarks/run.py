@@ -275,7 +275,7 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
             # ── Qdrant health gate ────────────────────────────────────
             # Check Qdrant health periodically; back off during
             # segment-flush cycles to avoid "Storage timeout" errors.
-            if ingest_delay > 0 or (progress_count % 50 == 0):
+            if progress_count % 50 == 0:
                 healthy, reason = client.qdrant_collection_status(f"ragamuffin_{vault}")
                 if not healthy:
                     reason_str = reason or "unknown"
