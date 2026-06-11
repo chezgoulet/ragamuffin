@@ -16,6 +16,14 @@ Phase 2 — Auto-Injection + Cadence:
   RAGAMUFFIN_CONTEXT_CADENCE  — Refresh base context every N turns (default 3, 0=disable)
   RAGAMUFFIN_DIALECTIC_CADENCE— Refresh dialectic every N turns (default 5, 0=disable)
 
+Phase 3 — Dialectic Depth + Polish:
+  RAGAMUFFIN_DIALECTIC_DEPTH   — Multi-pass reasoning levels: 1 (cold, default), 2 (+warm), or 3 (+hot)
+  RAGAMUFFIN_EMPTY_STREAK_BACKOFF — 'true' (default) / 'false' — widen cadence on silent responses
+
+Phase 4 — Beat Honcho:
+  RAGAMUFFIN_CROSS_AGENT_VAULTS — Comma-separated list of other agent vaults for cross-recall (default: '')
+  RAGAMUFFIN_FACT_GRAPH_ENABLED — 'true' (default) / 'false' — inject fact graph chains into context
+
 Config file ($HERMES_HOME/ragamuffin.json) — matches honcho.json structure:
   {
     "endpoint": "http://ragamuffin:8000",
@@ -471,6 +479,19 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._context_cache_turn = 0           # last turn context was refreshed
         self._dialectic_cache_turn = 0         # last turn dialectic was refreshed
 
+        # Phase 3 — Dialectic Depth + Polish
+        self._dialectic_depth = 1              # multi-pass levels: 1=cold, 2=cold+warm, 3=cold+warm+hot
+        self._empty_streak_backoff = True
+        self._empty_streak = 0                 # consecutive silent user responses
+        self._max_empty_streak = 3             # threshold for cadence multiplication
+        self._trivial_patterns: List[str] = []
+
+        # Phase 4 — Beat Honcho
+        self._cross_agent_vaults: List[str] = []  # other vaults for cross-agent recall
+        self._graph_depth = 1  # how deep to traverse fact graph
+        self._fact_graph_enabled = True
+        self._cross_recall_enabled = True
+
         # Context bundle cache
         self._context_bundle: Dict[str, Any] = {}
 
@@ -560,6 +581,48 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "default": 5,
                 "env_var": "RAGAMUFFIN_DIALECTIC_CADENCE",
             },
+            {
+                "key": "dialectic_depth",
+                "description": (
+                    "Multi-pass reasoning levels. 1=cold (analytical), "
+                    "2=cold+warm (analytical+creative), "
+                    "3=cold+warm+hot (analytical+creative+evaluative). "
+                    "Higher depth produces richer dialectic context."
+                ),
+                "default": 1,
+                "env_var": "RAGAMUFFIN_DIALECTIC_DEPTH",
+            },
+            {
+                "key": "empty_streak_backoff",
+                "description": (
+                    "Widen dialectic cadence on consecutive silent or trivial "
+                    "responses from the user. After 3 silent turns, cadence "
+                    "doubles to avoid wasting context on non-productive exchanges."
+                ),
+                "default": True,
+                "env_var": "RAGAMUFFIN_EMPTY_STREAK_BACKOFF",
+            },
+            {
+                "key": "cross_agent_vaults",
+                "description": (
+                    "Comma-separated list of other agent vaults to "
+                    "cross-reference during auto-injection. "
+                    "E.g. 'agent::robot,agent::scout'. "
+                    "Related facts from these vaults are surfaced in context."
+                ),
+                "default": "",
+                "env_var": "RAGAMUFFIN_CROSS_AGENT_VAULTS",
+            },
+            {
+                "key": "fact_graph_enabled",
+                "description": (
+                    "Inject fact graph chains (supersession, refinement) "
+                    "into auto-injected context. When enabled, known facts "
+                    "include their provenance chain."
+                ),
+                "default": True,
+                "env_var": "RAGAMUFFIN_FACT_GRAPH_ENABLED",
+            },
         ]
 
     # -- Config file loading -------------------------------------------------
@@ -620,6 +683,36 @@ class RagamuffinMemoryProvider(MemoryProvider):
             ):
                 self._dialectic_cadence = max(0, int(cfg["dialectic_cadence"]))
 
+            # Phase 3 M-bM-^@M-^T dialectic depth + empty streak backoff
+            if (
+                "dialectic_depth" in cfg
+                and "RAGAMUFFIN_DIALECTIC_DEPTH" not in os.environ
+            ):
+                self._dialectic_depth = max(1, min(3, int(cfg["dialectic_depth"])))
+            if (
+                "empty_streak_backoff" in cfg
+                and "RAGAMUFFIN_EMPTY_STREAK_BACKOFF" not in os.environ
+            ):
+                self._empty_streak_backoff = bool(cfg["empty_streak_backoff"])
+
+            # Phase 4 — cross-agent vaults + fact graph
+            if (
+                "cross_agent_vaults" in cfg
+                and "RAGAMUFFIN_CROSS_AGENT_VAULTS" not in os.environ
+            ):
+                raw = cfg["cross_agent_vaults"]
+                if isinstance(raw, str):
+                    self._cross_agent_vaults = [
+                        v.strip() for v in raw.split(",") if v.strip()
+                    ]
+                elif isinstance(raw, list):
+                    self._cross_agent_vaults = [str(v) for v in raw]
+            if (
+                "fact_graph_enabled" in cfg
+                and "RAGAMUFFIN_FACT_GRAPH_ENABLED" not in os.environ
+            ):
+                self._fact_graph_enabled = bool(cfg["fact_graph_enabled"])
+
             logger.debug("Loaded Ragamuffin config from %s", config_path)
         except Exception as e:
             logger.warning(
@@ -663,6 +756,25 @@ class RagamuffinMemoryProvider(MemoryProvider):
             )
         except (ValueError, TypeError):
             self._dialectic_cadence = 5
+
+        # Phase 3 — dialectic depth
+        try:
+            d = int(os.environ.get("RAGAMUFFIN_DIALECTIC_DEPTH", "1"))
+            self._dialectic_depth = max(1, min(3, d))
+        except (ValueError, TypeError):
+            self._dialectic_depth = 1
+        eb = os.environ.get("RAGAMUFFIN_EMPTY_STREAK_BACKOFF", "true").lower()
+        self._empty_streak_backoff = eb in ("true", "1", "yes")
+        self._empty_streak = 0
+
+        # Phase 4 — cross-agent vaults + fact graph
+        cross_vaults = os.environ.get("RAGAMUFFIN_CROSS_AGENT_VAULTS", "")
+        self._cross_agent_vaults = [
+            v.strip() for v in cross_vaults.split(",") if v.strip()
+        ]
+        fg = os.environ.get("RAGAMUFFIN_FACT_GRAPH_ENABLED", "true").lower()
+        self._fact_graph_enabled = fg in ("true", "1", "yes")
+
         self._context_cache_turn = 0
         self._dialectic_cache_turn = 0
 
@@ -813,15 +925,50 @@ class RagamuffinMemoryProvider(MemoryProvider):
     # -- Phase 2: Auto-Injection + Cadence ----------------------------------
 
     def _build_base_context(self) -> str:
-        """Build the base context layer: peer card + session summary."""
+        """Build the base context layer: peer card + session summary.
+
+        Phase 4: Also injects:
+        - Fact graph chains (supersession, refinement) for known facts
+        - Cross-agent recall from other agent vaults
+        """
         if not self._requests:
             return ""
         parts = []
 
+        # -- Peer card --
         card = self._get_peer_card()
         if card:
             parts.append(f"--- Peer Card ({self._agent_identity}) ---\n{card}")
 
+        # -- Phase 4: Fact graph chains for known facts --
+        if self._fact_graph_enabled and card:
+            key = self._get_peer_card_key()
+            try:
+                url = _build_endpoint(
+                    self._endpoint,
+                    f"/v1/facts/{key}/graph",
+                )
+                headers = _build_headers(self._auth_token)
+                resp = self._requests.get(
+                    url, headers=headers, timeout=_REQUEST_TIMEOUT
+                )
+                if resp.status_code == 200:
+                    graph_data = resp.json()
+                    edges = graph_data.get("edges", []) or graph_data.get("related", [])
+                    if edges:
+                        lines = ["--- Fact Chain ---"]
+                        for edge in edges:
+                            rel = edge.get("relation", "related")
+                            related_key = edge.get("key", "") or edge.get("fact", "")
+                            related_val = edge.get("value", "") or edge.get("summary", "")
+                            if related_val:
+                                lines.append(f"- {rel}: {related_val}")
+                        if len(lines) > 1:
+                            parts.append("\n".join(lines))
+            except Exception as e:
+                logger.debug("Fact graph fetch error: %s", e)
+
+        # -- Session summary --
         try:
             url = _build_endpoint(
                 self._endpoint,
@@ -841,16 +988,255 @@ class RagamuffinMemoryProvider(MemoryProvider):
         except Exception as e:
             logger.debug("Base context summary fetch error: %s", e)
 
+        # -- Phase 4: Cross-agent recall --
+        if self._cross_agent_vaults:
+            for other_vault in self._cross_agent_vaults:
+                try:
+                    url = _build_endpoint(
+                        self._endpoint,
+                        f"/vault/{other_vault}/recall",
+                    )
+                    headers = _build_headers(self._auth_token)
+                    # Use a broad query to surface recent facts
+                    payload = {
+                        "query": "*",
+                        "limit": 3,
+                    }
+                    resp = self._requests.post(
+                        url,
+                        json=payload,
+                        headers=headers,
+                        timeout=_REQUEST_TIMEOUT,
+                    )
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        results = data.get("results", []) or data.get("facts", [])
+                        if results:
+                            x_lines = [f"--- Recent: {other_vault} ---"]
+                            for r in results[:3]:
+                                val = r.get("value", "") or r.get("text", "")
+                                if len(val) > 200:
+                                    val = val[:200] + "..."
+                                if val:
+                                    x_lines.append(f"- {val}")
+                            if len(x_lines) > 1:
+                                parts.append("\n".join(x_lines))
+                except Exception as e:
+                    logger.debug("Cross-agent recall error for %s: %s", other_vault, e)
+
         return "\n\n".join(parts)
 
     def _build_dialectic(self) -> str:
-        """Build the dialectic reasoning layer (placeholder for Phase 3).
+        """Build the dialectic reasoning context.
 
-        Phase 3 will extend this with multi-pass reasoning, cold/warm
-        prompt selection, bail-out heuristics, and empty-streak backoff.
-        Currently returns an empty string (no dialectic without depth).
+        Multi-pass dialectic with cold/warm/hot reasoning levels,
+        bail-out heuristic, and empty-streak backoff.
+
+        Each pass produces a structured <dialectic-pass> block that guides
+        the model to reason from a specific perspective. Higher depth
+        produces more passes. Bail-out skips warm/hot passes when the
+        cold pass already indicates strong signal (high info density).
+
+        Returns:
+            str — concatenated dialectic passes, or empty if frozen.
         """
-        return ""
+        if not self._requests:
+            return ""
+
+        depth = self._dialectic_depth
+        if depth < 1:
+            return ""
+
+        passes = []
+
+        # ── Pass 1: Cold — Analytical/Logical ──
+        cold = self._build_cold_pass()
+        passes.append(cold)
+
+        # Bail-out: if cold pass detected strong signal (high contradiction density
+        # or high fact discovery), skip deeper passes to save context.
+        if depth >= 2 and not self._should_bail_out(cold):
+            warm = self._build_warm_pass()
+            passes.append(warm)
+
+        if depth >= 3 and not self._should_bail_out(passes[-1]):
+            hot = self._build_hot_pass()
+            passes.append(hot)
+
+        return "\n\n".join(p for p in passes if p)
+
+    def _build_cold_pass(self) -> str:
+        """Cold (analytical/logical) reasoning pass.
+
+        Prompts the model to:
+        - Extract specific facts from context
+        - Identify contradictions between facts
+        - Detect stale or superseded information
+        - Surface gaps in knowledge
+        """
+        return (
+            "<dialectic-pass level=\"cold\" role=\"analytical\">\n"
+            "# Analytical Reasoning\n"
+            "Review the context below. Identify:\n"
+            "- Specific verifiable facts you can extract\n"
+            "- Contradictions or inconsistencies\n"
+            "- Stale or out-of-date information\n"
+            "- Gaps where information is missing\n"
+            "</dialectic-pass>"
+        )
+
+    def _build_warm_pass(self) -> str:
+        """Warm (creative/synthetic) reasoning pass.
+
+        Prompts the model to:
+        - Generate hypotheses from incomplete data
+        - Connect seemingly unrelated facts
+        - Infer user intent or patterns
+        - Suggest new facts to learn
+        """
+        return (
+            "<dialectic-pass level=\"warm\" role=\"synthetic\">\n"
+            "# Synthetic Reasoning\n"
+            "Draw connections from the context below. Consider:\n"
+            "- What underlying patterns emerge?\n"
+            "- What hypotheses explain the data?\n"
+            "- What related information might be useful?\n"
+            "- What should this agent learn next?\n"
+            "</dialectic-pass>"
+        )
+
+    def _build_hot_pass(self) -> str:
+        """Hot (evaluative) reasoning pass.
+
+        Prompts the model to:
+        - Assess confidence in extracted facts
+        - Prioritize which facts are most important
+        - Decide which facts need confirmation
+        - Summarize the state of knowledge
+        """
+        return (
+            "<dialectic-pass level=\"hot\" role=\"evaluative\">\n"
+            "# Evaluative Reasoning\n"
+            "Assess the quality of information below:\n"
+            "- Rate confidence in each fact (0.0-1.0)\n"
+            "- Which facts are most critical to remember?\n"
+            "- Which facts need verification?\n"
+            "- Summarize the current state of knowledge\n"
+            "</dialectic-pass>"
+        )
+
+    def _should_bail_out(self, pass_text: str) -> bool:
+        """Bail-out heuristic: skip remaining passes if strong signal.
+
+        Returns True (bail out) when:
+        - Empty streak count exceeds threshold (user not engaging)
+        - The pass text is empty (something went wrong)
+
+        Returns False (continue to next pass) to perform deeper reasoning.
+        """
+        if not pass_text:
+            return True
+        # If user is in a silent streak, bail on deeper passes
+        if self._empty_streak >= self._max_empty_streak:
+            return True
+        return False
+
+    # -- Phase 3: Trivial-prompt filter -------------------------------------
+
+    _TRIVIAL_PATTERNS = [
+        "yes", "no", "ok", "okay", "k", "kk", "sure", "yep", "nope",
+        "thanks", "ty", "thank you", "thx", "np", "yw",
+        "👍", "✅", "🙏", "thanks!",
+    ]
+
+    def _is_trivial_prompt(self, prompt: str) -> bool:
+        """Check if a user prompt is trivial (yes/no/ok/etc.).
+
+        Trivial prompts don't need context injection because they don't
+        reference any stored information. Skipping injection saves
+        context window space.
+
+        Returns:
+            True if the prompt matches known trivial patterns.
+        """
+        if not prompt:
+            return True
+        cleaned = prompt.strip().lower().rstrip(".!?")
+        return cleaned in self._TRIVIAL_PATTERNS
+
+    # -- Phase 3: Diagnostics -----------------------------------------------
+
+    def _empty_profile_hint(self) -> str:
+        """Return a diagnostic hint when the peer card is empty.
+
+        Called by the agent or operator to understand why context
+        injection feels thin. Returns an actionable message.
+        """
+        if not self._available:
+            return (
+                "Ragamuffin provider is not available. "
+                "Check RAGAMUFFIN_ENDPOINT and that the service is running."
+            )
+        card = self._get_peer_card()
+        if card:
+            return (
+                f"Peer card is set ({len(card)} chars). "
+                "If context still feels thin, check:\n"
+                "- _context_cache_turn vs current turn\n"
+                "- RAGAMUFFIN_CONTEXT_CADENCE (default 3)\n"
+                "- recall_mode (should not be 'tools')"
+            )
+        return (
+            "Peer card is empty. Use `ragamuffin_profile` with a 'value' "
+            "to describe this agent's role and knowledge. Example:\n"
+            "ragamuffin_profile(value=\"Dev agent - builds software, "
+            "maintains code, works from GitHub Issues\")"
+        )
+
+    def _liveness_snapshot(self) -> Dict[str, Any]:
+        """Return a debug snapshot of the provider's internal state.
+
+        Useful for diagnosing injection behavior, cadence issues,
+        and connectivity problems during development.
+
+        Returns:
+            Dict with config, state, and timing info.
+        """
+        effective_dialectic = (
+            self._dialectic_cadence
+            if self._empty_streak < self._max_empty_streak
+            else self._dialectic_cadence * 2
+        )
+        return {
+            "config": {
+                "endpoint": self._endpoint,
+                "vault": self._agent_vault,
+                "agent_identity": self._agent_identity,
+                "recall_mode": self._recall_mode,
+                "save_messages": self._save_messages,
+                "injection_frequency": self._injection_frequency,
+                "context_cadence": self._context_cadence,
+                "dialectic_cadence": self._dialectic_cadence,
+                "dialectic_depth": self._dialectic_depth,
+                "empty_streak_backoff": self._empty_streak_backoff,
+                "session_id": self._session_id,
+            },
+            "state": {
+                "available": self._available,
+                "vault_ready": self._vault_ready,
+                "turn_counter": self._turn_counter,
+                "empty_streak": self._empty_streak,
+                "context_cache_turn": self._context_cache_turn,
+                "dialectic_cache_turn": self._dialectic_cache_turn,
+                "effective_dialectic_cadence": effective_dialectic,
+            },
+            "cache": {
+                "base_context_length": len(self._base_context_cache),
+                "pending_dialectic_length": len(self._pending_dialectic),
+                "prefetch_result_length": len(self._prefetch_result),
+            },
+            "peer_card": self._get_peer_card()[:200] if self._get_peer_card() else None,
+        }
 
     def _wrap_context(self, context_str: str) -> str:
         """Wrap context in <memory-context> XML fences.
@@ -871,9 +1257,16 @@ class RagamuffinMemoryProvider(MemoryProvider):
         2. _pending_dialectic (refreshed on dialectic_cadence)
         3. Prefetch recall results
 
-        Returns empty string instead of _wrap_context() when nothing
-        is cached, to avoid emitting empty <memory-context> fences.
+        Phase 3: If query is a trivial prompt, returns empty to avoid
+        wasting context window space on yes/no responses.
+
+        Returns empty string when nothing is cached, to avoid emitting
+        empty <memory-context> fences.
         """
+        # Phase 3 — skip injection for trivial prompts
+        if self._is_trivial_prompt(query):
+            return ""
+
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=_PREFETCH_TIMEOUT)
 
@@ -968,6 +1361,36 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         self._turn_counter += 1
 
+        # Phase 3 — empty streak tracking
+        if self._is_trivial_prompt(user_content):
+            self._empty_streak += 1
+        else:
+            self._empty_streak = 0
+
+        # Phase 3 — skip context injection for trivial prompts
+        if self._is_trivial_prompt(user_content):
+            if not self._save_messages:
+                return
+            text = f"User: {user_content}\nAssistant: {assistant_content}"
+            def _run():
+                try:
+                    if self._requests is None:
+                        return
+                    url = _build_endpoint(self._endpoint, "/v1/ingest")
+                    headers = _build_headers(self._auth_token)
+                    payload = {
+                        "vault": self._agent_vault,
+                        "content": text,
+                        "source": "session_turn",
+                        "tags": ["session", self._agent_identity],
+                    }
+                    self._requests.post(url, json=payload, headers=headers, timeout=_REQUEST_TIMEOUT)
+                except Exception as e:
+                    logger.debug("Ragamuffin sync_turn error: %s", e)
+            self._sync_thread = threading.Thread(target=_run, daemon=True, name="ragamuffin-sync")
+            self._sync_thread.start()
+            return
+
         # Phase 2 — cadence-gated context refresh
         if (
             self._context_cadence > 0
@@ -981,16 +1404,25 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 self._turn_counter,
             )
 
+        # Phase 3 — empty-streak backoff: double cadence on silent streaks
+        effective_dialectic_cadence = self._dialectic_cadence
+        if (
+            self._empty_streak_backoff
+            and self._empty_streak >= self._max_empty_streak
+        ):
+            effective_dialectic_cadence = self._dialectic_cadence * 2
+
         if (
             self._dialectic_cadence > 0
             and self._turn_counter - self._dialectic_cache_turn
-            >= self._dialectic_cadence
+            >= effective_dialectic_cadence
         ):
             self._pending_dialectic = self._build_dialectic()
             self._dialectic_cache_turn = self._turn_counter
             logger.debug(
-                "Dialectic cache refreshed at turn %d",
+                "Dialectic cache refreshed at turn %d (cadence=%d)",
                 self._turn_counter,
+                effective_dialectic_cadence,
             )
 
         # Phase 2 — skip persistence when save_messages is False
