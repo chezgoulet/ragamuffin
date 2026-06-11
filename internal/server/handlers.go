@@ -229,11 +229,11 @@ func (s *Server) qdrantCollectionHealth() map[string]any {
 
 	var qresp struct {
 		Result struct {
-			Status           string `json:"status"`
-			OptimizerStatus  string `json:"optimizer_status"`
-			SegmentsCount    int    `json:"segments_count"`
-			PointsCount      uint64 `json:"points_count"`
-			IndexedPoints    uint64 `json:"indexed_points"`
+			Status          string `json:"status"`
+			OptimizerStatus string `json:"optimizer_status"`
+			SegmentsCount   int    `json:"segments_count"`
+			PointsCount     uint64 `json:"points_count"`
+			IndexedPoints   uint64 `json:"indexed_points"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &qresp); err != nil {
@@ -241,11 +241,11 @@ func (s *Server) qdrantCollectionHealth() map[string]any {
 	}
 
 	info := map[string]any{
-		"status":          qresp.Result.Status,
+		"status":           qresp.Result.Status,
 		"optimizer_status": qresp.Result.OptimizerStatus,
-		"segments_count":  qresp.Result.SegmentsCount,
-		"points_count":    qresp.Result.PointsCount,
-		"indexed_points":  qresp.Result.IndexedPoints,
+		"segments_count":   qresp.Result.SegmentsCount,
+		"points_count":     qresp.Result.PointsCount,
+		"indexed_points":   qresp.Result.IndexedPoints,
 	}
 
 	// Add a human-readable health summary
