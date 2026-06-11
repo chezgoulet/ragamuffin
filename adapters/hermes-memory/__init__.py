@@ -4,27 +4,45 @@ Provides per-agent Qdrant-isolated memory with automatic session persistence,
 cross-agent recall, and semantic search via Ragamuffin's HTTP API.
 
 Config via environment variables (profile-scoped via each profile's .env):
-  RAGAMUFFIN_ENDPOINT    — Ragamuffin server URL (default: http://ragamuffin:8000)
-  RAGAMUFFIN_AUTH_TOKEN  — API key / JWT for authenticated deployments (optional)
-  RAGAMUFFIN_VAULT_PREFIX— Prefix for agent vault names (default: agent::)
-  RAGAMUFFIN_CONFIG      — Path to JSON config file (optional, overrides HERMES_HOME/ragamuffin.json)
+  RAGAMUFFIN_ENDPOINT        — Ragamuffin server URL (default: http://ragamuffin:8000)
+  RAGAMUFFIN_AUTH_TOKEN      — API key / JWT for authenticated deployments (optional)
+  RAGAMUFFIN_VAULT_PREFIX    — Prefix for agent vault names (default: agent::)
+  RAGAMUFFIN_CONFIG          — Path to JSON config file (optional, overrides HERMES_HOME/ragamuffin.json)
+
+Phase 2 — Auto-Injection + Cadence:
+  RAGAMUFFIN_RECALL_MODE      — 'hybrid' (default), 'context', or 'tools'
+  RAGAMUFFIN_SAVE_MESSAGES    — 'true' (default) / 'false'
+  RAGAMUFFIN_INJECTION_FREQ   — 'every_turn' (default) or 'first_turn'
+  RAGAMUFFIN_CONTEXT_CADENCE  — Refresh base context every N turns (default 3, 0=disable)
+  RAGAMUFFIN_DIALECTIC_CADENCE— Refresh dialectic every N turns (default 5, 0=disable)
 
 Config file ($HERMES_HOME/ragamuffin.json) — matches honcho.json structure:
   {
     "endpoint": "http://ragamuffin:8000",
     "auth_token": "...",
-    "vault_prefix": "agent::"
+    "vault_prefix": "agent::",
+    "recall_mode": "hybrid",
+    "save_messages": true,
+    "injection_frequency": "every_turn",
+    "context_cadence": 3,
+    "dialectic_cadence": 5
   }
 
 Environment variables override config file values.
 
 Lifecycle:
-  initialize()     → POST /v1/vaults (create/confirm vault), load config
-  prefetch(query)  → returns cached result from background thread
-  queue_prefetch() → background thread → POST /v1/recall
-  sync_turn()      → background thread → POST /v1/ingest
-  on_session_end() → POST /v1/ingest with session summary
-  handle_tool_call → POST /v1/recall against specified vault
+  initialize()       → POST /v1/vaults (create/confirm vault), load config
+  prefetch(query)    → returns cached layered context via _wrap_context()
+  queue_prefetch()   → background thread → POST /v1/recall (cadence-gated)
+  _refresh_context() → rebuilds base context cache on cadence
+  sync_turn()        → background thread → POST /v1/ingest (cadence-gated, saveMessages)
+  on_session_end()   → POST /v1/ingest with session summary
+  handle_tool_call   → POST /v1/recall against specified vault
+
+recallMode routing:
+  hybrid  — inject context + expose tools (default)
+  context — inject context only, hide tools
+  tools   — expose tools only, no auto-injection
 
 Tool schemas:
   ragamuffin_recall     — search any agent's vault (cross-agent recall)
@@ -442,6 +460,17 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._turn_counter = 0
         self._session_id = ""
 
+        # Phase 2 — Auto-Injection + Cadence
+        self._recall_mode = "hybrid"           # hybrid | context | tools
+        self._save_messages = True
+        self._injection_frequency = "every_turn"  # every_turn | first_turn
+        self._context_cadence = 3              # refresh base context every N turns
+        self._dialectic_cadence = 5            # refresh dialectic every N turns
+        self._base_context_cache = ""
+        self._pending_dialectic = ""
+        self._context_cache_turn = 0           # last turn context was refreshed
+        self._dialectic_cache_turn = 0         # last turn dialectic was refreshed
+
         # Context bundle cache
         self._context_bundle: Dict[str, Any] = {}
 
@@ -486,6 +515,51 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "default": _VAULT_PREFIX,
                 "env_var": "RAGAMUFFIN_VAULT_PREFIX",
             },
+            {
+                "key": "recall_mode",
+                "description": (
+                    "Toggle injection vs tool visibility: 'hybrid' (inject + tools), "
+                    "'context' (inject only, hide tools), 'tools' (no auto-injection)."
+                ),
+                "default": "hybrid",
+                "env_var": "RAGAMUFFIN_RECALL_MODE",
+            },
+            {
+                "key": "save_messages",
+                "description": (
+                    "Persist turn content to vault. Set to false when you only "
+                    "need selective fact storage via ragamuffin_learn."
+                ),
+                "default": True,
+                "env_var": "RAGAMUFFIN_SAVE_MESSAGES",
+            },
+            {
+                "key": "injection_frequency",
+                "description": (
+                    "'every_turn' injects context on every turn. 'first_turn' "
+                    "only injects on the first turn of a session."
+                ),
+                "default": "every_turn",
+                "env_var": "RAGAMUFFIN_INJECTION_FREQ",
+            },
+            {
+                "key": "context_cadence",
+                "description": (
+                    "Refresh base context (peer card + session summary) "
+                    "every N turns. 0 disables auto-refresh."
+                ),
+                "default": 3,
+                "env_var": "RAGAMUFFIN_CONTEXT_CADENCE",
+            },
+            {
+                "key": "dialectic_cadence",
+                "description": (
+                    "Refresh dialectic reasoning context every N turns. "
+                    "0 disables. Phase 3 extends this with multi-pass depth."
+                ),
+                "default": 5,
+                "env_var": "RAGAMUFFIN_DIALECTIC_CADENCE",
+            },
         ]
 
     # -- Config file loading -------------------------------------------------
@@ -524,6 +598,28 @@ class RagamuffinMemoryProvider(MemoryProvider):
             if "vault_prefix" in cfg and "RAGAMUFFIN_VAULT_PREFIX" not in os.environ:
                 self._vault_prefix = cfg["vault_prefix"]
 
+            # Phase 2 — recall mode / cadence config (env overrides)
+            if "recall_mode" in cfg and "RAGAMUFFIN_RECALL_MODE" not in os.environ:
+                val = str(cfg["recall_mode"]).lower()
+                if val in ("hybrid", "context", "tools"):
+                    self._recall_mode = val
+            if "save_messages" in cfg and "RAGAMUFFIN_SAVE_MESSAGES" not in os.environ:
+                self._save_messages = bool(cfg["save_messages"])
+            if (
+                "injection_frequency" in cfg
+                and "RAGAMUFFIN_INJECTION_FREQ" not in os.environ
+            ):
+                val = str(cfg["injection_frequency"]).lower()
+                if val in ("every_turn", "first_turn"):
+                    self._injection_frequency = val
+            if "context_cadence" in cfg and "RAGAMUFFIN_CONTEXT_CADENCE" not in os.environ:
+                self._context_cadence = max(0, int(cfg["context_cadence"]))
+            if (
+                "dialectic_cadence" in cfg
+                and "RAGAMUFFIN_DIALECTIC_CADENCE" not in os.environ
+            ):
+                self._dialectic_cadence = max(0, int(cfg["dialectic_cadence"]))
+
             logger.debug("Loaded Ragamuffin config from %s", config_path)
         except Exception as e:
             logger.warning(
@@ -543,6 +639,32 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._vault_prefix = os.environ.get("RAGAMUFFIN_VAULT_PREFIX", _VAULT_PREFIX)
         self._session_id = session_id
         self._turn_counter = 0
+
+        # Phase 2 — load recall mode / cadence config from env
+        self._recall_mode = os.environ.get("RAGAMUFFIN_RECALL_MODE", "hybrid").lower()
+        if self._recall_mode not in ("hybrid", "context", "tools"):
+            self._recall_mode = "hybrid"
+        save_ms = os.environ.get("RAGAMUFFIN_SAVE_MESSAGES", "true").lower()
+        self._save_messages = save_ms in ("true", "1", "yes")
+        self._injection_frequency = os.environ.get(
+            "RAGAMUFFIN_INJECTION_FREQ", "every_turn"
+        ).lower()
+        if self._injection_frequency not in ("every_turn", "first_turn"):
+            self._injection_frequency = "every_turn"
+        try:
+            self._context_cadence = int(
+                os.environ.get("RAGAMUFFIN_CONTEXT_CADENCE", "3")
+            )
+        except (ValueError, TypeError):
+            self._context_cadence = 3
+        try:
+            self._dialectic_cadence = int(
+                os.environ.get("RAGAMUFFIN_DIALECTIC_CADENCE", "5")
+            )
+        except (ValueError, TypeError):
+            self._dialectic_cadence = 5
+        self._context_cache_turn = 0
+        self._dialectic_cache_turn = 0
 
         # Honor pre-set _requests (e.g. from tests); otherwise lazy-import
         if self._requests is None:
@@ -655,20 +777,102 @@ class RagamuffinMemoryProvider(MemoryProvider):
         """Return status block for the system prompt if ready."""
         if not self._available or not self._vault_ready:
             return ""
-        return (
-            "# Ragamuffin Agent Memory\n"
-            "Active. All turns are automatically persisted.\n"
-            "Use `ragamuffin_recall` or `ragamuffin_search` to search any agent's vault.\n"
-            "Use `ragamuffin_profile` to view or update this agent's peer card.\n"
-            "Use `ragamuffin_context` for a composite context bundle.\n"
-            "Use `ragamuffin_learn` to store a conclusion as a persistent fact.\n"
-        )
+        block = "# Ragamuffin Agent Memory\nActive.\n"
+        if self._save_messages:
+            block += "All turns are automatically persisted.\n"
+
+        if self._recall_mode != "tools":
+            block += "Context is automatically injected each turn.\n"
+        if self._recall_mode != "context":
+            block += (
+                "Use `ragamuffin_recall` or `ragamuffin_search` "
+                "to search any agent's vault.\n"
+            )
+            block += (
+                "Use `ragamuffin_profile` to view or update "
+                "this agent's peer card.\n"
+            )
+            block += (
+                "Use `ragamuffin_context` for a composite "
+                "context bundle.\n"
+            )
+            block += (
+                "Use `ragamuffin_learn` to store a conclusion "
+                "as a persistent fact.\n"
+            )
+            block += (
+                "Use `ragamuffin_fact_get` to retrieve a "
+                "specific fact by key.\n"
+            )
+            block += (
+                "Use `ragamuffin_fact_put` to write or update "
+                "a fact.\n"
+            )
+        return block
+
+    # -- Phase 2: Auto-Injection + Cadence ----------------------------------
+
+    def _build_base_context(self) -> str:
+        """Build the base context layer: peer card + session summary."""
+        if not self._requests:
+            return ""
+        parts = []
+
+        card = self._get_peer_card()
+        if card:
+            parts.append(f"--- Peer Card ({self._agent_identity}) ---\n{card}")
+
+        try:
+            url = _build_endpoint(
+                self._endpoint,
+                f"/v1/facts?prefix=session/{self._session_id}&limit=1",
+            )
+            headers = _build_headers(self._auth_token)
+            resp = self._requests.get(
+                url, headers=headers, timeout=_REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                facts = data.get("facts", []) or data.get("results", [])
+                if facts:
+                    summary = facts[-1].get("value", "")
+                    if summary:
+                        parts.append(f"--- Session Summary ---\n{summary}")
+        except Exception as e:
+            logger.debug("Base context summary fetch error: %s", e)
+
+        return "\n\n".join(parts)
+
+    def _build_dialectic(self) -> str:
+        """Build the dialectic reasoning layer (placeholder for Phase 3).
+
+        Phase 3 will extend this with multi-pass reasoning, cold/warm
+        prompt selection, bail-out heuristics, and empty-streak backoff.
+        Currently returns an empty string (no dialectic without depth).
+        """
+        return ""
+
+    def _wrap_context(self, context_str: str) -> str:
+        """Wrap context in <memory-context> XML fences.
+
+        Returns empty string if context is empty or if recall_mode
+        is 'tools' (no auto-injection).
+        """
+        if not context_str or self._recall_mode == "tools":
+            return ""
+        return f"<memory-context>\n{context_str}\n</memory-context>"
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return prefetched context from the background thread.
+        """Return cached layered context from _wrap_context().
 
         Waits briefly for the background thread if still running,
-        then returns cached results.
+        then builds layered context from:
+        1. _base_context_cache (refreshed on context_cadence)
+        2. _pending_dialectic (refreshed on dialectic_cadence)
+        3. Prefetch recall results
+
+        Returns empty string instead of _wrap_context() when nothing
+        is cached, to avoid emitting empty <memory-context> fences.
         """
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             self._prefetch_thread.join(timeout=_PREFETCH_TIMEOUT)
@@ -677,13 +881,37 @@ class RagamuffinMemoryProvider(MemoryProvider):
             result = self._prefetch_result
             self._prefetch_result = ""
 
-        if not result:
+        layers = []
+        if self._base_context_cache:
+            layers.append(self._base_context_cache)
+        if self._pending_dialectic:
+            layers.append(self._pending_dialectic)
+        if result:
+            layers.append(f"## Recent Recall\n{result}")
+
+        if not layers:
             return ""
-        return f"## Ragamuffin Recall\n{result}\n"
+        return self._wrap_context("\n\n".join(layers))
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        """Queue a background recall for the NEXT turn."""
+        """Queue a background recall for the NEXT turn.
+
+        Phase 2: In 'context' recall_mode, prefetch is skipped entirely
+        (tools are hidden, no recall injection needed). Also respects
+        first_turn injection frequency — only fetches on the first turn.
+        """
         if not self._available or not self._vault_ready or not query:
+            return
+
+        # Phase 2 — skip prefetch in 'context' mode (no recall tools)
+        if self._recall_mode == "context":
+            return
+
+        # Phase 2 — first_turn injection: only prefetch on turn 0
+        if (
+            self._injection_frequency == "first_turn"
+            and self._turn_counter > 0
+        ):
             return
 
         def _run():
@@ -729,11 +957,46 @@ class RagamuffinMemoryProvider(MemoryProvider):
         *,
         session_id: str = "",
     ) -> None:
-        """Persist a completed turn asynchronously."""
+        """Persist a completed turn asynchronously.
+
+        Phase 2: Also refreshes base context and dialectic caches
+        on cadence (every context_cadence / dialectic_cadence turns).
+        Skips persistence when save_messages is False.
+        """
         if not self._available or not self._vault_ready:
             return
 
         self._turn_counter += 1
+
+        # Phase 2 — cadence-gated context refresh
+        if (
+            self._context_cadence > 0
+            and self._turn_counter - self._context_cache_turn
+            >= self._context_cadence
+        ):
+            self._base_context_cache = self._build_base_context()
+            self._context_cache_turn = self._turn_counter
+            logger.debug(
+                "Context cache refreshed at turn %d",
+                self._turn_counter,
+            )
+
+        if (
+            self._dialectic_cadence > 0
+            and self._turn_counter - self._dialectic_cache_turn
+            >= self._dialectic_cadence
+        ):
+            self._pending_dialectic = self._build_dialectic()
+            self._dialectic_cache_turn = self._turn_counter
+            logger.debug(
+                "Dialectic cache refreshed at turn %d",
+                self._turn_counter,
+            )
+
+        # Phase 2 — skip persistence when save_messages is False
+        if not self._save_messages:
+            return
+
         text = f"User: {user_content}\nAssistant: {assistant_content}"
 
         def _run():
