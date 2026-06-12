@@ -320,7 +320,7 @@ Ragamuffin solves all three problems at once:
 <div class="info-box">
   <div class="title">🏠 Built by the team that uses it</div>
   <p>
-    Ragamuffin was built by <a href="https://chezgoulet.org" style="color:var(--accent2)">Chez Goulet</a> — a one-person infrastructure operation running AI agents in production. But "one person" undersells it. The team was <strong>three AI agents working under one human's direction</strong>, shipping production Go code for <strong>~$50 in API tokens</strong>. Every feature was built because it was needed. The same code that powers production is the code you download. One binary, one repository, one pipeline.
+    Ragamuffin was built by <a href="https://chezgoulet.org" style="color:var(--accent2)">Chez Goulet</a> — a one-person infrastructure operation running AI agents in production. But "one person" undersells it. The team was <strong>two AI agents working under one human's direction</strong>, shipping production Go code for <strong>~$50 in API tokens</strong>. Every feature was built because it was needed. The same code that powers production is the code you download. One binary, one repository, one pipeline.
   </p>
 </div>
 
@@ -531,7 +531,7 @@ This is the part that surprises people. Ragamuffin was built in <strong>32 days<
 </p>
 
 <p>
-The team was four agents, one human, and a GitHub CI pipeline:
+The team was two AI agents, one human, and a GitHub CI pipeline:
 </p>
 
 <table>
@@ -692,6 +692,7 @@ The process was simple and repeatable:
   <tr><td><strong>Semantic search</strong></td><td>Search by meaning, not keywords. Ask "what's our deployment process?" and get the right docs even if they never used those exact words.</td></tr>
   <tr><td><strong>LLM synthesis</strong></td><td>For complex questions, Ragamuffin retrieves relevant passages and asks an LLM to synthesize an answer with source citations.</td></tr>
   <tr><td><strong>Fact storage</strong></td><td>Agents write structured facts (key-value pairs with tags and confidence scores). Facts persist across sessions and can be searched, superseded, or flagged as stale.</td></tr>
+  <tr><td><strong>Semantic fact search</strong></td><td>Facts are embedded on upsert using the same model as document chunks. Query facts by concept via <code>GET /v1/facts?query=&quot;...&quot;</code> with optional tag/status/time filters. Facts and chunks also return together in <code>/v1/hybrid</code> — one query, ranked by relevance.</td></tr>
   <tr><td><strong>Fact lifecycle</strong></td><td>A write → review → confirm/supersede/reject pipeline. The pruner automatically finds stale facts, contradictions, and low-confidence entries.</td></tr>
   <tr><td><strong>Per-agent vaults</strong></td><td>Each agent gets an isolated Qdrant collection. Agent A's data is physically separate from Agent B's.</td></tr>
   <tr><td><strong>Cross-agent recall</strong></td><td>With proper auth, Agent A can query Agent B's vault. Teams of agents can share knowledge.</td></tr>
@@ -711,18 +712,13 @@ Ragamuffin is honest about what it doesn't do well. These are known gaps, not su
 </p>
 
 <div class="limitation">
-  <h4>🧠 Semantic fact search (v1.0)</h4>
-  <p>Facts are embedded on upsert using the same embedding model as document chunks (default 1536-dim). You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters: <code>?query="arch linux"&amp;status=active</code>. Facts and chunks also appear together in <code>/v1/hybrid?query="..."</code> — one query returns both, ranked by score. This shipped in v1.0; before that, facts used zero vectors and were only searchable by key/prefix/tag.</p>
-</div>
-
-<div class="limitation">
   <h4>📄 Two-container deployment</h4>
   <p>Ragamuffin is a single binary, but it needs Qdrant. That's two containers instead of one. For production, you also need an embedding API key (OpenAI or compatible) and optionally an LLM API key for synthesis. The core search works without an LLM; the synthesis features don't.</p>
 </div>
 
 <div class="limitation">
-  <h4>🔍 No substring/full-text fact search</h4>
-  <p>The README once advertised "full-text / substring match on fact_key" — this was never implemented. Fact search is exact match and prefix only. The docs have been corrected.</p>
+  <h4>🔍 Limited key substring search</h4>
+  <p>Fact key search supports exact match and prefix (via Qdrant tokenized full-text matching). Fact values support full semantic vector search via <code>?query="..."</code>, plus filtering by tag, status, and time. True arbitrary substring matching (e.g. <code>*deployment*</code>) on fact keys isn't available — but prefix + semantic query covers virtually all practical cases.</p>
 </div>
 
 <div class="limitation">
