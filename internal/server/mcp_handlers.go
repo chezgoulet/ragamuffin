@@ -433,7 +433,7 @@ func (s *Server) mcpFacts(ctx context.Context, args map[string]interface{}) (int
 			limit = int(v)
 		}
 
-		return s.doFactsList(ctx, key, prefix, tag, status, limit)
+		return s.doFactsList(ctx, key, prefix, "", tag, status, limit)
 
 	case "upsert":
 		if claims := auth.ClaimsFromContext(ctx); claims != nil && !claims.HasAccess("write") {

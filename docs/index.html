@@ -557,7 +557,7 @@ The process was simple and repeatable:
   <li><strong>Vigilant refined the spec</strong> — asked clarifying questions, caught edge cases, verified it against the existing codebase.</li>
   <li><strong>Dev built it</strong> — branched from testing, wrote the code, pushed a PR.</li>
   <li><strong>Vigilant reviewed the PR</strong> — checked for correctness, convention compliance, test coverage. If it looked good, approved.</li>
-  <li><strong>Christopher merged + audited</strong> — final human sign-off, plus periodic deep-dive code reviews of the entire codebase using AI tools. Nothing went to production without a human saying yes.</li>
+  <li><strong>Christopher audited</strong> — final human sign-off, plus periodic deep-dive code reviews of the entire codebase using AI tools. Nothing went to production without a human saying yes.</li>
 </ol>
 
 <div class="diagram-box">
@@ -716,20 +716,12 @@ Ragamuffin is honest about what it doesn't do well. These are known gaps, not su
   <p>Ragamuffin is a single binary, but it needs Qdrant. That's two containers instead of one. For production, you also need an embedding API key (OpenAI or compatible) and optionally an LLM API key for synthesis. The core search works without an LLM; the synthesis features don't.</p>
 </div>
 
-<div class="limitation">
-  <h4>🔍 Limited key substring search</h4>
-  <p>Fact key search supports exact match and prefix (via Qdrant tokenized full-text matching). Fact values support full semantic vector search via <code>?query="..."</code>, plus filtering by tag, status, and time. True arbitrary substring matching (e.g. <code>*deployment*</code>) on fact keys isn't available — but prefix + semantic query covers virtually all practical cases.</p>
-</div>
 
 <div class="limitation">
   <h4>🐌 Limited multi-tenant performance</h4>
   <p>Each agent vault is a separate Qdrant collection. With 50+ agents, this means 50+ Qdrant collections. Qdrant handles this fine, but backup and restore scale linearly with collection count. The current deployment (5-10 agents) has no issues.</p>
 </div>
 
-<div class="limitation">
-  <h4>🔧 No admin UI</h4>
-  <p>Ragamuffin is API-only. There's no web dashboard, no admin panel, no "click to configure." You configure it via environment variables and interact with it via curl. This is intentional (the primary users are AI agents, not humans), but it means new users have a steeper onboarding curve.</p>
-</div>
 
 <!-- SECTION: Where it's going -->
 <h2><span class="emoji">🧭</span> Where it's going</h2>
@@ -741,11 +733,6 @@ Ragamuffin is approaching v1.0. The roadmap focuses on three areas:
 <div class="info-box">
   <div class="title">📊 Benchmark reliability</div>
   <p>Making the accuracy benchmarks trustworthy. The judge methodology audit (in progress) will ensure the scores we report are real. A `?judge=true` flag will produce judge-optimized answers so the benchmark measures retrieval accuracy, not verbosity.</p>
-</div>
-
-<div class="info-box">
-  <div class="title">🧠 Fact embedding (v1.0 — shipped)</div>
-  <p>Fact values are now embedded on upsert using the same embedding model as document chunks. You can query facts by concept via <code>GET /v1/facts?query="..."</code> or combined with filters. Facts and chunks appear together in <code>/v1/hybrid?query="..."</code>. Existing zero-vector facts are re-embedded at startup. Shipped in v1.0.</p>
 </div>
 
 <div class="info-box">

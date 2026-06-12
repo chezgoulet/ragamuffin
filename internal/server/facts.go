@@ -416,6 +416,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	prefix := r.URL.Query().Get("prefix")
+	keyContains := r.URL.Query().Get("key_contains")
 	tag := r.URL.Query().Get("tag")
 	status := r.URL.Query().Get("status")
 	conflictResolvedStr := r.URL.Query().Get("conflict_resolved")
@@ -655,6 +656,9 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 	for _, p := range points {
 		key, _ := qutil.GetPayloadString(p.Payload, "fact_key")
 		if prefix != "" && !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if keyContains != "" && !strings.Contains(key, keyContains) {
 			continue
 		}
 		// Skip internal keys (_ragamuffin/ prefix) in list results (#437).
