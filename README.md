@@ -5,6 +5,7 @@ Ragamuffin is an **open-source knowledge server for AI agents.** Point it at a d
 No vector database to manage. No pipeline to build. No agent discipline required.
 
 [![build](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml/badge.svg)](https://github.com/chezgoulet/ragamuffin/actions/workflows/build.yml)
+[![site](https://img.shields.io/badge/site-ragamuffin.chezgoulet.org-7c6ff0)](https://ragamuffin.chezgoulet.org)
 
 ```bash
 # Point Ragamuffin at your docs. Ask anything.
