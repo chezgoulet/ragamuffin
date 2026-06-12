@@ -74,10 +74,10 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 	// ── 2. Facts (vector search) — when query is present ──
 	if query != "" {
 		eb := s.embeddingFor(r.Context())
-		if eb != nil {
+		qc := s.factsQdrantFor(r.Context())
+		if eb != nil && qc != nil {
 			vector, err := eb.EmbedSingle(r.Context(), query)
 			if err == nil {
-				qc := s.factsQdrantFor(r.Context())
 				factPoints, err := qc.Search(r.Context(), vector, uint64(topK), 0.0, "", nil)
 				if err == nil {
 					for _, p := range factPoints {
@@ -106,6 +106,9 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 // queryHybridFacts searches facts by key/prefix/tag and returns hybridResult entries.
 // Priority order: exact key > prefix > tag. Deduplicates by key across all three passes.
 func (s *Server) queryHybridFacts(ctx context.Context, key, prefix, tag string, limit int) []hybridResult {
+	if s.facts == nil {
+		return nil
+	}
 	var results []hybridResult
 	seen := make(map[string]bool)
 
