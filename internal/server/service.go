@@ -667,7 +667,7 @@ func factToMap(fr *factResponse) map[string]interface{} {
 }
 
 // doFactsList retrieves facts by key, prefix, tag, or status. Shared by REST and MCP.
-func (s *Server) doFactsList(ctx context.Context, key, prefix, tag, status string, limit int) (interface{}, error) {
+func (s *Server) doFactsList(ctx context.Context, key, prefix, keyContains, tag, status string, limit int) (interface{}, error) {
 	factsCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
@@ -741,6 +741,9 @@ func (s *Server) doFactsList(ctx context.Context, key, prefix, tag, status strin
 	facts := make([]interface{}, 0, len(points))
 	for _, p := range points {
 		if fr := pointToFact(p); fr != nil {
+			if keyContains != "" && !strings.Contains(fr.Key, keyContains) {
+				continue
+			}
 			facts = append(facts, factToMap(fr))
 		}
 	}
