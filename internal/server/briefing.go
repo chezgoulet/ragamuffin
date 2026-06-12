@@ -9,6 +9,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
 
@@ -91,12 +92,31 @@ func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
 		vaultPaths = append(vaultPaths, vp)
 	})
 
-	// ── Review queue count (single scroll page) ──
+	// ── Review queue count — scoped to accessible vaults ──
 	filter := s.needsReviewFilter()
-	if filter != nil {
-		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, 10, "")
-		if err == nil {
-			resp.ReviewQueue = &briefingReviewSummary{Total: len(points)}
+	if filter != nil && s.facts != nil {
+		totalReview := 0
+		byReason := make(map[string]int)
+		s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+			if claims != nil && !claims.HasVaultAccess(name) {
+				return
+			}
+			collection := s.cfg.FactsCollectionFor(name)
+			points, err := s.facts.ScrollFiltered(r.Context(), collection, filter, 10, "")
+			if err != nil {
+				return
+			}
+			totalReview += len(points)
+			for _, p := range points {
+				reason, _ := qutil.GetPayloadString(p.Payload, "review_reason")
+				if reason != "" {
+					byReason[reason]++
+				}
+			}
+		})
+		resp.ReviewQueue = &briefingReviewSummary{Total: totalReview}
+		if len(byReason) > 0 {
+			resp.ReviewQueue.ByReason = byReason
 		}
 	}
 
