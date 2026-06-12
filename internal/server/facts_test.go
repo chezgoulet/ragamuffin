@@ -562,6 +562,39 @@ func TestFactsGet_FilterByPrefix(t *testing.T) {
 	}
 }
 
+func TestFactsGet_FilterByKeyContains(t *testing.T) {
+	store := newFactsMockStore()
+	store.addPoint("infra/production-deployment", "deploy prod", "active")
+	store.addPoint("infra/staging-config", "staging", "active")
+	store.addPoint("app/deployment-notes", "deploy notes", "active")
+	s := newFactsServer(store)
+
+	for _, tc := range []struct {
+		name     string
+		query    string
+		expected int
+	}{
+		{"substring in key", "/v1/facts?key_contains=deployment", 2},
+		{"partial match - ploy", "/v1/facts?key_contains=ploy", 2},
+		{"no match", "/v1/facts?key_contains=nonexistent", 0},
+		{"empty = no filter", "/v1/facts", 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			s.handleFactsGet(w, factsGetRequest(tc.query))
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d", w.Code)
+			}
+			var resp map[string]interface{}
+			json.NewDecoder(w.Body).Decode(&resp)
+			entries := resp["entries"].([]interface{})
+			if len(entries) != tc.expected {
+				t.Errorf("expected %d entries, got %d", tc.expected, len(entries))
+			}
+		})
+	}
+}
+
 func TestFactsGet_Limit(t *testing.T) {
 	store := newFactsMockStore()
 	for i := 0; i < 10; i++ {
