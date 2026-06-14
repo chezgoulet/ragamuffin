@@ -26,6 +26,19 @@ else
 fi
 
 echo ""
+echo ""
+echo "=== NarrativeQA (HuggingFace parquet) ==="
+# Downloaded by ingest_narrativeqa.py on first run
+NQA_DIR="$DATA_DIR/narrativeqa"
+mkdir -p "$NQA_DIR"
+if [ -d "$NQA_DIR/stories" ] && [ -f "$NQA_DIR/questions.json" ]; then
+    echo "Already parsed: $(ls "$NQA_DIR/stories" 2>/dev/null | wc -l) stories, $(cat "$NQA_DIR/questions.json" | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' 2>/dev/null || echo "?") questions"
+else
+    echo "Run 'python3 benchmarks/ingest_narrativeqa.py' to download and parse."
+fi
+
+echo ""
 echo "=== Done ==="
-echo "LongMemEval: $DATA_DIR/LongMemEval"
-echo "LoCoMo:      $DATA_DIR/Backboard-Locomo-Benchmark"
+echo "LongMemEval:   $DATA_DIR/LongMemEval"
+echo "LoCoMo:        $DATA_DIR/Backboard-Locomo-Benchmark"
+echo "NarrativeQA:   $DATA_DIR/narrativeqa
