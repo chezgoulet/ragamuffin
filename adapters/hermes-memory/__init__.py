@@ -3,6 +3,9 @@
 Provides per-agent Qdrant-isolated memory with automatic session persistence,
 cross-agent recall, and semantic search via Ragamuffin's HTTP API.
 
+Known limitation: Sessions API may return 503 under load.
+The adapter degrades gracefully to tool-only mode. See README.md.
+
 Config via environment variables (profile-scoped via each profile's .env):
   RAGAMUFFIN_ENDPOINT        — Ragamuffin server URL (default: http://ragamuffin:8000)
   RAGAMUFFIN_AUTH_TOKEN      — API key / JWT for authenticated deployments (optional)
