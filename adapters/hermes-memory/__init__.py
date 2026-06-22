@@ -2161,3 +2161,8 @@ def _atomic_json_write(path: Path, data: dict, mode: int = 0o600) -> None:
 def register(ctx) -> None:
     """Hermes discovers this provider via ``register()``."""
     ctx.register_memory_provider(RagamuffinMemoryProvider())
+    try:
+        from .cli import register_cli  # type: ignore[import-not-found]
+        register_cli(ctx.subparsers)
+    except ImportError:
+        pass
