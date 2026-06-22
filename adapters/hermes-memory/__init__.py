@@ -68,8 +68,10 @@ from __future__ import annotations
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -2106,6 +2108,26 @@ class RagamuffinMemoryProvider(MemoryProvider):
             logger.debug("Ragamuffin review_resolve error: %s", e)
             return json.dumps({"error": f"Review resolve failed: {e}"})
 
+    def save_config(self, values: dict, hermes_home: str) -> None:
+        """Write non-secret config to $HERMES_HOME/ragamuffin.json.
+
+        Merges the provided values with any existing config, preserving
+        fields not present in ``values``.  Secret fields (auth_token) are
+        expected to come from the profile-level env files; this method
+        writes only the non-secret config (endpoint, vault_prefix,
+        recall_mode, cadence settings, etc.) so the hermes memory setup
+        flow completes.
+        """
+        config_path = Path(hermes_home) / "ragamuffin.json"
+        existing: dict = {}
+        if config_path.exists():
+            try:
+                existing = json.loads(config_path.read_text())
+            except Exception:
+                pass
+        existing.update(values)
+        _atomic_json_write(config_path, existing, mode=0o600)
+
     def shutdown(self) -> None:
         """Clean shutdown - wait for pending syncs."""
         if self._sync_thread and self._sync_thread.is_alive():
@@ -2115,3 +2137,27 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._available = False
         self._vault_ready = False
         logger.debug("Ragamuffin provider shut down")
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _atomic_json_write(path: Path, data: dict, mode: int = 0o600) -> None:
+    """Atomically write a JSON dict to *path* via temp+rename."""
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    if mode is not None:
+        tmp.chmod(mode)
+    tmp.replace(path)
+
+
+# ---------------------------------------------------------------------------
+# Plugin entry point
+# ---------------------------------------------------------------------------
+
+
+def register(ctx) -> None:
+    """Hermes discovers this provider via ``register()``."""
+    ctx.register_memory_provider(RagamuffinMemoryProvider())
