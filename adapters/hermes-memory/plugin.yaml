@@ -1,5 +1,16 @@
 name: "ragamuffin"
 description: "Per-agent Qdrant-isolated memory with cross-agent recall via Ragamuffin"
-version: "0.5.0"
+version: "0.9.3"
 author: "ChezGoulet"
 homepage: "https://github.com/chezgoulet/ragamuffin"
+
+hooks:
+  # Lifecycle hooks implemented by this provider
+  sync_turn: true
+  on_session_end: true
+  prefetch: true
+  queue_prefetch: true
+  shutdown: true
+
+cli:
+  subcommand: "ragamuffin"
