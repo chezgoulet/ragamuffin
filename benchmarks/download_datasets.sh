@@ -26,6 +26,52 @@ else
 fi
 
 echo ""
+echo ""
+echo "=== Downloading NarrativeQA ==="
+NQA_DIR="$DATA_DIR/narrativeqa"
+mkdir -p "$NQA_DIR/train" "$NQA_DIR/test" "$NQA_DIR/validation"
+
+# Train: 24 shards
+echo "Downloading train shards (24 files)..."
+for i in $(seq -w 0 23); do
+    F="train-000$i-of-00024.parquet"
+    if [ -f "$NQA_DIR/train/$F" ] && [ -s "$NQA_DIR/train/$F" ]; then
+        echo "  $F — cached"
+    else
+        echo -n "  $F — downloading... "
+        curl -sL "https://huggingface.co/datasets/deepmind/narrativeqa/resolve/main/data/$F?download=1" -o "$NQA_DIR/train/$F"
+        echo "$(du -h "$NQA_DIR/train/$F" | cut -f1)"
+    fi
+done
+
+# Test: 8 shards
+echo "Downloading test shards (8 files)..."
+for i in $(seq -w 0 7); do
+    F="test-0000$i-of-00008.parquet"
+    if [ -f "$NQA_DIR/test/$F" ] && [ -s "$NQA_DIR/test/$F" ]; then
+        echo "  $F — cached"
+    else
+        echo -n "  $F — downloading... "
+        curl -sL "https://huggingface.co/datasets/deepmind/narrativeqa/resolve/main/data/$F?download=1" -o "$NQA_DIR/test/$F"
+        echo "$(du -h "$NQA_DIR/test/$F" | cut -f1)"
+    fi
+done
+
+# Validation: 3 shards
+echo "Downloading validation shards (3 files)..."
+for i in $(seq -w 0 2); do
+    F="validation-0000$i-of-00003.parquet"
+    if [ -f "$NQA_DIR/validation/$F" ] && [ -s "$NQA_DIR/validation/$F" ]; then
+        echo "  $F — cached"
+    else
+        echo -n "  $F — downloading... "
+        curl -sL "https://huggingface.co/datasets/deepmind/narrativeqa/resolve/main/data/$F?download=1" -o "$NQA_DIR/validation/$F"
+        echo "$(du -h "$NQA_DIR/validation/$F" | cut -f1)"
+    fi
+done
+
+echo ""
 echo "=== Done ==="
 echo "LongMemEval: $DATA_DIR/LongMemEval"
 echo "LoCoMo:      $DATA_DIR/Backboard-Locomo-Benchmark"
+echo "NarrativeQA: $NQA_DIR/ ({train,test,validation}/)
