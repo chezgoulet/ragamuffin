@@ -56,8 +56,8 @@ Examples:
     parser.add_argument(
         "--datasets",
         nargs="*",
-        default=["longmemeval", "locomo"],
-        choices=["longmemeval", "locomo"],
+        default=["longmemeval", "locomo", "narrativeqa"],
+        choices=["longmemeval", "locomo", "narrativeqa"],
         help="Datasets to run (default: all)",
     )
     parser.add_argument(
@@ -531,7 +531,7 @@ def post_to_github(
         "",
     ]
 
-    for bench in ["longmemeval", "locomo"]:
+    for bench in ["longmemeval", "locomo", "narrativeqa"]:
         body_lines.append(f"### {bench}")
         body_lines.append("")
         body_lines.append("| Config | Accuracy | Correct/Total | Baseline (D) | Δ |")
@@ -647,6 +647,33 @@ def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs:
             qdata = [(q.text, q.ground_truth, q.question_type) for q in qs]
             log(f"Questions: {len(qdata)} unique")
             return convs, qdata
+    elif label == "narrativeqa":
+        log_header("DATASET: NarrativeQA (~1,500 stories, ~46K questions)")
+        def load_fn():
+            from benchmarks.loaders.narrativeqa import NarrativeQALoader
+            log("Loading NarrativeQA dataset...")
+            t0 = time.perf_counter()
+            loader = NarrativeQALoader(
+                data_dir=os.path.join(os.path.dirname(__file__), "data", "narrativeqa"),
+                vault=vault,
+                config_label="D",
+            )
+            convs = loader.load()
+            elapsed = time.perf_counter() - t0
+            log(f"Loaded {len(convs)} stories ({elapsed:.1f}s)")
+            if not convs:
+                raise RuntimeError("No NarrativeQA stories loaded")
+            # Collect all unique questions across all stories
+            all_qs = []
+            seen = set()
+            for c in convs:
+                qs = loader.questions(c)
+                for q in qs:
+                    if q.id not in seen:
+                        seen.add(q.id)
+                        all_qs.append((q.text, q.ground_truth, q.question_type))
+            log(f"Questions: {len(all_qs)} unique")
+            return convs, all_qs
 
     return run_benchmark(
         label, vault, load_fn, client,
@@ -693,8 +720,9 @@ def main():
     if args.clean:
         lme_vault = "lme-bench-clean"
         locomo_vault = "locomo-bench-clean"
+        narrativeqa_vault = "narrativeqa-bench-clean"
         log("Clean mode: clearing vaults...")
-        for v in [lme_vault, locomo_vault]:
+        for v in [lme_vault, locomo_vault, narrativeqa_vault]:
             try:
                 result = client.clear_vault(v)
                 log(f"  Cleared '{v}': {result.get('chunks_deleted', 0)} chunks, "
@@ -708,7 +736,8 @@ def main():
     else:
         lme_vault = f"lme-bench-{RUN_ID}"
         locomo_vault = f"locomo-bench-{RUN_ID}"
-        log(f"Unique vault names: {lme_vault}, {locomo_vault}")
+        narrativeqa_vault = f"narrativeqa-bench-{RUN_ID}"
+        log(f"Unique vault names: {lme_vault}, {locomo_vault}, {narrativeqa_vault}")
 
     # Set Qdrant health check URL if provided
     if args.qdrant_url:
@@ -729,19 +758,31 @@ def main():
         chunk_size=args.chunks,
         ingest_delay=args.ingest_delay,
     )
+    narrativeqa_scores = _run_dataset(
+        "narrativeqa", narrativeqa_vault, client,
+        skip_configs=[],
+        datasets=args.datasets,
+        chunk_size=args.chunks,
+        ingest_delay=args.ingest_delay,
+    )
 
     # ── Summary ─────────────────────────────────────────────────────────
-    all_scores = {"longmemeval": lme_scores, "locomo": locomo_scores}
+    all_scores = {
+        "longmemeval": lme_scores,
+        "locomo": locomo_scores,
+        "narrativeqa": narrativeqa_scores,
+    }
     baseline = {
         "longmemeval": {"D": 0.533},
         "locomo": {"D": 0.467},
+        "narrativeqa": {"D": 0.0},  # TBD after first run
     }
 
     log("")
     log("╔" + "═" * 53 + "╗")
     log("║  SUMMARY")
     log("╚" + "═" * 53 + "╝")
-    for bench in ["longmemeval", "locomo"]:
+    for bench in ["longmemeval", "locomo", "narrativeqa"]:
         scores = all_scores.get(bench, {})
         log(f"  {bench}:")
         for cv in ["A", "B", "C", "D"]:

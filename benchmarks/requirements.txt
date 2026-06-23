@@ -1,1 +1,5 @@
 requests>=2.31.0
+
+# Optional: for NarrativeQA parquet ingestion
+# pyarrow>=14.0.0  # uncomment for parquet parsing
+# pandas>=2.0.0    # alternative parquet parser
