@@ -865,7 +865,7 @@ func TestValidVaultName(t *testing.T) {
 		{"docs-", false},    // trailing hyphen
 		{"", false},         // empty
 		{"a", true},
-		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false},
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},   // 33 chars (under new 64 limit)
 		{"a-b-c-d-e-f-g", true},
 		{"agent::dev", true},
 		{"agent::community-manager", true},
