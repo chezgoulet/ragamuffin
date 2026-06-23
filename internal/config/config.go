@@ -200,7 +200,7 @@ func (c *Config) HasGit() bool {
 }
 
 func ValidVaultName(name string) bool {
-	if len(name) == 0 || len(name) > 32 {
+	if len(name) == 0 || len(name) > 64 {
 		return false
 	}
 	for i, r := range name {
@@ -212,6 +212,9 @@ func ValidVaultName(name string) bool {
 		}
 		if r == '-' && i > 0 && i < len(name)-1 {
 			continue // hyphens allowed, but not leading or trailing
+		}
+		if r == ':' && i > 0 && i < len(name)-1 {
+			continue // colons allowed mid-name for agent:: prefix
 		}
 		return false
 	}
