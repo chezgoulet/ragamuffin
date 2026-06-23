@@ -864,11 +864,18 @@ func TestValidVaultName(t *testing.T) {
 		{"-docs", false},    // leading hyphen
 		{"docs-", false},    // trailing hyphen
 		{"", false},         // empty
-		{"a", true},         // single char
-		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 33 chars
+		{"a", true},                                 // single char
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 33 chars (still >32 in old impl)
 		{"a-b-c-d-e-f-g", true},                      // 13 chars, multiple hyphens
-		{"no spaces", false},                         // space
-		{"docs!", false},                             // special char
+		{"agent::dev", true},                          // colon prefix
+		{"agent::community-manager", true},             // colon + hyphen
+		{"agent::", false},                             // trailing colon
+		{"::name", false},                              // leading colon
+		{"name::", false},                              // trailing colon
+		{"no spaces", false},                           // space
+		{"docs!", false},                               // special char
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true},   // 64 chars
+		{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false}, // 65 chars
 	}
 
 	for _, tt := range tests {
