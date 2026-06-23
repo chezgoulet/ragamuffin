@@ -41,9 +41,9 @@ STORIES_DIR = os.path.join(DATA_DIR, "stories")
 QUESTIONS_FILE = os.path.join(DATA_DIR, "questions.json")
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 
-# HuggingFace parquet paths
+# HuggingFace parquet paths — dynamically discovered from API
+HF_API = "https://huggingface.co/api/datasets/deepmind/narrativeqa/parquet"
 HF_BASE = "https://huggingface.co/datasets/deepmind/narrativeqa/parquet/default"
-TRAIN_PARQUETS = 8  # 0.parquet through 7.parquet
 
 # Filtering
 MAX_STORY_TOKENS = 500_000  # Skip stories above this
@@ -66,42 +66,96 @@ def log(msg: str):
 # ── Download ─────────────────────────────────────────────────────────────────────
 
 
+def _discover_parquet_urls() -> Dict[str, List[str]]:
+    """Discover all parquet file URLs across all splits from the HF API.
+
+    Returns dict of split_name -> [url, ...].
+    """
+    try:
+        req = urllib.request.Request(HF_API)
+        req.add_header("User-Agent", "RagamuffinBenchmark/1.0")
+        resp = urllib.request.urlopen(req, timeout=15)
+        manifest = json.loads(resp.read())
+    except Exception as e:
+        log(f"  ⚠ Could not discover splits from API: {e}")
+        log(f"  Falling back to default splits")
+        # Fallback: well-known splits
+        return {
+            "train": [f"{HF_BASE}/train/{i}.parquet" for i in range(8)],
+            "test": [f"{HF_BASE}/test/{i}.parquet" for i in range(6)],
+            "validation": [f"{HF_BASE}/validation/{i}.parquet" for i in range(2)],
+        }
+
+    # Parse the manifest — it's nested under the "default" config
+    config = manifest.get("default", manifest)
+    splits: Dict[str, List[str]] = {}
+    for split_name, urls in config.items():
+        # urls from the API are HuggingFace API URLs, not raw download URLs.
+        # Convert them to raw download: /api/datasets/... -> /datasets/...
+        raw_urls = []
+        for u in urls:
+            # Replace /api/datasets/ with /datasets/ for raw parquet download
+            raw = u.replace("/api/datasets/", "/datasets/")
+            raw_urls.append(raw)
+        splits[split_name] = raw_urls
+
+    log(f"  Discovered splits: {', '.join(f'{k}: {len(v)} files' for k, v in splits.items())}")
+    return splits
+
+
 def download_parquet_files():
-    """Download NarrativeQA train parquet files from HuggingFace."""
+    """Download NarrativeQA parquet files from HuggingFace across all splits."""
     os.makedirs(PARQUET_DIR, exist_ok=True)
 
-    for i in range(TRAIN_PARQUETS):
-        filename = f"{i}.parquet"
-        dest = os.path.join(PARQUET_DIR, filename)
-        if os.path.exists(dest) and os.path.getsize(dest) > 1000:
-            log(f"  ✓ {filename} already cached ({os.path.getsize(dest)} bytes)")
-            continue
+    splits = _discover_parquet_urls()
+    total_files = sum(len(urls) for urls in splits.values())
+    downloaded = 0
+    skipped = 0
 
-        url = f"{HF_BASE}/train/{filename}"
-        log(f"  Downloading {url}...")
-        t0 = time.perf_counter()
-        try:
-            urllib.request.urlretrieve(url, dest)
-            elapsed = time.perf_counter() - t0
-            size_mb = os.path.getsize(dest) / (1024 * 1024)
-            log(f"  ✓ {filename}: {size_mb:.1f} MB ({elapsed:.1f}s)")
-        except urllib.error.URLError as e:
-            log(f"  ✗ {filename}: download failed — {e}")
-            raise
+    for split_name, urls in splits.items():
+        split_dir = os.path.join(PARQUET_DIR, split_name)
+        os.makedirs(split_dir, exist_ok=True)
 
-    log(f"  Downloaded {TRAIN_PARQUETS} parquet files to {PARQUET_DIR}")
+        log(f"\n  Split: {split_name} ({len(urls)} files)")
+        for i, url in enumerate(urls):
+            dest = os.path.join(split_dir, f"{i}.parquet")
+
+            if os.path.exists(dest) and os.path.getsize(dest) > 1000:
+                size_mb = os.path.getsize(dest) / (1024 * 1024)
+                log(f"    ✓ {split_name}/{i}.parquet cached ({size_mb:.1f} MB)")
+                skipped += 1
+                continue
+
+            log(f"    Downloading {split_name}/{i}.parquet...")
+            t0 = time.perf_counter()
+            try:
+                urllib.request.urlretrieve(url, dest)
+                elapsed = time.perf_counter() - t0
+                size_mb = os.path.getsize(dest) / (1024 * 1024)
+                log(f"    ✓ {split_name}/{i}.parquet: {size_mb:.1f} MB ({elapsed:.1f}s)")
+                downloaded += 1
+
+                # Rate-limit to be gentle to HF
+                if downloaded % 3 == 0:
+                    time.sleep(0.5)
+
+            except urllib.error.HTTPError as e:
+                log(f"    ✗ {split_name}/{i}.parquet: HTTP {e.code}")
+            except urllib.error.URLError as e:
+                log(f"    ✗ {split_name}/{i}.parquet: {e.reason}")
+
+    log(f"\n  Download complete: {downloaded} downloaded, {skipped} cached ({total_files} total)")
 
 
 # ── Lightweight Parquet Reader ──────────────────────────────────────────────────
 
 
-def _read_parquet_column(path: str) -> List[Any]:
-    """Read a single-column parquet file without pyarrow dependency.
+def _read_parquet_table(path: str) -> List[Dict[str, Any]]:
+    """Read a parquet file and return rows as dicts.
 
-    Uses a minimal header-parsing approach for simple data extraction.
-    Falls back to trying pyarrow if available.
+    Tries pyarrow first (fast), then pandas, then fails gracefully.
     """
-    # Try pyarrow first
+    # Try pyarrow first (fastest, most memory-efficient)
     try:
         import pyarrow.parquet as pq
         table = pq.read_table(path)
@@ -109,7 +163,7 @@ def _read_parquet_column(path: str) -> List[Any]:
     except ImportError:
         pass
 
-    # Try pandas
+    # Try pandas (slower but works)
     try:
         import pandas as pd
         df = pd.read_parquet(path)
@@ -117,13 +171,11 @@ def _read_parquet_column(path: str) -> List[Any]:
     except ImportError:
         pass
 
-    # Minimal fallback: read raw parquet
-    # This is a simplified reader — works for NarrativeQA's relatively
-    # flat schema assuming string columns.
     raise ImportError(
         "Cannot read parquet files. Install pyarrow or pandas:\n"
         "  pip install pyarrow\n"
-        "  pip install pandas"
+        "  pip install pandas\n"
+        "Or download and run the benchmark on a system with these installed."
     )
 
 
@@ -132,6 +184,12 @@ def _read_parquet_column(path: str) -> List[Any]:
 
 def parse_stories() -> Tuple[List[Dict], Dict[str, List[Dict]]]:
     """Parse all parquet files and extract stories + questions.
+
+    Reads parquet files from each split subdirectory under PARQUET_DIR.
+    Expected structure:
+        parquet/train/0.parquet ...
+        parquet/test/0.parquet ...
+        parquet/validation/0.parquet ...
 
     Returns (stories_list, questions_by_story).
     Each story is a dict with: id, kind, url, word_count, text, summary_text,
@@ -148,101 +206,132 @@ def parse_stories() -> Tuple[List[Dict], Dict[str, List[Dict]]]:
     filtered_kind = 0
     filtered_no_text = 0
     filtered_too_long = 0
+    parquet_count = 0
 
-    for i in range(TRAIN_PARQUETS):
-        path = os.path.join(PARQUET_DIR, f"{i}.parquet")
-        if not os.path.exists(path):
-            log(f"  Skipping {i}.parquet — not found")
+    if not os.path.isdir(PARQUET_DIR):
+        log(f"  ✗ Parquet directory not found: {PARQUET_DIR}")
+        log(f"  Run without --skip-download first, or manually download the dataset.")
+        return [], {}
+
+    # Discover all parquet files across all splits
+    split_dirs = sorted([d for d in os.listdir(PARQUET_DIR)
+                         if os.path.isdir(os.path.join(PARQUET_DIR, d))])
+    if not split_dirs:
+        # No split dirs — maybe files are flat (legacy layout)
+        flat_files = sorted([f for f in os.listdir(PARQUET_DIR) if f.endswith(".parquet")])
+        if flat_files:
+            split_dirs = [""]  # read from root
+
+    for split in split_dirs:
+        split_path = os.path.join(PARQUET_DIR, split) if split else PARQUET_DIR
+        parquet_files = sorted([f for f in os.listdir(split_path) if f.endswith(".parquet")])
+        if not parquet_files:
             continue
 
-        rows = _read_parquet_column(path)
-        total_rows += len(rows)
-        log(f"  Parsing {i}.parquet: {len(rows)} rows")
+        log(f"  Split: {split or 'flat'} ({len(parquet_files)} files)")
+        for pf in parquet_files:
+            path = os.path.join(split_path, pf)
 
-        for row in rows:
-            doc = row.get("document", {})
-            if isinstance(doc, str):
-                try:
-                    doc = json.loads(doc)
-                except json.JSONDecodeError:
+            rows = _read_parquet_table(path)
+            total_rows += len(rows)
+            parquet_count += 1
+
+            # Process every 1000 rows for progress
+            for ri, row in enumerate(rows):
+                doc = row.get("document", {})
+                if isinstance(doc, str):
+                    try:
+                        doc = json.loads(doc)
+                    except json.JSONDecodeError:
+                        continue
+
+                story_id = doc.get("id", "")
+                kind = doc.get("kind", "")
+                story_text = doc.get("text", "")
+
+                # Filter: only Gutenberg with full text, under token limit
+                # (Film scripts excluded due to copyright)
+                if kind != "gutenberg":
+                    filtered_kind += 1
+                    continue
+                if not story_text or len(story_text.strip()) < 100:
+                    filtered_no_text += 1
+                    continue
+                word_count = doc.get("word_count", 0)
+                if isinstance(word_count, str):
+                    try:
+                        word_count = int(word_count)
+                    except ValueError:
+                        word_count = len(story_text.split())
+                if word_count > MAX_STORY_TOKENS:
+                    filtered_too_long += 1
                     continue
 
-            story_id = doc.get("id", "")
-            kind = doc.get("kind", "")
-            story_text = doc.get("text", "")
+                if story_id not in stories:
+                    summary = doc.get("summary", {})
+                    if isinstance(summary, str):
+                        try:
+                            summary = json.loads(summary)
+                        except json.JSONDecodeError:
+                            summary = {}
+                    stories[story_id] = {
+                        "id": story_id,
+                        "kind": kind,
+                        "url": doc.get("url", ""),
+                        "word_count": word_count,
+                        "text": story_text,
+                        "summary_text": summary.get("text", "") if isinstance(summary, dict) else "",
+                        "summary_url": summary.get("url", "") if isinstance(summary, dict) else "",
+                        "summary_title": summary.get("title", "") if isinstance(summary, dict) else "",
+                        "start": doc.get("start", ""),
+                        "end": doc.get("end", ""),
+                    }
 
-            # Filter: only Gutenberg with full text, under token limit
-            if kind != "gutenberg":
-                filtered_kind += 1
-                continue
-            if not story_text or len(story_text.strip()) < 100:
-                filtered_no_text += 1
-                continue
-            word_count = doc.get("word_count", 0)
-            if word_count > MAX_STORY_TOKENS:
-                filtered_too_long += 1
-                continue
-
-            if story_id not in stories:
-                summary = doc.get("summary", {})
-                if isinstance(summary, str):
+                # Extract question
+                q_raw = row.get("question", {})
+                if isinstance(q_raw, str):
                     try:
-                        summary = json.loads(summary)
+                        q_raw = json.loads(q_raw)
                     except json.JSONDecodeError:
-                        summary = {}
-                stories[story_id] = {
-                    "id": story_id,
-                    "kind": kind,
-                    "url": doc.get("url", ""),
-                    "word_count": word_count,
-                    "text": story_text,
-                    "summary_text": summary.get("text", "") if isinstance(summary, dict) else "",
-                    "summary_url": summary.get("url", "") if isinstance(summary, dict) else "",
-                    "summary_title": summary.get("title", "") if isinstance(summary, dict) else "",
-                    "start": doc.get("start", ""),
-                    "end": doc.get("end", ""),
-                }
+                        q_raw = {}
+                q_text = q_raw.get("text", "") if isinstance(q_raw, dict) else ""
 
-            # Extract question
-            q_raw = row.get("question", {})
-            if isinstance(q_raw, str):
-                try:
-                    q_raw = json.loads(q_raw)
-                except json.JSONDecodeError:
-                    q_raw = {}
-            q_text = q_raw.get("text", "") if isinstance(q_raw, dict) else ""
+                # Extract answers
+                answers_raw = row.get("answers", [])
+                if isinstance(answers_raw, str):
+                    try:
+                        answers_raw = json.loads(answers_raw)
+                    except json.JSONDecodeError:
+                        answers_raw = []
+                answers = []
+                if isinstance(answers_raw, list):
+                    for a in answers_raw:
+                        if isinstance(a, dict):
+                            answers.append(a.get("text", ""))
+                        elif isinstance(a, str):
+                            answers.append(a)
 
-            # Extract answers
-            answers_raw = row.get("answers", [])
-            if isinstance(answers_raw, str):
-                try:
-                    answers_raw = json.loads(answers_raw)
-                except json.JSONDecodeError:
-                    answers_raw = []
-            answers = []
-            if isinstance(answers_raw, list):
-                for a in answers_raw:
-                    if isinstance(a, dict):
-                        answers.append(a.get("text", ""))
-                    elif isinstance(a, str):
-                        answers.append(a)
+                if not q_text or not answers:
+                    continue
 
-            if not q_text or not answers:
-                continue
+                # Deduplicate by question text within story
+                if story_id not in questions:
+                    questions[story_id] = []
+                seen_qs = {q["text"] for q in questions[story_id]}
+                if q_text not in seen_qs:
+                    questions[story_id].append({
+                        "text": q_text,
+                        "answers": answers,
+                        "story_id": story_id,
+                    })
 
-            # Deduplicate by question text within story
-            if story_id not in questions:
-                questions[story_id] = []
-            seen_qs = {q["text"] for q in questions[story_id]}
-            if q_text not in seen_qs:
-                questions[story_id].append({
-                    "text": q_text,
-                    "answers": answers,
-                    "story_id": story_id,
-                })
+            if (parquet_count % 2 == 0) or parquet_count == 1:
+                log(f"    progress: {len(stories)} stories, "
+                    f"{sum(len(qs) for qs in questions.values())} questions")
 
     elapsed = time.perf_counter() - t0
     log(f"\nParsing complete:")
+    log(f"  Parquet files parsed: {parquet_count}")
     log(f"  Total rows: {total_rows}")
     log(f"  Filtered (not Gutenberg): {filtered_kind}")
     log(f"  Filtered (no text): {filtered_no_text}")

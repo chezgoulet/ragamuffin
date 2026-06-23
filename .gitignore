@@ -43,3 +43,5 @@ node_modules/
 
 .venv/
 benchmarks/data/Backboard-Locomo-Benchmark/
+benchmarks/data/narrativeqa/
+benchmarks/results/
