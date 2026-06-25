@@ -1,24 +1,15 @@
 #!/usr/bin/env python3
 """
-NarrativeQA Dataset — Download, parse, and ingest into Ragamuffin.
+NarrativeQA Dataset — Fetch via HF Datasets Server, parse, and ingest.
+
+Downloads via HuggingFace's datasets-server HTTP API (no pyarrow needed).
+Processes rows on-the-fly to minimize memory. Filters to Gutenberg-only texts
+with full text, chunks stories, and optionally ingests into Ragamuffin.
 
 Usage:
     python3 benchmarks/ingest_narrativeqa.py                     # Download + parse only
     python3 benchmarks/ingest_narrativeqa.py --ingest            # Download + parse + ingest
-    python3 benchmarks/ingest_narrativeqa.py --ingest --vault narrativeqa_d
     python3 benchmarks/ingest_narrativeqa.py --max-stories 10    # Quick smoke test
-    python3 benchmarks/ingest_narrativeqa.py --skip-download     # Re-parse cached parquet
-
-Downloads NarrativeQA parquet files from HuggingFace, extracts stories + QA
-pairs, filters to Gutenberg/public-domain texts with full text, chunks stories
-by word-count windows, and optionally ingests into a Ragamuffin vault.
-
-Output:
-    benchmarks/data/narrativeqa/
-        stories/             # One JSON file per story (parsed + cleaned)
-        questions.json       # All QA pairs indexed by story_id
-        metadata.json        # Dataset summary
-        parquet/             # Downloaded parquet files (cached)
 """
 
 from __future__ import annotations
@@ -36,17 +27,19 @@ from typing import Any, Dict, List, Optional, Tuple
 
 BENCH_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BENCH_DIR, "data", "narrativeqa")
-PARQUET_DIR = os.path.join(DATA_DIR, "parquet")
 STORIES_DIR = os.path.join(DATA_DIR, "stories")
 QUESTIONS_FILE = os.path.join(DATA_DIR, "questions.json")
 METADATA_FILE = os.path.join(DATA_DIR, "metadata.json")
 
-# HuggingFace parquet paths — dynamically discovered from API
-HF_API = "https://huggingface.co/api/datasets/deepmind/narrativeqa/parquet"
-HF_BASE = "https://huggingface.co/datasets/deepmind/narrativeqa/parquet/default"
+# HF Datasets Server API
+DATASETS_SERVER = "https://datasets-server.huggingface.co"
+DATASET = "deepmind/narrativeqa"
+CONFIG = "default"
+SPLITS = ["train", "test", "validation"]
+PAGE_SIZE = 20  # rows per API call (stories are 800KB+, keeping per-call under 16MB)
 
 # Filtering
-MAX_STORY_TOKENS = 500_000  # Skip stories above this
+MAX_STORY_WORDS = 500_000  # Skip stories above this
 CHUNK_WORDS = 4_000  # Target words per chunk
 CHUNK_OVERLAP_WORDS = 200  # Overlap between chunks
 
@@ -63,358 +56,304 @@ def log(msg: str):
     print(f"[{ts}] {msg}", flush=True)
 
 
-# ── Download ─────────────────────────────────────────────────────────────────────
+# ── Core: fetch + parse on-the-fly ──────────────────────────────────────────────
 
 
-def _discover_parquet_urls() -> Dict[str, List[str]]:
-    """Discover all parquet file URLs across all splits from the HF API.
+def _extract_story_qa(row: Dict) -> Tuple[Optional[Dict], Optional[Dict]]:
+    """Extract story + QA pair from one row.
 
-    Returns dict of split_name -> [url, ...].
+    Returns (story_dict_or_None, qa_dict_or_None).
+    Returns (None, None) if row should be filtered out.
     """
-    try:
-        req = urllib.request.Request(HF_API)
-        req.add_header("User-Agent", "RagamuffinBenchmark/1.0")
-        resp = urllib.request.urlopen(req, timeout=15)
-        manifest = json.loads(resp.read())
-    except Exception as e:
-        log(f"  ⚠ Could not discover splits from API: {e}")
-        log(f"  Falling back to default splits")
-        # Fallback: well-known splits
-        return {
-            "train": [f"{HF_BASE}/train/{i}.parquet" for i in range(8)],
-            "test": [f"{HF_BASE}/test/{i}.parquet" for i in range(6)],
-            "validation": [f"{HF_BASE}/validation/{i}.parquet" for i in range(2)],
-        }
+    doc = row.get("document", {})
+    if isinstance(doc, str):
+        try:
+            doc = json.loads(doc)
+        except json.JSONDecodeError:
+            return None, None
 
-    # Parse the manifest — it's nested under the "default" config
-    config = manifest.get("default", manifest)
-    splits: Dict[str, List[str]] = {}
-    for split_name, urls in config.items():
-        # urls from the API are HuggingFace API URLs, not raw download URLs.
-        # Convert them to raw download: /api/datasets/... -> /datasets/...
-        raw_urls = []
-        for u in urls:
-            # Replace /api/datasets/ with /datasets/ for raw parquet download
-            raw = u.replace("/api/datasets/", "/datasets/")
-            raw_urls.append(raw)
-        splits[split_name] = raw_urls
+    kind = doc.get("kind", "")
+    story_text = doc.get("text", "")
 
-    log(f"  Discovered splits: {', '.join(f'{k}: {len(v)} files' for k, v in splits.items())}")
-    return splits
+    # Filter: only Gutenberg with full text
+    if kind != "gutenberg" or not story_text or len(story_text.strip()) < 100:
+        return None, None
+
+    word_count = doc.get("word_count", 0)
+    if isinstance(word_count, str):
+        try:
+            word_count = int(word_count)
+        except ValueError:
+            word_count = len(story_text.split())
+    if word_count > MAX_STORY_WORDS:
+        return None, None
+
+    story_id = doc.get("id", "")
+    summary = doc.get("summary", {})
+    if isinstance(summary, str):
+        try:
+            summary = json.loads(summary)
+        except json.JSONDecodeError:
+            summary = {}
+
+    story = {
+        "id": story_id,
+        "kind": kind,
+        "url": doc.get("url", ""),
+        "word_count": word_count,
+        "text": story_text,
+        "summary_text": summary.get("text", "") if isinstance(summary, dict) else "",
+        "summary_url": summary.get("url", "") if isinstance(summary, dict) else "",
+        "summary_title": summary.get("title", "") if isinstance(summary, dict) else "",
+        "start": doc.get("start", ""),
+        "end": doc.get("end", ""),
+    }
+
+    # Extract question
+    q_raw = row.get("question", {})
+    if isinstance(q_raw, str):
+        try:
+            q_raw = json.loads(q_raw)
+        except json.JSONDecodeError:
+            q_raw = {}
+    q_text = q_raw.get("text", "") if isinstance(q_raw, dict) else ""
+
+    # Extract answers
+    answers_raw = row.get("answers", [])
+    if isinstance(answers_raw, str):
+        try:
+            answers_raw = json.loads(answers_raw)
+        except json.JSONDecodeError:
+            answers_raw = []
+    answers = []
+    if isinstance(answers_raw, list):
+        for a in answers_raw:
+            if isinstance(a, dict):
+                answers.append(a.get("text", ""))
+            elif isinstance(a, str):
+                answers.append(a)
+
+    if not q_text or not answers:
+        return story, None  # story but no valid question
+
+    qa = {
+        "text": q_text,
+        "answers": answers,
+        "story_id": story_id,
+    }
+    return story, qa
 
 
-def download_parquet_files():
-    """Download NarrativeQA parquet files from HuggingFace across all splits."""
-    os.makedirs(PARQUET_DIR, exist_ok=True)
+def _save_story(story: Dict):
+    """Save one story to disk. First occurrence wins (dedup across splits)."""
+    sid = story["id"]
+    path = os.path.join(STORIES_DIR, f"{sid}.json")
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            json.dump(story, f, indent=2)
 
-    splits = _discover_parquet_urls()
-    total_files = sum(len(urls) for urls in splits.values())
-    downloaded = 0
-    skipped = 0
 
-    for split_name, urls in splits.items():
-        split_dir = os.path.join(PARQUET_DIR, split_name)
-        os.makedirs(split_dir, exist_ok=True)
+def _append_question(qa: Dict):
+    """Append one QA pair to questions.jsonl (append-only, dedup by story+text)."""
+    qa_path = os.path.join(DATA_DIR, "questions.jsonl")
+    dedup_path = os.path.join(DATA_DIR, "_questions_seen.txt")
 
-        log(f"\n  Split: {split_name} ({len(urls)} files)")
-        for i, url in enumerate(urls):
-            dest = os.path.join(split_dir, f"{i}.parquet")
+    sid = qa["story_id"]
+    q_text = qa["text"]
 
-            if os.path.exists(dest) and os.path.getsize(dest) > 1000:
-                size_mb = os.path.getsize(dest) / (1024 * 1024)
-                log(f"    ✓ {split_name}/{i}.parquet cached ({size_mb:.1f} MB)")
-                skipped += 1
+    # Check dedup via a simple seen file (one line per story+text)
+    key = f"{sid}||{q_text}\n"
+    if not os.path.exists(dedup_path):
+        with open(dedup_path, "w") as f:
+            f.write(key)
+        with open(qa_path, "a") as f:
+            f.write(json.dumps(qa) + "\n")
+        return
+
+    with open(dedup_path, "r") as f:
+        if any(line == key for line in f):
+            return  # already seen
+
+    with open(dedup_path, "a") as f:
+        f.write(key)
+    with open(qa_path, "a") as f:
+        f.write(json.dumps(qa) + "\n")
+
+
+def _page_request(url: str, retries: int = 10) -> Optional[Dict]:
+    """Make a paginated request to HF datasets server with rate-limit backoff.
+
+    Retries on 429 with exponential backoff (up to ~60s wait).
+    Returns parsed JSON or None on permanent failure.
+    """
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url)
+            req.add_header("User-Agent", "RagamuffinBenchmark/1.0")
+            resp = urllib.request.urlopen(req, timeout=30)
+            return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # Rate limited — exponential backoff with jitter
+                wait = min(2 ** attempt + (time.time() % 1), 60)
+                log(f"    ⏳ Rate limited (429). Waiting {wait:.1f}s (attempt {attempt+1}/{retries})...")
+                time.sleep(wait)
                 continue
-
-            log(f"    Downloading {split_name}/{i}.parquet...")
-            t0 = time.perf_counter()
-            try:
-                urllib.request.urlretrieve(url, dest)
-                elapsed = time.perf_counter() - t0
-                size_mb = os.path.getsize(dest) / (1024 * 1024)
-                log(f"    ✓ {split_name}/{i}.parquet: {size_mb:.1f} MB ({elapsed:.1f}s)")
-                downloaded += 1
-
-                # Rate-limit to be gentle to HF
-                if downloaded % 3 == 0:
-                    time.sleep(0.5)
-
-            except urllib.error.HTTPError as e:
-                log(f"    ✗ {split_name}/{i}.parquet: HTTP {e.code}")
-            except urllib.error.URLError as e:
-                log(f"    ✗ {split_name}/{i}.parquet: {e.reason}")
-
-    log(f"\n  Download complete: {downloaded} downloaded, {skipped} cached ({total_files} total)")
+            log(f"    ✗ HTTP {e.code} at {url[-80:]}: {e.read().decode()[:150]}")
+            return None
+        except urllib.error.URLError as e:
+            log(f"    ✗ Network error: {e.reason}")
+            return None
+        except json.JSONDecodeError as e:
+            log(f"    ✗ JSON decode error: {e}")
+            return None
+        except Exception as e:
+            log(f"    ✗ Error: {e}")
+            return None
+    log(f"    ✗ Exhausted retries for {url[-80:]}")
+    return None
 
 
-# ── Lightweight Parquet Reader ──────────────────────────────────────────────────
-
-
-def _read_parquet_table(path: str) -> List[Dict[str, Any]]:
-    """Read a parquet file and return rows as dicts.
-
-    Tries pyarrow first (fast), then pandas, then fails gracefully.
-    """
-    # Try pyarrow first (fastest, most memory-efficient)
-    try:
-        import pyarrow.parquet as pq
-        table = pq.read_table(path)
-        return table.to_pylist()
-    except ImportError:
-        pass
-
-    # Try pandas (slower but works)
-    try:
-        import pandas as pd
-        df = pd.read_parquet(path)
-        return df.to_dict("records")
-    except ImportError:
-        pass
-
-    raise ImportError(
-        "Cannot read parquet files. Install pyarrow or pandas:\n"
-        "  pip install pyarrow\n"
-        "  pip install pandas\n"
-        "Or download and run the benchmark on a system with these installed."
-    )
-
-
-# ── Parse ────────────────────────────────────────────────────────────────────────
-
-
-def parse_stories() -> Tuple[List[Dict], Dict[str, List[Dict]]]:
-    """Parse all parquet files and extract stories + questions.
-
-    Reads parquet files from each split subdirectory under PARQUET_DIR.
-    Expected structure:
-        parquet/train/0.parquet ...
-        parquet/test/0.parquet ...
-        parquet/validation/0.parquet ...
-
-    Returns (stories_list, questions_by_story).
-    Each story is a dict with: id, kind, url, word_count, text, summary_text,
-    start, end.
-
-    Questions are deduplicated by question text within each story.
-    """
-    log("Parsing parquet files...")
+def process_split(split: str, splits_info: Dict[str, int]):
+    """Fetch all rows for one split and process them on-the-fly."""
+    offset = 0
     t0 = time.perf_counter()
-
-    stories: Dict[str, Dict] = {}
-    questions: Dict[str, List[Dict]] = {}
-    total_rows = 0
+    stories_saved = 0
+    questions_saved = 0
     filtered_kind = 0
     filtered_no_text = 0
-    filtered_too_long = 0
-    parquet_count = 0
+    filtered_long = 0
+    duplicate_story = 0
+    consecutive_empty = 0
 
-    if not os.path.isdir(PARQUET_DIR):
-        log(f"  ✗ Parquet directory not found: {PARQUET_DIR}")
-        log(f"  Run without --skip-download first, or manually download the dataset.")
-        return [], {}
+    log(f"  Processing {split} split...")
 
-    # Discover all parquet files across all splits
-    split_dirs = sorted([d for d in os.listdir(PARQUET_DIR)
-                         if os.path.isdir(os.path.join(PARQUET_DIR, d))])
-    if not split_dirs:
-        # No split dirs — maybe files are flat (legacy layout)
-        flat_files = sorted([f for f in os.listdir(PARQUET_DIR) if f.endswith(".parquet")])
-        if flat_files:
-            split_dirs = [""]  # read from root
+    while True:
+        url = (
+            f"{DATASETS_SERVER}/rows"
+            f"?dataset={DATASET}"
+            f"&config={CONFIG}"
+            f"&split={split}"
+            f"&offset={offset}"
+            f"&length={PAGE_SIZE}"
+        )
 
-    for split in split_dirs:
-        split_path = os.path.join(PARQUET_DIR, split) if split else PARQUET_DIR
-        parquet_files = sorted([f for f in os.listdir(split_path) if f.endswith(".parquet")])
-        if not parquet_files:
+        data = _page_request(url)
+        if data is None:
+            consecutive_empty += 1
+            if consecutive_empty >= 3:
+                log(f"    ✗ Too many failures, aborting {split}")
+                break
             continue
+        consecutive_empty = 0
 
-        log(f"  Split: {split or 'flat'} ({len(parquet_files)} files)")
-        for pf in parquet_files:
-            path = os.path.join(split_path, pf)
+        rows = data.get("rows", [])
+        if not rows:
+            break
 
-            rows = _read_parquet_table(path)
-            total_rows += len(rows)
-            parquet_count += 1
+        rows = data.get("rows", [])
+        if not rows:
+            break
 
-            # Process every 1000 rows for progress
-            for ri, row in enumerate(rows):
-                doc = row.get("document", {})
+        for r in rows:
+            story, qa = _extract_story_qa(r["row"])
+            if story is None and qa is None:
+                # Count why it was filtered
+                doc = r["row"].get("document", {})
                 if isinstance(doc, str):
                     try:
                         doc = json.loads(doc)
                     except json.JSONDecodeError:
-                        continue
-
-                story_id = doc.get("id", "")
-                kind = doc.get("kind", "")
-                story_text = doc.get("text", "")
-
-                # Filter: only Gutenberg with full text, under token limit
-                # (Film scripts excluded due to copyright)
+                        pass
+                kind = doc.get("kind", "") if isinstance(doc, dict) else ""
+                text = doc.get("text", "") if isinstance(doc, dict) else ""
+                wc = doc.get("word_count", 0) if isinstance(doc, dict) else 0
+                if isinstance(wc, str):
+                    try:
+                        wc = int(wc)
+                    except ValueError:
+                        pass
                 if kind != "gutenberg":
                     filtered_kind += 1
-                    continue
-                if not story_text or len(story_text.strip()) < 100:
+                elif not text or len(str(text).strip()) < 100:
                     filtered_no_text += 1
-                    continue
-                word_count = doc.get("word_count", 0)
-                if isinstance(word_count, str):
-                    try:
-                        word_count = int(word_count)
-                    except ValueError:
-                        word_count = len(story_text.split())
-                if word_count > MAX_STORY_TOKENS:
-                    filtered_too_long += 1
-                    continue
+                elif wc > MAX_STORY_WORDS:
+                    filtered_long += 1
+                else:
+                    # Could be malformed row
+                    filtered_no_text += 1
+                continue
 
-                if story_id not in stories:
-                    summary = doc.get("summary", {})
-                    if isinstance(summary, str):
-                        try:
-                            summary = json.loads(summary)
-                        except json.JSONDecodeError:
-                            summary = {}
-                    stories[story_id] = {
-                        "id": story_id,
-                        "kind": kind,
-                        "url": doc.get("url", ""),
-                        "word_count": word_count,
-                        "text": story_text,
-                        "summary_text": summary.get("text", "") if isinstance(summary, dict) else "",
-                        "summary_url": summary.get("url", "") if isinstance(summary, dict) else "",
-                        "summary_title": summary.get("title", "") if isinstance(summary, dict) else "",
-                        "start": doc.get("start", ""),
-                        "end": doc.get("end", ""),
-                    }
+            if story:
+                path = os.path.join(STORIES_DIR, f"{story['id']}.json")
+                if os.path.exists(path):
+                    duplicate_story += 1
+                else:
+                    _save_story(story)
+                    stories_saved += 1
 
-                # Extract question
-                q_raw = row.get("question", {})
-                if isinstance(q_raw, str):
-                    try:
-                        q_raw = json.loads(q_raw)
-                    except json.JSONDecodeError:
-                        q_raw = {}
-                q_text = q_raw.get("text", "") if isinstance(q_raw, dict) else ""
+            if qa:
+                _append_question(qa)
+                questions_saved += 1
 
-                # Extract answers
-                answers_raw = row.get("answers", [])
-                if isinstance(answers_raw, str):
-                    try:
-                        answers_raw = json.loads(answers_raw)
-                    except json.JSONDecodeError:
-                        answers_raw = []
-                answers = []
-                if isinstance(answers_raw, list):
-                    for a in answers_raw:
-                        if isinstance(a, dict):
-                            answers.append(a.get("text", ""))
-                        elif isinstance(a, str):
-                            answers.append(a)
+        offset += len(rows)
+        elapsed = time.perf_counter() - t0
+        rate = offset / elapsed if elapsed else 0
+        log(f"    [{offset}/{splits_info[split]}]  stories: {stories_saved}  qs: {questions_saved}  "
+            f"skip: {filtered_kind+filtered_no_text+filtered_long}  dup: {duplicate_story}  "
+            f"{rate:.0f} rows/s")
 
-                if not q_text or not answers:
-                    continue
-
-                # Deduplicate by question text within story
-                if story_id not in questions:
-                    questions[story_id] = []
-                seen_qs = {q["text"] for q in questions[story_id]}
-                if q_text not in seen_qs:
-                    questions[story_id].append({
-                        "text": q_text,
-                        "answers": answers,
-                        "story_id": story_id,
-                    })
-
-            if (parquet_count % 2 == 0) or parquet_count == 1:
-                log(f"    progress: {len(stories)} stories, "
-                    f"{sum(len(qs) for qs in questions.values())} questions")
+        if len(rows) < PAGE_SIZE:
+            break
 
     elapsed = time.perf_counter() - t0
-    log(f"\nParsing complete:")
-    log(f"  Parquet files parsed: {parquet_count}")
-    log(f"  Total rows: {total_rows}")
-    log(f"  Filtered (not Gutenberg): {filtered_kind}")
-    log(f"  Filtered (no text): {filtered_no_text}")
-    log(f"  Filtered (too long >{MAX_STORY_TOKENS} tokens): {filtered_too_long}")
-    log(f"  Stories kept: {len(stories)}")
-    log(f"  Questions kept: {sum(len(qs) for qs in questions.values())}")
-    log(f"  Elapsed: {elapsed:.1f}s")
-
-    return list(stories.values()), questions
+    log(f"  ✓ {split}: {offset} rows, {stories_saved} stories, {questions_saved} qs "
+        f"({elapsed:.1f}s)")
+    return stories_saved, questions_saved
 
 
-def chunk_story_text(story: Dict) -> List[str]:
-    """Split story text into word-count chunks with overlap."""
-    text = story.get("text", "")
-    words = text.split()
-    if len(words) <= CHUNK_WORDS:
-        return [text]
-
-    chunks = []
-    step = CHUNK_WORDS - CHUNK_OVERLAP_WORDS
-    for i in range(0, len(words), step):
-        chunk_words = words[i:i + CHUNK_WORDS]
-        chunks.append(" ".join(chunk_words))
-        if i + CHUNK_WORDS >= len(words):
-            break
-    return chunks
-
-
-def save_parsed_data(stories: List[Dict], questions: Dict[str, List[Dict]]):
-    """Save parsed stories and questions to disk."""
-    os.makedirs(STORIES_DIR, exist_ok=True)
-
-    # Save each story as individual JSON for modular loading
-    for story in stories:
-        sid = story["id"]
-        path = os.path.join(STORIES_DIR, f"{sid}.json")
-        with open(path, "w") as f:
-            json.dump(story, f, indent=2)
-
-    # Save all questions
-    flat_questions = []
-    for sid, qs in questions.items():
-        for q in qs:
-            flat_questions.append(q)
-    with open(QUESTIONS_FILE, "w") as f:
-        json.dump(flat_questions, f, indent=2)
-
-    # Save metadata
-    metadata = {
-        "total_stories": len(stories),
-        "total_questions": len(flat_questions),
-        "stories_with_questions": len(questions),
-        "chunk_words": CHUNK_WORDS,
-        "chunk_overlap_words": CHUNK_OVERLAP_WORDS,
-        "max_story_tokens": MAX_STORY_TOKENS,
-        "parsed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    with open(METADATA_FILE, "w") as f:
-        json.dump(metadata, f, indent=2)
-
-    log(f"\nSaved {len(stories)} stories to {STORIES_DIR}/")
-    log(f"Saved {len(flat_questions)} questions to {QUESTIONS_FILE}")
-    log(f"Saved metadata to {METADATA_FILE}")
+def get_split_sizes() -> Dict[str, int]:
+    """Get row counts for each split."""
+    sizes: Dict[str, int] = {}
+    try:
+        url = f"{DATASETS_SERVER}/size?dataset={DATASET}"
+        req = urllib.request.Request(url)
+        req.add_header("User-Agent", "RagamuffinBenchmark/1.0")
+        resp = urllib.request.urlopen(req, timeout=15)
+        data = json.loads(resp.read())
+        for s in data["size"]["splits"]:
+            sizes[s["split"]] = s["num_rows"]
+    except Exception as e:
+        log(f"  ⚠ Could not get split sizes: {e}")
+        sizes = {"train": 14650, "test": 10557, "validation": 3461}
+        log(f"  Using fallback sizes: {sizes}")
+    return sizes
 
 
 # ── Ingest into Ragamuffin ──────────────────────────────────────────────────────
 
 
 def ingest_into_ragamuffin(
-    stories: List[Dict],
-    questions: Dict[str, List[Dict]],
-    vault: str,
-    config_label: str = "D",
     max_stories: Optional[int] = None,
+    vault: str = "narrativeqa_d",
+    config_label: str = "D",
 ):
-    """Ingest narrative stories + summaries into a Ragamuffin vault."""
-    import urllib.request as req_lib
-    import urllib.parse
-
+    """Ingest saved stories into a Ragamuffin vault."""
     log(f"\nIngesting into vault '{vault}' (config {config_label})...")
     t0 = time.perf_counter()
 
-    # Ensure vault exists by ingesting a small placeholder first
+    story_files = sorted(
+        f for f in os.listdir(STORIES_DIR) if f.endswith(".json")
+    )
+    if max_stories:
+        story_files = story_files[:max_stories]
+
+    total = len(story_files)
+    if total == 0:
+        log("  No stories to ingest.")
+        return
+
+    # Ensure vault exists
     try:
         _ragamuffin_request("POST", "/v1/ingest", {
             "content": "NarrativeQA benchmark dataset placeholder.",
@@ -425,15 +364,19 @@ def ingest_into_ragamuffin(
     except Exception as e:
         log(f"  ⚠ Vault setup: {e}")
 
-    stories_to_ingest = stories[:max_stories] if max_stories else stories
-    total = len(stories_to_ingest)
     ok = err = 0
+    for idx, sf in enumerate(story_files):
+        sid = sf.replace(".json", "")
+        path = os.path.join(STORIES_DIR, sf)
 
-    for idx, story in enumerate(stories_to_ingest):
-        sid = story["id"]
-        word_count = story.get("word_count", 0)
+        try:
+            with open(path) as f:
+                story = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            err += 1
+            continue
 
-        # 1. Ingest the Wikipedia summary (compact, high-signal)
+        # 1. Ingest Wikipedia summary
         summary_text = story.get("summary_text", "")
         if summary_text:
             try:
@@ -452,32 +395,42 @@ def ingest_into_ragamuffin(
             if INGEST_DELAY > 0:
                 time.sleep(INGEST_DELAY)
 
-        # 2. Ingest the story text in chunks
-        chunks = chunk_story_text(story)
-        for ci, chunk in enumerate(chunks):
-            source = f"narrativeqa/{sid}/chunk-{ci}"
-            tags = ["benchmark", "narrativeqa", sid, f"chunk-{ci}"]
-            if config_label in ("B", "D"):
-                tags.append("auto_extract")
+        # 2. Ingest story text in chunks
+        story_text = story.get("text", "")
+        words = story_text.split()
+        if words:
+            step = CHUNK_WORDS - CHUNK_OVERLAP_WORDS
+            chunks = []
+            for ci in range(0, len(words), step):
+                chunk_words = words[ci:ci + CHUNK_WORDS]
+                chunks.append(" ".join(chunk_words))
+                if ci + CHUNK_WORDS >= len(words):
+                    break
 
-            try:
-                _ragamuffin_request("POST", "/v1/ingest", {
-                    "content": chunk,
-                    "source": source,
-                    "vault": vault,
-                    "tags": tags,
-                })
-                ok += 1
-            except Exception as e:
-                err += 1
-                if err <= 5:
-                    log(f"  ⚠ ingest chunk [{sid}/{ci}]: {str(e)[:80]}")
+            for ci, chunk in enumerate(chunks):
+                source = f"narrativeqa/{sid}/chunk-{ci}"
+                tags = ["benchmark", "narrativeqa", sid, f"chunk-{ci}"]
+                if config_label in ("B", "D"):
+                    tags.append("auto_extract")
 
-            if INGEST_DELAY > 0:
-                time.sleep(INGEST_DELAY)
+                try:
+                    _ragamuffin_request("POST", "/v1/ingest", {
+                        "content": chunk,
+                        "source": source,
+                        "vault": vault,
+                        "tags": tags,
+                    })
+                    ok += 1
+                except Exception as e:
+                    err += 1
+                    if err <= 5:
+                        log(f"  ⚠ ingest chunk [{sid}/{ci}]: {str(e)[:80]}")
+
+                if INGEST_DELAY > 0:
+                    time.sleep(INGEST_DELAY)
 
         # Progress
-        if (idx + 1) % 10 == 0 or idx == 0 or idx == total - 1:
+        if (idx + 1) % 10 == 0 or idx == total - 1:
             pct = (idx + 1) / total * 100
             elapsed = time.perf_counter() - t0
             rate = (idx + 1) / elapsed if elapsed else 0
@@ -488,24 +441,62 @@ def ingest_into_ragamuffin(
     log(f"\nIngest complete: {ok} ok, {err} err in {elapsed:.0f}s")
 
 
-def _ragamuffin_request(method: str, path: str, body: Optional[Dict] = None, timeout: int = 30):
+def _ragamuffin_request(
+    method: str, path: str, body: Optional[Dict] = None, timeout: int = 120
+):
     """Make a request to Ragamuffin API."""
-    import urllib.request
-    import urllib.error
-    import json as json_mod
-
     url = f"{RAGAMUFFIN_URL}{path}"
-    data_bytes = json_mod.dumps(body).encode() if body else None
+    data_bytes = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data_bytes, method=method)
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", "RagamuffinNarrativeQA/1.0")
-
     try:
         resp = urllib.request.urlopen(req, timeout=timeout)
-        return json_mod.loads(resp.read())
+        return json.loads(resp.read())
     except urllib.error.HTTPError as e:
         body_text = e.read().decode() if e.fp else ""
         raise Exception(f"HTTP {e.code}: {body_text[:200]}")
+
+
+# ── Save consolidated questions ────────────────────────────────────────────────
+
+
+def finalize_questions():
+    """Convert questions.jsonl to questions.json for compat with loader."""
+    qa_path = os.path.join(DATA_DIR, "questions.jsonl")
+    if not os.path.exists(qa_path):
+        log("  No questions.jsonl found.")
+        return
+
+    questions = []
+    with open(qa_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                questions.append(json.loads(line))
+
+    with open(QUESTIONS_FILE, "w") as f:
+        json.dump(questions, f, indent=2)
+
+    log(f"  Finalized {len(questions)} questions to {QUESTIONS_FILE}")
+
+
+def save_metadata(stories_count: int, questions_count: int, elapsed: float):
+    """Save dataset metadata."""
+    metadata = {
+        "total_stories": stories_count,
+        "total_questions": questions_count,
+        "chunk_words": CHUNK_WORDS,
+        "chunk_overlap_words": CHUNK_OVERLAP_WORDS,
+        "max_story_words": MAX_STORY_WORDS,
+        "source": "hf-datasets-server",
+        "parsed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "elapsed_seconds": round(elapsed, 1),
+    }
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(METADATA_FILE, "w") as f:
+        json.dump(metadata, f, indent=2)
+    log(f"  Metadata saved to {METADATA_FILE}")
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────
@@ -513,11 +504,8 @@ def _ragamuffin_request(method: str, path: str, body: Optional[Dict] = None, tim
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="NarrativeQA: download, parse, and ingest",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="NarrativeQA: fetch via HF datasets server, parse, and ingest",
     )
-    parser.add_argument("--skip-download", action="store_true",
-                        help="Skip downloading parquet files")
     parser.add_argument("--ingest", action="store_true",
                         help="Ingest into Ragamuffin after parsing")
     parser.add_argument("--vault", default="narrativeqa_d",
@@ -534,44 +522,46 @@ def parse_args():
 
 def main():
     args = parse_args()
-
     global CHUNK_WORDS
     CHUNK_WORDS = args.chunk_words
 
-    log("╔══════════════════════════════════════════════╗")
-    log("║  NarrativeQA — Download + Parse + Ingest    ║")
-    log("╚══════════════════════════════════════════════╝")
-    log(f"  Data dir: {DATA_DIR}")
-    log(f"  Max stories: {args.max_stories or 'all'}")
+    log("╔══════════════════════════════════════════════════════╗")
+    log("║  NarrativeQA — Fetch via HF + Parse + Ingest        ║")
+    log("╚══════════════════════════════════════════════════════╝")
+    log(f"  Data dir: {DATA_DIR}  |  Max stories: {args.max_stories or 'all'}")
     log(f"  Chunk size: {CHUNK_WORDS} words")
     log("")
 
-    # Step 1: Download
-    if not args.skip_download:
-        log("--- Step 1: Download parquet files ---")
-        download_parquet_files()
-    else:
-        log("--- Step 1: Skipped (--skip-download) ---")
-    log("")
+    os.makedirs(STORIES_DIR, exist_ok=True)
+    t_start = time.perf_counter()
 
-    # Step 2: Parse
-    log("--- Step 2: Parse stories + questions ---")
-    stories, questions = parse_stories()
-    save_parsed_data(stories, questions)
-    log("")
+    # Step 1: Fetch + parse all splits
+    log("--- Step 1: Fetch from HF Datasets Server + Parse ---")
+    sizes = get_split_sizes()
+    total_stories = 0
+    total_questions = 0
+
+    for split in SPLITS:
+        s, q = process_split(split, sizes)
+        total_stories += s
+        total_questions += q
+
+    # Step 2: Finalize
+    log("\n--- Step 2: Finalize ---")
+    finalize_questions()
+    elapsed = time.perf_counter() - t_start
+    save_metadata(total_stories, total_questions, elapsed)
+
+    log(f"\n  Total: {total_stories} stories, {total_questions} questions ({elapsed:.1f}s)")
 
     # Step 3: Ingest (optional)
     if args.ingest:
-        log("--- Step 3: Ingest into Ragamuffin ---")
+        log("\n--- Step 3: Ingest into Ragamuffin ---")
         ingest_into_ragamuffin(
-            stories, questions,
+            max_stories=args.max_stories,
             vault=args.vault,
             config_label=args.config,
-            max_stories=args.max_stories,
         )
-    else:
-        log("--- Step 3: Skipped (pass --ingest to enable) ---")
-        log(f"  To ingest: python3 benchmarks/ingest_narrativeqa.py --ingest --vault {args.vault}")
 
     log("\nDone.")
     return 0
