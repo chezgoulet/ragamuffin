@@ -416,8 +416,8 @@ func Load() (*Config, error) {
 		QdrantURL:       qdrantURL,
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
 
-		VectorStore:    envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant"),
-		EmbeddedDBPath: os.Getenv("RAGAMUFFIN_EMBEDDED_DB_PATH"),
+		VectorStore:    envOrDefault("RAGAMUFFIN_VECTOR_STORE", aliasOrDefault("REACHLOCK_VECTOR_STORE", "qdrant")),
+		EmbeddedDBPath: firstEnv("RAGAMUFFIN_EMBEDDED_DB_PATH", "REACHLOCK_EMBEDDED_DB_PATH"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
@@ -426,7 +426,7 @@ func Load() (*Config, error) {
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
 
-		EmbeddingProvider: envOrDefault("RAGAMUFFIN_EMBEDDING_PROVIDER", "openai"),
+		EmbeddingProvider: envOrDefault("RAGAMUFFIN_EMBEDDING_PROVIDER", aliasOrDefault("REACHLOCK_EMBED_PROVIDER", "openai")),
 		EmbeddingModel:    envOrDefault("RAGAMUFFIN_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBaseURL:  envOrDefault("RAGAMUFFIN_EMBEDDING_BASE_URL", "https://api.openai.com/v1"),
 		EmbeddingDims:     envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536),
@@ -698,6 +698,30 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return i
+}
+
+// aliasOrDefault returns the value of `key` from the environment, falling
+// back to `def`. It exists so Ragamuffin's config can accept the
+// REACHLOCK_* prefix used by the single-player deployment profile
+// (see docs/REACHLOCK-VAULT-CONVENTIONS.md) without forking the
+// RAGAMUFFIN_* primary names.
+func aliasOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// firstEnv returns the first non-empty value among the given keys.
+// Used so a REACHLOCK_* env var can override the RAGAMUFFIN_* default
+// for a single deployment.
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func envCSV(key string) []string {

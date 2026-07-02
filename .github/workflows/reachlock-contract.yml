@@ -1,0 +1,40 @@
+# Workflow — REACHLOCK_CONTRACT (R4)
+#
+# Proves the C3 subset of the Ragamuffin REST surface that REACHLOCK binds
+# to (see docs/REACHLOCK-VAULT-CONVENTIONS.md and the upstream
+# MEMORY-INTERFACE.md in the REACHLOCK repo). The test runs without
+# Qdrant and without a cloud key — it uses the embedded vector store and
+# a stub OpenAI-compatible embedding endpoint.
+#
+# The contract test lives at internal/server/contract_test.go and is
+# driven by a single entry point:
+#   go test -run TestContract_Ragamuffin_REACHLOCK_Binding ./internal/server/
+#
+# The same step is also wired into pr-check.yml, build.yml, and
+# testing-push.yml so any Ragamuffin PR that breaks the contract fails
+# in Ragamuffin's own pipeline. This file provides a dedicated trigger
+# for ad-hoc runs (e.g. via workflow_dispatch).
+#
+# A change to Ragamuffin that breaks any of the five assertions
+# (POST /v1/documents, GET /vault/{name}/v1/hybrid,
+# POST /v1/ingest/conversation, GET /vault/{name}/v1/briefing, vault
+# isolation) will fail this job before it can ship to REACHLOCK.
+
+name: REACHLOCK Contract
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'sprint*/**'
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Run REACHLOCK contract test
+        run: go test -timeout 60s -run TestContract_Ragamuffin_REACHLOCK_Binding -v ./internal/server/
