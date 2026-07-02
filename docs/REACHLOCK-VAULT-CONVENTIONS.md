@@ -22,6 +22,23 @@ feature — never as a client-specific fork.
   `[a-z0-9-:]`, max 64 chars. The `soul_` and `lore` prefixes are
   advisory, not enforced.
 
+### Status: `soul_<npc_id>` uses underscores — `ValidVaultName` rejects them
+
+The `soul_<npc_id>` convention above uses an underscore between
+`soul` and the NPC id, but `ValidVaultName` (as of v0.9.3) only
+accepts `[a-z0-9-:]`. So the literal names `soul_tib`,
+`soul_mara`, etc. **fail vault creation and auto-provisioning
+today.** Workarounds:
+
+- Use the hyphen form: `soul-tib`, `soul-mara`. The convention
+  becomes `soul-<npc_id>`. The pruner and briefing endpoints work
+  unchanged.
+- Wait for the underscore to be added to `ValidVaultName`. The
+  change is one line in `internal/config/config.go` and is purely
+  additive (no existing valid name becomes invalid). Tracked in the
+  REACHLOCK backlog; the R4 contract test uses `soul_a` / `soul_b`
+  to remain compatible with the current validator.
+
 ## Per-vault isolation
 
 Ragamuffin indexes every vault into its own collection, both for chunks
@@ -50,29 +67,63 @@ this when they shared a thermos at the ruin's edge.
 
 The front-matter fields the REACHLOCK profile uses:
 
-- `importance` (float 0..1) — drives the pruner's importance threshold
+- `importance` (float 0..1) — drives the pruner'"'"'s importance threshold
   (see `RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD`). A memory with
   `importance: 0` is pruneable on the next cycle; `importance: 1` is
   kept indefinitely. The pruner is the implementation of
-  GAME-DESIGN.md's "relationships decay if you're gone too long" — low-
+  GAME-DESIGN.md'"'"'s "relationships decay if you'"'"'re gone too long" — low-
   importance memories fade, contradicted beliefs get superseded, and a
-  soul that hasn't seen the player in two in-game years genuinely
+  soul that hasn'"'"'t seen the player in two in-game years genuinely
   half-remembers them.
 - `tags` (list of strings) — open vocabulary. REACHLOCK uses values like
   `preference`, `relationship`, `event`, `goal`, `identity`, `opinion`
   (the categories the LLM-extraction prompt also returns). The server
-  stores tags in the Qdrant payload's `tags` field and indexes them for
+  stores tags in the Qdrant payload'"'"'s `tags` field and indexes them for
   filter queries.
-- `tick` (int) — the in-game clock, not wall time. Ragamuffin's pruner
-  reads `tick` from the source file's front-matter (or falls back to the
-  file's mtime) so recall and prune can reason about the game's
+- `tick` (int) — the in-game clock, not wall time. Ragamuffin'"'"'s pruner
+  reads `tick` from the source file'"'"'s front-matter (or falls back to the
+  file'"'"'s mtime) so recall and prune can reason about the game'"'"'s
   calendar, not just "days since last edit." For souls, the `tick` is
   recorded per-message by the host and propagated to all memory records
   the conversation produces.
 
 The content below the front-matter is chunked by `chunker.ChunkFile`
 with the configured strategy (default token-based) and indexed in the
-vault's collection.
+vault'"'"'s collection.
+
+### Status: front-matter parsing on `POST /v1/documents`
+
+**As of the v0.9.3 main, `POST /v1/documents` does NOT parse the
+front-matter from the `content` field.** The whole markdown string
+(front-matter + body) is chunked and indexed as text. The
+front-matter is *searchable* — `tags: preference` becomes searchable
+content — but the structured fields are not extracted into the chunk
+payload.
+
+Structured fields can be sent through:
+
+- `tags: []` — the documents endpoint accepts tags directly. They are
+  stored on every chunk produced by the document.
+- `meta: {...}` — accepted by `Indexer.Ingest` (the lower-level API
+  used by `/v1/ingest`), but not by `/v1/documents` itself today.
+
+To get `importance` and `tick` onto the chunk payload via the REST
+surface, either:
+
+1. Send through `POST /v1/ingest` (which accepts a `meta` map and
+   merges every key into the chunk payload — see
+   `internal/indexer/indexer.go:Ingest`).
+2. Wait for `POST /v1/documents` to grow a `meta` field. The R4
+   contract test does not assert on this today, so adding it is a
+   pure additive change.
+
+The pruner'"'"'s `importance` filter today (`RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD`)
+operates on the pruner-computed importance (derived from access
+recency and confirmation count), not on a user-supplied `importance`
+field. Memory records that want to drive the threshold through the
+front-matter convention need a follow-up that threads
+`meta.importance` through the indexer → pruner pipeline. Tracked in
+the REACHLOCK backlog.
 
 ## Endpoints (binding)
 
