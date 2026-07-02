@@ -11,6 +11,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/embeddedstore"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
@@ -124,8 +125,33 @@ func (s *Server) handleIngest(w http.ResponseWriter, r *http.Request) {
 
 // ── Vault provisioning ────────────────────────────────────────────────────────
 
-// provisionVault creates a new vault at runtime with a Qdrant collection
-// and indexer. Returns nil on failure (errors are logged, not fatal).
+// newProvisionedStore opens a vector store for one collection of a vault
+// being provisioned at runtime, honoring RAGAMUFFIN_VECTOR_STORE exactly like
+// startup vault construction (cmd/ragamuffin newVaultDriver): "embedded" gets
+// a per-collection SQLite file derived from EmbeddedDBPath; anything else
+// connects to Qdrant.
+func (s *Server) newProvisionedStore(ctx context.Context, collectionName string, vectorSize uint64) (qdrant.FactStore, error) {
+	if s.cfg.VectorStore == "embedded" {
+		path := s.cfg.EmbeddedDBPath
+		if path != "" {
+			ext := filepath.Ext(path)
+			path = fmt.Sprintf("%s_%s%s", path[:len(path)-len(ext)], collectionName, ext)
+		}
+		return embeddedstore.Open(embeddedstore.Config{
+			Path:       path,
+			Collection: collectionName,
+			VectorSize: vectorSize,
+			Logger:     s.log(ctx),
+		})
+	}
+	qdrantCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, vectorSize)
+}
+
+// provisionVault creates a new vault at runtime with its vector-store
+// collections and indexer. Returns nil on failure (errors are logged, not
+// fatal).
 func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Indexer {
 	if !config.ValidVaultName(name) {
 		s.log(ctx).Warn("cannot provision vault: invalid name", "vault", name)
@@ -160,25 +186,23 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		return nil
 	}
 
-	// Connect to Qdrant with vault-specific chunk collection
+	// Open the vault-specific chunk collection on the configured backend
 	collectionName := fmt.Sprintf("ragamuffin_%s", name)
-	qdrantCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	chunkVectorSize := uint64(s.cfg.EmbeddingDims)
 	if s.cfg.ChunkVectorSize > 0 {
 		chunkVectorSize = s.cfg.ChunkVectorSize
 	}
-	qc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, collectionName, chunkVectorSize)
+	qc, err := s.newProvisionedStore(ctx, collectionName, chunkVectorSize)
 	if err != nil {
-		s.log(ctx).Error("failed to connect to Qdrant for provisioned vault",
+		s.log(ctx).Error("failed to open vector store for provisioned vault",
 			"vault", name, "collection", collectionName, "error", err)
 		os.RemoveAll(vaultPath)
 		return nil
 	}
 
-	// Create vault-specific facts collection
+	// Create vault-specific facts collection on the same backend
 	factsCollectionName := fmt.Sprintf("ragamuffin_%s_facts", name)
-	factsQc, err := qdrant.New(qdrantCtx, s.cfg.QdrantURL, factsCollectionName, s.cfg.FactsVectorSize)
+	factsQc, err := s.newProvisionedStore(ctx, factsCollectionName, s.cfg.FactsVectorSize)
 	if err != nil {
 		s.log(ctx).Error("failed to create facts collection for provisioned vault",
 			"vault", name, "collection", factsCollectionName, "error", err)
