@@ -32,6 +32,11 @@ func TestLoad_Defaults(t *testing.T) {
 	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
 	defer os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
 	defer os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+	// REACHLOCK_* aliases are honoured in Load() — clear them so this
+	// test exercises the bare RAGAMUFFIN_* defaults.
+	os.Unsetenv("REACHLOCK_EMBED_PROVIDER")
+	os.Unsetenv("REACHLOCK_VECTOR_STORE")
+	os.Unsetenv("REACHLOCK_EMBEDDED_DB_PATH")
 
 	cfg, err := Load()
 	if err != nil {
@@ -278,6 +283,9 @@ func TestValidate_InvalidQdrantURL(t *testing.T) {
 		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
 		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
 	}()
+	// REACHLOCK_VECTOR_STORE=embedded would skip Qdrant URL validation
+	// entirely; this test exercises the qdrant path so clear the alias.
+	os.Unsetenv("REACHLOCK_VECTOR_STORE")
 
 	cfg, err := Load()
 	if err != nil {
