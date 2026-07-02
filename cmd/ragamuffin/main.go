@@ -14,6 +14,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/embeddedstore"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
@@ -55,24 +56,61 @@ func main() {
 		logger.Info("single-tenant mode active", "vault", cfg.VaultPath)
 	}
 
-	logger.Info("starting ragamuffin", "qdrant", cfg.QdrantURL)
-
-	// ── Connect to Qdrant facts collection (with reconnection loop) ──────────
-	factsQc, err := qdrant.NewReconnecting(context.Background(), cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize, logger)
-	if err != nil {
-		logger.Error("failed to connect to facts Qdrant after retries", "error", err)
-		os.Exit(1)
+	if cfg.VectorStore == "embedded" {
+		logger.Info("starting ragamuffin with embedded vector store", "path", cfg.EmbeddedDBPath)
+	} else {
+		logger.Info("starting ragamuffin", "qdrant", cfg.QdrantURL)
 	}
-	defer factsQc.Close()
-	logger.Info("qdrant facts collection ready", "collection", cfg.FactsCollection)
+
+	// ── Connect to vector store facts collection (Qdrant or embedded) ──────
+	var factsQc qdrant.FactStore
+	if cfg.VectorStore == "embedded" {
+		es, err := embeddedstore.Open(embeddedstore.Config{
+			Path:       cfg.EmbeddedDBPath,
+			Collection: cfg.FactsCollection,
+			VectorSize: cfg.FactsVectorSize,
+			Logger:     logger,
+		})
+		if err != nil {
+			logger.Error("failed to open embedded vector store", "error", err)
+			os.Exit(1)
+		}
+		factsQc = es
+		defer es.Close()
+		logger.Info("embedded vector store ready", "collection", cfg.FactsCollection)
+	} else {
+		qc, err := qdrant.NewReconnecting(context.Background(), cfg.QdrantURL, cfg.FactsCollection, cfg.FactsVectorSize, logger)
+		if err != nil {
+			logger.Error("failed to connect to facts Qdrant after retries", "error", err)
+			os.Exit(1)
+		}
+		factsQc = qc
+		defer qc.Close()
+		logger.Info("qdrant facts collection ready", "collection", cfg.FactsCollection)
+	}
 
 	// ── Initialize embedding client (shared, optional) ──────────────────────
+	// Three states:
+	//   1. RAGAMUFFIN_EMBEDDING_PROVIDER=local — local OpenAI-compatible
+	//      server (e.g. llama.cpp, Ollama); no cloud key required.
+	//   2. EMBEDDING_API_KEY set — cloud or hosted provider.
+	//   3. Neither — indexing and /recall disabled.
 	var ec embedding.Embedder
-	if cfg.EmbeddingAPIKey != "" {
-		ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingTimeout)
-		logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
-	} else {
-		logger.Warn("EMBEDDING_API_KEY not set — indexing and /recall disabled")
+	switch cfg.EmbeddingProvider {
+	case "local":
+		baseURL := cfg.EmbeddingBaseURL
+		if baseURL == "" {
+			baseURL = "http://localhost:8080/v1"
+		}
+		ec = embedding.New(baseURL, "", cfg.EmbeddingModel, cfg.EmbeddingTimeout)
+		logger.Info("embedding client ready (local)", "base_url", baseURL, "model", cfg.EmbeddingModel)
+	default:
+		if cfg.EmbeddingAPIKey != "" {
+			ec = embedding.New(cfg.EmbeddingBaseURL, cfg.EmbeddingAPIKey, cfg.EmbeddingModel, cfg.EmbeddingTimeout)
+			logger.Info("embedding client ready", "model", cfg.EmbeddingModel)
+		} else {
+			logger.Warn("EMBEDDING_API_KEY not set and EMBEDDING_PROVIDER!=local — indexing and /recall disabled")
+		}
 	}
 
 	// ── Initialize LLM client (shared, optional) ─────────────────────────────
@@ -158,17 +196,11 @@ func main() {
 			collectionName := fmt.Sprintf("ragamuffin_%s", name)
 			vlog := logger.With("vault", name)
 
-			drv, err := ingress.NewFileWatcherDriver(ctx, ingress.FileWatcherConfig{
-				Name:            name,
-				VaultPath:       vc.Path,
-				CollectionName:  collectionName,
-				QdrantURL:       cfg.QdrantURL,
-				ChunkVectorSize: chunkVectorSize,
-				ChunkMaxTokens:  cfg.ChunkMaxTokens,
-				WatcherMode:     cfg.WatcherMode,
-				WatchInterval:   watchInterval,
-				Logger:          vlog,
-			})
+			drv, err := newVaultDriver(ctx, cfg, collectionName, vc.Path, chunkVectorSize, watchInterval, vlog)
+			if err != nil {
+				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
+				os.Exit(1)
+			}
 			if err != nil {
 				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
 				os.Exit(1)
@@ -240,17 +272,11 @@ func main() {
 
 	} else {
 		// Single-tenant: one driver, one indexer
-		drv, err := ingress.NewFileWatcherDriver(ctx, ingress.FileWatcherConfig{
-			Name:            "default",
-			VaultPath:       cfg.VaultPath,
-			CollectionName:  cfg.QdrantCollection,
-			QdrantURL:       cfg.QdrantURL,
-			ChunkVectorSize: chunkVectorSize,
-			ChunkMaxTokens:  cfg.ChunkMaxTokens,
-			WatcherMode:     cfg.WatcherMode,
-			WatchInterval:   watchInterval,
-			Logger:          logger,
-		})
+		drv, err := newVaultDriver(ctx, cfg, cfg.QdrantCollection, cfg.VaultPath, chunkVectorSize, watchInterval, logger)
+		if err != nil {
+			logger.Error("failed to create file watcher driver", "error", err)
+			os.Exit(1)
+		}
 		if err != nil {
 			logger.Error("failed to create file watcher driver", "error", err)
 			os.Exit(1)
@@ -579,4 +605,52 @@ func slogLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+// newVaultDriver creates a file-watcher driver with the configured vector store.
+// When the vector store is "embedded", it opens a per-vault embedded store
+// instead of connecting to Qdrant.
+func newVaultDriver(ctx context.Context, cfg *config.Config, collectionName, vaultPath string, chunkVectorSize uint64, watchInterval time.Duration, logger *slog.Logger) (*ingress.FileWatcherDriver, error) {
+	if cfg.VectorStore == "embedded" {
+		// Embedded store: use a per-vault file under the configured directory
+		// (or a single shared file if EmbeddedDBPath is set).
+		path := cfg.EmbeddedDBPath
+		if path != "" {
+			// Use a separate file per vault to keep data isolated even
+			// before collection-level isolation kicks in.
+			ext := filepath.Ext(path)
+			base := path[:len(path)-len(ext)]
+			path = fmt.Sprintf("%s_%s%s", base, collectionName, ext)
+		}
+		es, err := embeddedstore.Open(embeddedstore.Config{
+			Path:       path,
+			Collection: collectionName,
+			VectorSize: chunkVectorSize,
+			Logger:     logger,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("open embedded store: %w", err)
+		}
+		return ingress.NewFileWatcherDriverWithStore(ctx, ingress.FileWatcherConfig{
+			Name:            filepath.Base(vaultPath),
+			VaultPath:       vaultPath,
+			CollectionName:  collectionName,
+			ChunkVectorSize: chunkVectorSize,
+			ChunkMaxTokens:  cfg.ChunkMaxTokens,
+			WatcherMode:     cfg.WatcherMode,
+			WatchInterval:   watchInterval,
+			Logger:          logger,
+		}, es)
+	}
+	return ingress.NewFileWatcherDriver(ctx, ingress.FileWatcherConfig{
+		Name:            filepath.Base(vaultPath),
+		VaultPath:       vaultPath,
+		CollectionName:  collectionName,
+		QdrantURL:       cfg.QdrantURL,
+		ChunkVectorSize: chunkVectorSize,
+		ChunkMaxTokens:  cfg.ChunkMaxTokens,
+		WatcherMode:     cfg.WatcherMode,
+		WatchInterval:   watchInterval,
+		Logger:          logger,
+	})
 }

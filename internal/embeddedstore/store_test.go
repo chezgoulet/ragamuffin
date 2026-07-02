@@ -179,7 +179,7 @@ func TestPayload_RoundTrip(t *testing.T) {
 		"text":        {Kind: &pb.Value_StringValue{StringValue: "hello world"}},
 		"source_file": {Kind: &pb.Value_StringValue{StringValue: "test.md"}},
 		"chunk_index": {Kind: &pb.Value_IntegerValue{IntegerValue: 3}},
-		"tags":        {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: []*pb.Value{
+		"tags": {Kind: &pb.Value_ListValue{ListValue: &pb.ListValue{Values: []*pb.Value{
 			{Kind: &pb.Value_StringValue{StringValue: "alpha"}},
 			{Kind: &pb.Value_StringValue{StringValue: "beta"}},
 		}}}},

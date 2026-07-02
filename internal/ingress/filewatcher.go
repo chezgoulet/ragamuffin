@@ -201,3 +201,35 @@ func fanoutIngest(ie IngestEvent, ch chan<- IngestEvent, sem chan struct{}, cap 
 		}
 	}
 }
+
+// ── Vector-store-agnostic driver factory ────────────────────────────────────
+
+// NewFileWatcherDriverWithStore is like NewFileWatcherDriver but uses a
+// caller-supplied FactStore instead of connecting to Qdrant. The store must
+// already be configured for the named collection.
+//
+// This is the seam that lets the embedded store (or any other qdrant.FactStore
+// implementation) drive the indexer pipeline without changes elsewhere.
+func NewFileWatcherDriverWithStore(ctx context.Context, cfg FileWatcherConfig, qc qdrant.FactStore) (*FileWatcherDriver, error) {
+	if qc == nil {
+		return nil, fmt.Errorf("vault %q: store is required", cfg.Name)
+	}
+	d := &FileWatcherDriver{
+		name:          cfg.Name,
+		vaultPath:     cfg.VaultPath,
+		collection:    cfg.CollectionName,
+		qc:            qc,
+		logger:        cfg.Logger.With("vault", cfg.Name),
+		watchMode:     cfg.WatcherMode,
+		watchInterval: cfg.WatchInterval,
+		chunkMaxToken: cfg.ChunkMaxTokens,
+
+		// Buffered channels so producers never block on slow consumers
+		rawEvents:    make(chan watcher.Event, 10000),
+		idxEvents:    make(chan watcher.Event, 10000),
+		prunerEvents: make(chan watcher.Event, 10000),
+		ingestEvents: make(chan IngestEvent, 10000),
+		doneCh:       make(chan struct{}),
+	}
+	return d, nil
+}

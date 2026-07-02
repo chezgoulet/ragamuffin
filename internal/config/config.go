@@ -62,9 +62,15 @@ type Config struct {
 	// setting RAGAMUFFIN_VAULTS_ROOT + RAGAMUFFIN_AUTO_PROVISION_VAULTS=true.
 	MultiTenantMode bool
 
-	// Required
+	// Required (only when VectorStore=="qdrant"; optional for "embedded")
 	QdrantURL       string
 	EmbeddingAPIKey string
+
+	// Optional — Vector store
+	// "qdrant" (default) — use Qdrant gRPC at QdrantURL
+	// "embedded" — use internal/embeddedstore (no Qdrant container required)
+	VectorStore    string
+	EmbeddedDBPath string // SQLite file for embedded store; empty = in-memory
 
 	// Optional — Qdrant
 	QdrantCollection string
@@ -262,9 +268,20 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "must set either RAGAMUFFIN_VAULT_PATH (single-tenant) or RAGAMUFFIN_VAULTS (multi-tenant)")
 	}
 
-	// Qdrant URL must be parseable
-	if _, err := parseURL(c.QdrantURL); err != nil {
-		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_QDRANT_URL %q is not a valid URL: %v", c.QdrantURL, err))
+	// Qdrant URL must be parseable when the vector store is Qdrant.
+	// For the embedded store it is not required.
+	if c.VectorStore == "qdrant" {
+		if _, err := parseURL(c.QdrantURL); err != nil {
+			errs = append(errs, fmt.Sprintf("RAGAMUFFIN_QDRANT_URL %q is not a valid URL: %v", c.QdrantURL, err))
+		}
+	}
+
+	// Vector store selection
+	switch c.VectorStore {
+	case "qdrant", "embedded":
+		// valid
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VECTOR_STORE must be 'qdrant' or 'embedded', got %q", c.VectorStore))
 	}
 
 	// Embedding dims must be positive (only valid for single-tenant or instance-level)
@@ -381,15 +398,26 @@ func parseURL(raw string) (interface{}, error) {
 // Load reads configuration from environment variables with defaults.
 // RAGAMUFFIN_VAULT_PATH (single-tenant) and RAGAMUFFIN_VAULTS (multi-tenant)
 // are mutually exclusive. One must be set.
+//
+// RAGAMUFFIN_QDRANT_URL is required only when RAGAMUFFIN_VECTOR_STORE=qdrant
+// (the default). When RAGAMUFFIN_VECTOR_STORE=embedded, no Qdrant is needed.
 func Load() (*Config, error) {
-	qdrantURL, err := requireEnv("RAGAMUFFIN_QDRANT_URL")
-	if err != nil {
-		return nil, err
+	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant")
+	qdrantURL := os.Getenv("RAGAMUFFIN_QDRANT_URL")
+	if vectorStore == "qdrant" {
+		var err error
+		qdrantURL, err = requireEnv("RAGAMUFFIN_QDRANT_URL")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cfg := &Config{
 		QdrantURL:       qdrantURL,
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
+
+		VectorStore:    envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant"),
+		EmbeddedDBPath: os.Getenv("RAGAMUFFIN_EMBEDDED_DB_PATH"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),

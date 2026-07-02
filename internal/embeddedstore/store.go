@@ -1,7 +1,6 @@
 package embeddedstore
 
 import (
-	_ "modernc.org/sqlite"
 	"context"
 	"database/sql"
 	"encoding/binary"
@@ -9,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	_ "modernc.org/sqlite"
 	"sort"
 	"strings"
 	"sync"
