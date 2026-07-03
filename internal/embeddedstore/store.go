@@ -49,23 +49,107 @@ func openDB(path string) (*sqlDB, error) {
 	return s, nil
 }
 
-// migrate creates the metadata table.
+// migrate creates the metadata table and renames any collection tables
+// created under the legacy (non-injective) tableName scheme to their
+// current names, using the collection registry as the source of truth for
+// the original collection names. Registered collections whose legacy and
+// current names differ get an ALTER TABLE RENAME; databases created after
+// the injective scheme are untouched.
 func (s *sqlDB) migrate() error {
-	_, err := s.db.Exec(`
+	if _, err := s.db.Exec(`
 		CREATE TABLE IF NOT EXISTS embedded_collections (
 			name TEXT PRIMARY KEY,
 			vector_size INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL
 		);
-	`)
-	return err
+	`); err != nil {
+		return err
+	}
+	rows, err := s.db.Query(`SELECT name FROM embedded_collections`)
+	if err != nil {
+		return err
+	}
+	var collections []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return err
+		}
+		collections = append(collections, name)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, name := range collections {
+		oldTbl, newTbl := legacyTableName(name), tableName(name)
+		if oldTbl == newTbl {
+			continue
+		}
+		var haveOld, haveNew int
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, oldTbl,
+		).Scan(&haveOld); err != nil {
+			return err
+		}
+		if err := s.db.QueryRow(
+			`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, newTbl,
+		).Scan(&haveNew); err != nil {
+			return err
+		}
+		if haveOld == 1 && haveNew == 0 {
+			if _, err := s.db.Exec(
+				fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, oldTbl, newTbl),
+			); err != nil {
+				return fmt.Errorf("migrate collection %q table: %w", name, err)
+			}
+			// The source_file index keeps its old name after the rename;
+			// ensureCollection's CREATE INDEX IF NOT EXISTS will add the
+			// new-name index on next write, which is harmless.
+		}
+	}
+	return nil
 }
 
 // Close releases the SQLite handle.
 func (s *sqlDB) Close() error { return s.db.Close() }
 
-// tableName returns the SQL table name for a collection.
+// tableName returns the SQL table name for a collection. The mapping MUST
+// be injective: two distinct collection names must never share a table, or
+// vault isolation silently breaks (the earlier scheme mapped every
+// non-alphanumeric byte to "_", so `soul-x`, `soul_x`, and `soul:x` all
+// merged into one table — cross-vault contamination). Lowercase letters
+// and digits pass through; every other byte (including '_' and uppercase,
+// because SQLite identifiers are case-insensitive) becomes "_" + two hex
+// digits, so escapes cannot be forged. A leading "_" keeps the result a
+// valid SQL identifier. migrate() renames tables created under the old
+// scheme using the collection registry, so existing databases keep their
+// data.
 func tableName(collection string) string {
+	safe := make([]byte, 0, len(collection)*3+1)
+	safe = append(safe, '_')
+	for i := 0; i < len(collection); i++ {
+		c := collection[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			safe = append(safe, c)
+		} else {
+			safe = append(safe, '_', hexDigit(c>>4), hexDigit(c&0xf))
+		}
+	}
+	return string(safe)
+}
+
+func hexDigit(b byte) byte {
+	if b < 10 {
+		return '0' + b
+	}
+	return 'a' + b - 10
+}
+
+// legacyTableName is the pre-injective scheme, kept only so migrate() can
+// find and rename tables created by it.
+func legacyTableName(collection string) string {
 	safe := make([]byte, 0, len(collection)+1)
 	safe = append(safe, '_')
 	for i := 0; i < len(collection); i++ {

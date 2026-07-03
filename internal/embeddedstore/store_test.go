@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	pb "github.com/qdrant/go-client/qdrant"
@@ -251,5 +252,99 @@ func TestCosineSimilarity(t *testing.T) {
 	got = cosineSimilarity([]float32{0.6, 0.8}, []float32{0.6, 0.8})
 	if math.Abs(float64(got)-1) > 1e-6 {
 		t.Errorf("identical cosine = %f, want 1", got)
+	}
+}
+
+// tableName must be injective: two distinct collection names sharing a
+// table is silent cross-vault contamination (vault isolation is contract
+// R4 #5). The legacy scheme mapped '-', '_', and ':' — all legal in
+// collection names — to the same byte. SQLite identifiers are also
+// case-insensitive, so injectivity must survive case folding.
+func TestTableName_Injective(t *testing.T) {
+	names := []string{
+		"soul-tib", "soul_tib", "soul:tib", "soul.tib", "SoulTib", "soultib",
+		"soul-2dtib", "soul_2dtib", // must not forge each other's escapes
+		"lore", "lore-", "lore_",
+	}
+	seen := map[string]string{}
+	for _, n := range names {
+		tbl := strings.ToLower(tableName(n)) // SQLite folds case
+		if prev, dup := seen[tbl]; dup {
+			t.Errorf("collision: %q and %q both map to table %q", prev, n, tbl)
+		}
+		seen[tbl] = n
+	}
+}
+
+// Vault isolation end-to-end: a point written to soul-a must never be
+// visible from soul_a (which the legacy tableName merged with it).
+func TestUpsertInto_HyphenUnderscoreVaultsAreIsolated(t *testing.T) {
+	s := newTestStore(t, "primary", 4)
+	ctx := context.Background()
+	if err := s.UpsertInto(ctx, "soul-a", []*pb.PointStruct{
+		mkPoint("hyphen", []float32{1, 0, 0, 0}, "m.md", nil),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpsertInto(ctx, "soul_a", []*pb.PointStruct{
+		mkPoint("underscore", []float32{0, 1, 0, 0}, "m.md", nil),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hyphen, _, err := s.scrollCollection(ctx, "soul-a", 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	underscore, _, err := s.scrollCollection(ctx, "soul_a", 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hyphen) != 1 || hyphen[0].GetId().GetUuid() != "hyphen" {
+		t.Errorf("soul-a: want exactly [hyphen], got %d point(s)", len(hyphen))
+	}
+	if len(underscore) != 1 || underscore[0].GetId().GetUuid() != "underscore" {
+		t.Errorf("soul_a: want exactly [underscore], got %d point(s)", len(underscore))
+	}
+}
+
+// A database created under the legacy tableName scheme must keep its data:
+// migrate() renames legacy tables to the injective names using the
+// collection registry. Simulated by renaming a current-scheme table to its
+// legacy name and re-opening the store.
+func TestMigrate_RenamesLegacyTables(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "legacy.db")
+	s, err := Open(Config{Path: path, Collection: "soul-tib", VectorSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.Upsert(ctx, []*pb.PointStruct{
+		mkPoint("memory", []float32{1, 0, 0, 0}, "m.md", nil),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// Downgrade the table to its legacy name, as a pre-fix database would
+	// have it.
+	oldTbl, newTbl := legacyTableName("soul-tib"), tableName("soul-tib")
+	if oldTbl == newTbl {
+		t.Fatalf("test needs the names to differ; got %q for both", oldTbl)
+	}
+	if _, err := s.conn.db.Exec(`ALTER TABLE ` + newTbl + ` RENAME TO ` + oldTbl); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	reopened, err := Open(Config{Path: path, Collection: "soul-tib", VectorSize: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	n, err := reopened.Count(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("after migration Count = %d, want 1 (legacy data lost)", n)
 	}
 }
