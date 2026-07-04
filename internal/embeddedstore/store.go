@@ -102,6 +102,15 @@ func (s *sqlDB) migrate() error {
 			if _, err := s.db.Exec(
 				fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, oldTbl, newTbl),
 			); err != nil {
+				// A concurrent open of the same file may have renamed it
+				// between our check and the ALTER; if the new table exists
+				// now, the migration is done and this error is stale.
+				var haveNewNow int
+				if recheck := s.db.QueryRow(
+					`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, newTbl,
+				).Scan(&haveNewNow); recheck == nil && haveNewNow == 1 {
+					continue
+				}
 				return fmt.Errorf("migrate collection %q table: %w", name, err)
 			}
 			// The source_file index keeps its old name after the rename;

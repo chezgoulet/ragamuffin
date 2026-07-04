@@ -158,6 +158,18 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		return nil
 	}
 
+	// Serialize provisioning: N concurrent first-writes to the same vault
+	// (a game seeding several memories at once) must produce ONE vault.
+	// Unserialized, the losers hit "indexer already registered" and their
+	// cleanup path os.RemoveAll'd the vault directory the winner had just
+	// registered — live vault, deleted. Provisioning is rare; one server-
+	// wide lock is fine.
+	s.provisionMu.Lock()
+	defer s.provisionMu.Unlock()
+	if idx := s.indexers.Get(name); idx != nil {
+		return idx // someone provisioned it while we waited
+	}
+
 	// Determine vault path
 	var vaultPath string
 	if s.cfg.VaultsRoot != "" {
@@ -222,7 +234,11 @@ func (s *Server) provisionVault(ctx context.Context, name string) *indexer.Index
 		s.log(ctx).Error("failed to register provisioned vault indexer", "vault", name, "error", err)
 		qc.Close()
 		factsQc.Close()
-		os.RemoveAll(vaultPath)
+		// Never remove the vault directory here: with a registration
+		// conflict the directory belongs to the registered indexer.
+		if existing := s.indexers.Get(name); existing != nil {
+			return existing
+		}
 		return nil
 	}
 

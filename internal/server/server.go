@@ -67,6 +67,7 @@ type Server struct {
 	logger        *slog.Logger
 	started       time.Time
 	mu            sync.Mutex
+	provisionMu sync.Mutex // serializes provisionVault
 	requestCounts map[string]map[string]int64 // endpoint -> status -> count
 
 	shutdownCtx    context.Context // cancelled by Shutdown() (#420)
