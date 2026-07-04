@@ -268,3 +268,38 @@ func TestCompare_NilClient(t *testing.T) {
 		t.Fatal("expected error for nil client")
 	}
 }
+
+// The "ollama" provider must speak the NATIVE /api/chat dialect with
+// think disabled — the OpenAI-compatible endpoint lets reasoning models
+// burn the whole completion budget "thinking" and return empty content
+// (the fact-extraction timeout from REACHLOCK M3).
+func TestOllamaProviderUsesNativeChatWithThinkOff(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"message": map[string]any{"role": "assistant", "content": "the answer"},
+		})
+	}))
+	defer srv.Close()
+
+	c := New("ollama", srv.URL, "local", "gemma4:e4b", 5*time.Second)
+	out, err := c.Synthesize(context.Background(), "q", "ctx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "the answer" {
+		t.Errorf("Synthesize = %q, want the native message content", out)
+	}
+	if gotPath != "/api/chat" {
+		t.Errorf("provider ollama hit %q, want /api/chat", gotPath)
+	}
+	if think, ok := gotBody["think"].(bool); !ok || think {
+		t.Errorf("think = %v, want explicit false", gotBody["think"])
+	}
+	if stream, ok := gotBody["stream"].(bool); !ok || stream {
+		t.Errorf("stream = %v, want explicit false", gotBody["stream"])
+	}
+}

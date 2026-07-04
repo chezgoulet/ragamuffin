@@ -46,6 +46,24 @@ type chatRequest struct {
 	Messages []message `json:"messages"`
 }
 
+// Ollama's NATIVE chat API (/api/chat). The native endpoint is the one
+// place Ollama reliably honors `think: false`; on the OpenAI-compatible
+// endpoint, reasoning models (gemma4 et al.) burn the entire completion
+// budget "thinking" and return empty content — which is exactly the
+// fact-extraction timeout documented as an M3 known gap. Verified live
+// against Ollama 0.23: compat endpoint returns 0 content chars with 519
+// chars of reasoning; native + think:false returns the answer in 9 s.
+type ollamaChatRequest struct {
+	Model    string    `json:"model"`
+	Messages []message `json:"messages"`
+	Stream   bool      `json:"stream"`
+	Think    bool      `json:"think"`
+}
+
+type ollamaChatResponse struct {
+	Message message `json:"message"`
+}
+
 type chatResponse struct {
 	Choices []struct {
 		Message struct {
@@ -80,6 +98,19 @@ func (c *Client) Synthesize(ctx context.Context, query, context string) (string,
 // Returns a summary if there's a conflict, empty string if none.
 // Health checks connectivity to the LLM provider by making a GET to the base URL.
 func (c *Client) Health(ctx context.Context) error {
+	if c != nil && c.provider == "ollama" {
+		// The native dialect's cheapest liveness probe.
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/api/version", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return fmt.Errorf("connect: %w", err)
+		}
+		resp.Body.Close()
+		return nil
+	}
 	if c == nil {
 		return fmt.Errorf("LLM not configured")
 	}
@@ -125,6 +156,11 @@ func (c *Client) Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB s
 }
 
 func (c *Client) chat(ctx context.Context, userMessage string) (string, error) {
+	// Provider "ollama" speaks the native dialect (see ollamaChatRequest);
+	// every other provider gets OpenAI-compatible /v1/chat/completions.
+	if c.provider == "ollama" {
+		return c.chatOllamaNative(ctx, userMessage)
+	}
 	reqBody := chatRequest{
 		Model: c.model,
 		Messages: []message{
@@ -167,4 +203,38 @@ func (c *Client) chat(ctx context.Context, userMessage string) (string, error) {
 	}
 
 	return cr.Choices[0].Message.Content, nil
+}
+
+// chatOllamaNative is the native-Ollama dialect of chat: /api/chat,
+// stream off, think off. Local models only; no API key required.
+func (c *Client) chatOllamaNative(ctx context.Context, userMessage string) (string, error) {
+	reqBody := ollamaChatRequest{
+		Model:    c.model,
+		Messages: []message{{Role: "user", Content: userMessage}},
+		Stream:   false,
+		Think:    false,
+	}
+	b, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/chat", bytes.NewReader(b))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("LLM call: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("LLM API error %d: %s", resp.StatusCode, string(body))
+	}
+	var cr ollamaChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+		return "", fmt.Errorf("decode LLM response: %w", err)
+	}
+	return cr.Message.Content, nil
 }

@@ -493,7 +493,7 @@ func (s *Server) factsCollectionFor(ctx context.Context) string {
 // factsQdrantFor returns the per-vault facts Qdrant client from context,
 // falling back to the server-wide facts client.
 func (s *Server) factsQdrantFor(ctx context.Context) qdrant.FactStore {
-	if name := vaultFromContext(ctx); name != "" {
+	if name := vaultFromContext(ctx); name != "" && s.indexers != nil {
 		if fc := s.indexers.GetFactClient(name); fc != nil {
 			return fc
 		}
@@ -505,7 +505,7 @@ func (s *Server) factsQdrantFor(ctx context.Context) qdrant.FactStore {
 // falling back to the server-wide LLM client for backward compatibility.
 // Returns nil if neither is configured.
 func (s *Server) llmFor(ctx context.Context) llm.Synthesizer {
-	if name := vaultFromContext(ctx); name != "" {
+	if name := vaultFromContext(ctx); name != "" && s.indexers != nil {
 		if lm := s.indexers.GetLLM(name); lm != nil {
 			return lm
 		}
@@ -516,7 +516,7 @@ func (s *Server) llmFor(ctx context.Context) llm.Synthesizer {
 // embeddingFor returns the per-vault embedding client from context,
 // falling back to the server-wide embedder.
 func (s *Server) embeddingFor(ctx context.Context) embedding.Embedder {
-	if name := vaultFromContext(ctx); name != "" {
+	if name := vaultFromContext(ctx); name != "" && s.indexers != nil {
 		if ec := s.indexers.GetEmbedder(name); ec != nil {
 			return ec
 		}

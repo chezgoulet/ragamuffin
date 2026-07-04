@@ -91,6 +91,17 @@ func (s *Server) handleIngestConversation(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	// The vault arrived in the BODY (the documented REACHLOCK path is a
+	// bare POST /v1/ingest/conversation), so it is not yet in the request
+	// context — but factsQdrantFor/llmFor/factsCollectionFor resolve
+	// per-vault clients FROM the context. Without this, facts distilled
+	// from a body-vault ingest landed in the server-wide facts store while
+	// the vault-scoped hybrid read the per-vault one: the soul never saw
+	// its own conversation memories.
+	if vaultName != "" && vaultFromContext(r.Context()) == "" {
+		r = r.WithContext(context.WithValue(r.Context(), vaultNameKey, vaultName))
+	}
+
 	// Get the facts client (respects per-vault facts)
 	fc := s.factsQdrantFor(r.Context())
 	if fc == nil {
