@@ -175,7 +175,7 @@ async function loadAudit() {
 
   try {
     const url = vault ? `/vault/${vault}/audit` : '/audit';
-    const res = await fetch(url);
+    const res = await fetch(url, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     state.auditData = data;
@@ -189,8 +189,8 @@ function renderAudit(data) {
   const container = document.getElementById('audit-summary');
   const detail = document.getElementById('audit-detail');
 
-  const staleness = (data.staleness || []).length;
-  const contradictions = (data.contradictions || []).length;
+  const staleness = (data.stale_files || []).length;
+  const contradictions = (data.semantic_conflicts || []).length;
   const gaps = (data.gaps || []).length;
 
   container.innerHTML = `
@@ -200,11 +200,11 @@ function renderAudit(data) {
   `;
 
   detail.innerHTML = '';
-  if (data.staleness && data.staleness.length) {
-    detail.innerHTML += '<div class="audit-section"><h3>Stale Facts</h3><pre>' + escapeHtml(JSON.stringify(data.staleness, null, 2)) + '</pre></div>';
+  if (data.stale_files && data.stale_files.length) {
+    detail.innerHTML += '<div class="audit-section"><h3>Stale Facts</h3><pre>' + escapeHtml(JSON.stringify(data.stale_files, null, 2)) + '</pre></div>';
   }
-  if (data.contradictions && data.contradictions.length) {
-    detail.innerHTML += '<div class="audit-section"><h3>Contradictions</h3><pre>' + escapeHtml(JSON.stringify(data.contradictions, null, 2)) + '</pre></div>';
+  if (data.semantic_conflicts && data.semantic_conflicts.length) {
+    detail.innerHTML += '<div class="audit-section"><h3>Contradictions</h3><pre>' + escapeHtml(JSON.stringify(data.semantic_conflicts, null, 2)) + '</pre></div>';
   }
   if (data.gaps && data.gaps.length) {
     detail.innerHTML += '<div class="audit-section"><h3>Gaps</h3><pre>' + escapeHtml(JSON.stringify(data.gaps, null, 2)) + '</pre></div>';
