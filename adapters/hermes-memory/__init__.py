@@ -504,8 +504,31 @@ class RagamuffinMemoryProvider(MemoryProvider):
     # -- Availability check -------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if Ragamuffin endpoint is configured."""
-        return bool(os.environ.get("RAGAMUFFIN_ENDPOINT"))
+        """Return True if Ragamuffin endpoint is configured.
+
+        Checks the RAGAMUFFIN_ENDPOINT env var first, then falls back
+        to the config file at $HERMES_HOME/ragamuffin.json (or
+        $RAGAMUFFIN_CONFIG). This mirrors the precedence used by
+        _load_config_file() during initialize().
+        """
+        if os.environ.get("RAGAMUFFIN_ENDPOINT"):
+            return True
+
+        # Also check the config file for an endpoint value
+        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        if not config_path:
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                config_path = os.path.join(hermes_home, "ragamuffin.json")
+        if config_path and os.path.exists(config_path):
+            try:
+                with open(config_path, "r") as f:
+                    cfg = json.load(f)
+                if cfg.get("endpoint"):
+                    return True
+            except Exception:
+                pass
+        return False
 
     # -- Config schema (for `hermes memory setup`) --------------------------
 
