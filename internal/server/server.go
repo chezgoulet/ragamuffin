@@ -185,6 +185,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/hybrid", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/hybrid", s.handleHybrid))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
+		mux.HandleFunc("/vault/{name}/v1/export", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/export", s.handleVaultExport))))
+		mux.HandleFunc("/vault/{name}/v1/import", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/import", s.handleVaultImport))))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -212,6 +214,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 
+		vaultChain("/v1/export", s.handleVaultExport)
+		vaultChain("/v1/import", s.handleVaultImport)
 	}
 
 	// Bare endpoints (keep existing v0.1–v0.3 behavior)
