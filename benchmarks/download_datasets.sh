@@ -26,6 +26,19 @@ else
 fi
 
 echo ""
+echo "=== Downloading NarrativeQA (DeepMind) via HF dataset-viewer ==="
+# NarrativeQA ships as parquet files. The benchmark loader downloads them
+# automatically on first run; this step is an explicit opt-in.
+if [ -d "$DATA_DIR/NarrativeQA/parquet/default" ]; then
+    echo "Already present at $DATA_DIR/NarrativeQA — skipping"
+else
+    echo "Triggering NarrativeQA parquet download via the loader..."
+    echo "(requires pyarrow: pip install -r $BENCH_DIR/requirements.txt)"
+    (cd "$BENCH_DIR" && python3 -c "from benchmarks.loaders.narrativeqa import NarrativeQALoader; NarrativeQALoader('$DATA_DIR/NarrativeQA').download()")
+fi
+
+echo ""
 echo "=== Done ==="
 echo "LongMemEval: $DATA_DIR/LongMemEval"
 echo "LoCoMo:      $DATA_DIR/Backboard-Locomo-Benchmark"
+echo "NarrativeQA: $DATA_DIR/NarrativeQA"
