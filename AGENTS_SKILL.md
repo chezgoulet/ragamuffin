@@ -50,7 +50,7 @@ for you:
 | Agent starts | `POST /v1/vaults` — creates/confirms your vault `agent::<your_name>` |
 | Before each turn | `POST /v1/recall` — searches your vault for relevant context |
 | After each turn | `POST /v1/ingest` — saves the turn to your vault |
-| Session ends | `POST /v1/ingest` — saves a session summary |
+| Session ends | `POST /v1/ingest` — saves a session summary; also auto-extracts decisions/conclusions/config/preferences as deduplicated facts (`POST /v1/facts`) |
 
 Your memory tools (`memory_search`, `memory_get`, etc.) work exactly as before —
 they're just backed by Ragamuffin now instead of file-based storage.

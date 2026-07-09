@@ -235,7 +235,7 @@ HTTP API. Both the OpenClaw and Hermes adapters follow this exact mapping.
 | `initialize(session_id)` | Agent starts, connect to backend | `POST /v1/vaults` with `name = prefix + agent_id` |
 | `prefetch(query)` / `queue_prefetch()` | Recall context before each turn | `POST /v1/recall` against agent's own vault |
 | `sync_turn(user_msg, asst_msg)` | Persist the completed exchange | `POST /v1/ingest` with turn as document |
-| `on_session_end(messages)` | Session ended, persist summary | `POST /v1/ingest` with synthesized summary document |
+| `on_session_end(messages)` | Session ended, persist summary + auto-facts | `POST /v1/ingest` summary, plus `POST /v1/facts` for each auto-extracted decision/conclusion/config/preference (deduped by key) |
 | `get_tool_schemas()` | Expose memory tools to agent | Return static schemas for `ragamuffin_recall`, `ragamuffin_store`, `agent_recall` |
 | `handle_tool_call('agent_recall', {vault, query})` | Cross-agent query | `POST /v1/recall?vault=agent::robot` |
 | `shutdown()` | Clean shutdown | None needed — Qdrant persists data |
