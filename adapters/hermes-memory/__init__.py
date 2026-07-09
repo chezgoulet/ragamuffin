@@ -44,7 +44,9 @@ Lifecycle:
   queue_prefetch()   → background thread → POST /v1/recall (cadence-gated)
   _refresh_context() → rebuilds base context cache on cadence
   sync_turn()        → background thread → POST /v1/ingest (cadence-gated, saveMessages)
-  on_session_end()   → POST /v1/ingest with session summary
+  on_session_end()   → POST /v1/ingest (session summary) + auto-extracted
+                        decision/conclusion/config/preference facts via
+                        POST /v1/facts (deduped by deterministic key)
   handle_tool_call   → POST /v1/recall against specified vault
 
 recallMode routing:
@@ -68,6 +70,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -495,6 +498,10 @@ class RagamuffinMemoryProvider(MemoryProvider):
         # Context bundle cache
         self._context_bundle: Dict[str, Any] = {}
 
+        # Session-end auto fact extraction (issue #793)
+        self._auto_session_facts = True
+        self._session_facts_prefix = "house"
+
     # -- Identity -----------------------------------------------------------
 
     @property
@@ -623,6 +630,27 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "default": True,
                 "env_var": "RAGAMUFFIN_FACT_GRAPH_ENABLED",
             },
+            {
+                "key": "auto_session_facts",
+                "description": (
+                    "At session end, automatically extract key decisions, "
+                    "conclusions, config, and preferences from the transcript "
+                    "and write them to the vault as deduplicated facts "
+                    "(house/<domain>/<topic>). No manual ragamuffin_learn "
+                    "call required."
+                ),
+                "default": True,
+                "env_var": "RAGAMUFFIN_AUTO_SESSION_FACTS",
+            },
+            {
+                "key": "session_facts_prefix",
+                "description": (
+                    "Key namespace prefix for auto-extracted session facts. "
+                    "Produces keys like '<prefix>/decision/<topic>'."
+                ),
+                "default": "house",
+                "env_var": "RAGAMUFFIN_SESSION_FACTS_PREFIX",
+            },
         ]
 
     # -- Config file loading -------------------------------------------------
@@ -713,6 +741,20 @@ class RagamuffinMemoryProvider(MemoryProvider):
             ):
                 self._fact_graph_enabled = bool(cfg["fact_graph_enabled"])
 
+            # Issue #793 — auto session-to-fact storage
+            if (
+                "auto_session_facts" in cfg
+                and "RAGAMUFFIN_AUTO_SESSION_FACTS" not in os.environ
+            ):
+                self._auto_session_facts = bool(cfg["auto_session_facts"])
+            if (
+                "session_facts_prefix" in cfg
+                and "RAGAMUFFIN_SESSION_FACTS_PREFIX" not in os.environ
+            ):
+                self._session_facts_prefix = str(
+                    cfg["session_facts_prefix"]
+                ) or "house"
+
             logger.debug("Loaded Ragamuffin config from %s", config_path)
         except Exception as e:
             logger.warning(
@@ -774,6 +816,14 @@ class RagamuffinMemoryProvider(MemoryProvider):
         ]
         fg = os.environ.get("RAGAMUFFIN_FACT_GRAPH_ENABLED", "true").lower()
         self._fact_graph_enabled = fg in ("true", "1", "yes")
+
+        # Issue #793 — auto session-to-fact storage
+        self._auto_session_facts = os.environ.get(
+            "RAGAMUFFIN_AUTO_SESSION_FACTS", "true"
+        ).lower() in ("true", "1", "yes")
+        self._session_facts_prefix = os.environ.get(
+            "RAGAMUFFIN_SESSION_FACTS_PREFIX", "house"
+        )
 
         self._context_cache_turn = 0
         self._dialectic_cache_turn = 0
@@ -1458,10 +1508,22 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self._sync_thread.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        """Index an end-of-session summary.
+        """Persist session knowledge at session end (issue #793).
 
-        messages is the full conversation history provided by Hermes.
-        We synthesize a summary document for long-term retrieval.
+        Two things happen automatically, with no agent action required:
+
+        1. A synthesized session summary is indexed via POST /v1/ingest
+           (existing behavior) for long-term retrieval.
+
+        2. Key decisions, conclusions, config facts, and preferences are
+           extracted from the transcript and written as deduplicated facts
+           via POST /v1/facts. Fact keys are deterministic
+           (``<prefix>/<domain>/<topic>``), so a later session that reaches
+           the same conclusion overwrites the earlier value instead of
+           creating a duplicate.
+
+        Network I/O runs in a daemon thread so session shutdown is never
+        blocked.
         """
         if not self._available or not self._vault_ready or not messages:
             return
@@ -1509,26 +1571,194 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         doc_id = f"{self._session_id or 'session'}-summary"
 
+        # Extract durable facts from the transcript (issue #793)
+        facts = self._extract_session_facts(messages) if self._auto_session_facts else []
+
+        def _run():
+            try:
+                if self._requests is None:
+                    return
+                # 1) session summary
+                url = _build_endpoint(self._endpoint, "/v1/ingest")
+                headers = _build_headers(self._auth_token)
+                payload = {
+                    "vault": self._agent_vault,
+                    "content": summary_text,
+                    "source": "session_summary",
+                    "tags": [self._session_id or "session", self._agent_identity],
+                }
+                self._requests.post(
+                    url,
+                    json=payload,
+                    headers=headers,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                logger.debug("Ragamuffin session summary indexed: %s", doc_id)
+
+                # 2) auto-extracted durable facts (deduplicated by key)
+                if facts:
+                    stored = 0
+                    for fact in facts:
+                        if self._put_session_fact(
+                            fact["key"], fact["value"], fact["domain"]
+                        ):
+                            stored += 1
+                    logger.info(
+                        "Ragamuffin auto-stored %d session fact(s) "
+                        "for agent '%s'",
+                        stored,
+                        self._agent_identity,
+                    )
+            except Exception as e:  # pragma: no cover - network boundary
+                logger.debug("Ragamuffin on_session_end error: %s", e)
+
+        self._sync_thread = threading.Thread(
+            target=_run, daemon=True, name="ragamuffin-session-end"
+        )
+        self._sync_thread.start()
+
+    # -- Issue #793: auto session-to-fact extraction ------------------------
+
+    # Trigger phrases that mark a span as a durable decision / conclusion /
+    # config / preference worth persisting as a fact.
+    _FACT_TRIGGERS = [
+        (r"\bwe (?:decided|agreed|concluded|will use|chose)\b", "decision"),
+        (r"\bdecision\b", "decision"),
+        (r"\bagreed\b", "decision"),
+        (r"\bconclusion\b", "conclusion"),
+        (r"\bthe (?:plan|approach|strategy) (?:is|will be)\b", "approach"),
+        (r"\bplan\b", "approach"),
+        (r"\bconfig(?:ure|uration)?\b", "config"),
+        (r"\bset (?:the )?.+? to\b", "config"),
+        (r"\benv(?:ironment)? var(?:iable)?\b", "config"),
+        (r"\bprefer(?:ence)?\b", "preference"),
+        (r"\bstandard\b", "preference"),
+        (r"\bshould (?:always )?use\b", "preference"),
+        (r"\balways use\b", "preference"),
+    ]
+
+    def _extract_session_facts(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, str]]:
+        """Extract durable facts from a transcript.
+
+        Scans assistant (and user) messages for sentences that assert a
+        decision, conclusion, config, or preference. Returns a list of
+        dicts ``{"key", "value", "domain"}`` with deterministic keys so the
+        same conclusion reached in a later session overwrites (dedupes)
+        rather than duplicates.
+
+        Only the first occurrence of a given key is kept.
+        """
+        import hashlib
+
+        # Collect candidate text — assistant conclusions first, then user.
+        spans: List[str] = []
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if isinstance(content, str) and content.strip():
+                spans.append(content)
+            elif isinstance(content, list):
+                # tool_result / multimodal content blocks
+                for block in content:
+                    if isinstance(block, dict) and isinstance(
+                        block.get("text"), str
+                    ):
+                        spans.append(block["text"])
+
+        results: List[Dict[str, str]] = []
+        seen_keys: set = set()
+
+        for span in spans:
+            for sentence in self._split_sentences(span):
+                domain = self._classify_fact(sentence)
+                if domain is None:
+                    continue
+                value = sentence.strip()
+                if len(value) > 500:
+                    value = value[:497] + "..."
+                key = self._fact_key(domain, value)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                results.append({"key": key, "value": value, "domain": domain})
+
+        return results
+
+    @staticmethod
+    def _split_sentences(text: str) -> List[str]:
+        """Split text into sentences on '.', '!', '?' boundaries."""
+        parts = re.split(r"(?<=[.!?])\s+|\n+", text)
+        return [p.strip() for p in parts if p and p.strip()]
+
+    def _classify_fact(self, sentence: str) -> Optional[str]:
+        """Return the fact domain if the sentence is a durable fact, else None."""
+        low = sentence.lower()
+        # Must be a substantive assertion, not a question or trivial prompt.
+        if "?" in sentence:
+            return None
+        if len(sentence.split()) < 4:
+            return None
+        for pattern, domain in self._FACT_TRIGGERS:
+            if re.search(pattern, low):
+                return domain
+        return None
+
+    def _fact_key(self, domain: str, value: str) -> str:
+        """Build a deterministic fact key: ``<prefix>/<domain>/<topic>``.
+
+        ``<topic>`` is a short slug from the sentence plus a content hash so
+        identical decisions collide on the same key (dedup/overwrite) while
+        distinct decisions with overlapping wording stay separate.
+        """
+        import hashlib
+
+        slug_src = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+        slug = slug_src[:48] or "item"
+        digest = hashlib.sha256(value.encode()).hexdigest()[:8]
+        return f"{self._session_facts_prefix}/{domain}/{slug}-{digest}"
+
+    def _put_session_fact(self, key: str, value: str, domain: str) -> bool:
+        """Upsert a single session fact. POST /v1/facts dedupes by key.
+
+        Returns True on a 200/201, False otherwise (logged at debug level so
+        a single bad fact never aborts the rest of the batch).
+        """
+        if self._requests is None:
+            return False
         try:
-            if self._requests is None:
-                return
-            url = _build_endpoint(self._endpoint, "/v1/ingest")
+            url = _build_endpoint(self._endpoint, "/v1/facts")
             headers = _build_headers(self._auth_token)
-            payload = {
+            payload: Dict[str, Any] = {
+                "key": key,
+                "value": value,
                 "vault": self._agent_vault,
-                "content": summary_text,
-                "source": "session_summary",
-                "tags": [self._session_id or "session", self._agent_identity],
+                "tags": ["session_fact", domain, self._agent_identity],
+                "source": "session_end_auto",
+                "source_type": "conversation",
+                "confidence": 0.7,
             }
-            self._requests.post(
+            resp = self._requests.post(
                 url,
                 json=payload,
                 headers=headers,
                 timeout=_REQUEST_TIMEOUT,
             )
-            logger.debug("Ragamuffin session summary indexed: %s", doc_id)
-        except Exception as e:
-            logger.debug("Ragamuffin on_session_end error: %s", e)
+            if resp.status_code in (200, 201):
+                return True
+            logger.debug(
+                "Session fact put rejected for %s: HTTP %s %s",
+                key,
+                resp.status_code,
+                resp.text[:200],
+            )
+            return False
+        except Exception as e:  # pragma: no cover - network boundary
+            logger.debug("Ragamuffin session fact put error: %s", e)
+            return False
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         """Return tool schemas this provider exposes."""
