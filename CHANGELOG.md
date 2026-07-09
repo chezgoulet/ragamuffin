@@ -4,6 +4,7 @@
 
 ### Features
 - **Auto session-to-fact storage (Hermes adapter)**: `on_session_end` now automatically extracts key decisions, conclusions, config facts, and preferences from the transcript and writes them to the vault as deduplicated facts via `POST /v1/facts`. Fact keys are deterministic (`house/<domain>/<topic>`), so a later session reaching the same conclusion overwrites the earlier value instead of creating a duplicate. No manual `ragamuffin_learn`/`ragamuffin_fact_put` call required. Toggle with `RAGAMUFFIN_AUTO_SESSION_FACTS` (default `true`) and namespace prefix `RAGAMUFFIN_SESSION_FACTS_PREFIX` (default `house`). (#793)
+- **Librarian health check (#795)**: New `GET /v1/facts/freshness` (and `/vault/{name}/v1/facts/freshness`) endpoint returns the timestamp of the most recently written fact plus a `stale` flag computed against `RAGAMUFFIN_FACTS_FRESHNESS_THRESHOLD` (default 24h). A self-contained `scripts/librarian_health_check.sh` cron companion queries it and exits non-zero with an alert only when stale — silent when healthy. Tailored for the librarian cron that writes completed kanban-card knowledge as facts.
 
 ## v1.0.0-rc.1
 

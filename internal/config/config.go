@@ -172,6 +172,11 @@ type Config struct {
 	AuditSampleSize int
 	AutoThreshold   float64
 
+	// Optional — Librarian health check (#795)
+	// FactsFreshnessThreshold is the max allowed age of the most recent fact
+	// write before the librarian is considered stalled. Zero = default 24h.
+	FactsFreshnessThreshold time.Duration
+
 	// Optional — Auth
 	AuthMode            string
 	AuthReadKey         string
@@ -505,7 +510,11 @@ func Load() (*Config, error) {
 
 		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
-		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
+
+		// Librarian health check (#795). Default 24h — alert if no fact has
+		// been written in the last day.
+		FactsFreshnessThreshold: envDuration("RAGAMUFFIN_FACTS_FRESHNESS_THRESHOLD", 24*time.Hour),
+		LogLevel:                envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 	}
 
 	// Parse vaults root for multi-tenant path validation

@@ -434,7 +434,18 @@ assert_status "recall time_filter=all" 200 "$RESP"
 
 # Cleanup
 curl -s -X DELETE "$HOST/v1/facts?key=test/temporal-fact" \
-  -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1
+  -H "Authorization: Bearer ***" > /dev/null 2>&1
+
+# ── Librarian health check (issue #795) ──────────────────────────────────────
+echo "--- Librarian health check ---"
+
+yellow "Librarian: GET /v1/facts/freshness returns field shape"
+RESP=$(curl -s -w "\n%{http_code}" "$HOST/v1/facts/freshness" -H "Authorization: Bearer ***")
+assert_status "freshness endpoint reachable" 200 "$RESP"
+assert_field "freshness has stale field" "stale" "false" "$RESP"
+assert_field "freshness has threshold_seconds" "threshold_seconds" "86400" "$RESP"
+assert_field "freshness has collection" "collection" "ragamuffin_facts" "$RESP"
+
 
 # ── Extraction Pipeline ────────────────────────────────────────────────────
 echo "--- Extraction pipeline ---"

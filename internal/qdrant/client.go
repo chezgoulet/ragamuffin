@@ -303,6 +303,17 @@ func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) (
 	return resp.Result, resp.NextPageOffset, nil
 }
 
+// ScrollOrdered returns points from the given collection ordered by a payload
+// field via Qdrant's order_by scroll. Used by the facts freshness check (#795)
+// to fetch the single most-recently-written fact in O(1) regardless of volume.
+func (c *Client) ScrollOrdered(ctx context.Context, req *pb.ScrollPoints) ([]*pb.RetrievedPoint, error) {
+	resp, err := c.points.Scroll(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Result, nil
+}
+
 // GetPoints returns points by their IDs from the given collection.
 // Excludes vectors since we only need payload fields.
 func (c *Client) GetPoints(ctx context.Context, collection string, ids []*pb.PointId) ([]*pb.RetrievedPoint, error) {

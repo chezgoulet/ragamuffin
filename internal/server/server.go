@@ -246,6 +246,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
 		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
 	}
+	// Librarian health check (#795) — always available when facts are enabled.
+	mux.HandleFunc("/v1/facts/freshness", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactsFreshness))))
+	mux.HandleFunc("/vault/{name}/v1/facts/freshness", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactsFreshness))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Link index — always registered (bare endpoints)
