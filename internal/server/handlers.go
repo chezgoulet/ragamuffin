@@ -1896,9 +1896,10 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 	var labels []string
 	var sources []string
 	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
 
 	for {
-		points, nextOffset, err := qc.ScrollWithVectors(ctx, pageSize, nil)
+		points, nextOffset, err := qc.ScrollWithVectors(ctx, pageSize, scrollOffset)
 		if err != nil {
 			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
 			return
@@ -1932,6 +1933,7 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 		if nextOffset == nil {
 			break
 		}
+		scrollOffset = nextOffset
 	}
 
 	if len(vectors) == 0 {
@@ -1939,7 +1941,7 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	projection, err := embedding.ProjectPCA(vectors, labels, sources)
+	projection, err := embedding.ProjectPCA(ctx, vectors, labels, sources)
 	if err != nil {
 		writeError(w, 500, "PROJECTION_FAILED", fmt.Sprintf("PCA failed: %v", err))
 		return

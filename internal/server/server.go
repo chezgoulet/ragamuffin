@@ -113,7 +113,6 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/documents", cfg.RateLimitIngest)
-	rl.SetLimit("/v1/chunks", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/pruner/auto-tune", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/review", cfg.RateLimitReview)
@@ -123,6 +122,9 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/agents/stats", 10)
 	rl.SetLimit("/v1/chunks", 30)
 	rl.SetLimit("/v1/embedding/project", 5)
+	rl.SetLimit("/v1/vaults/delete", 10)
+	rl.SetLimit("/v1/vaults/export", 5)
+	rl.SetLimit("/v1/vaults/import", 5)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -280,9 +282,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Vault operations — clear, create, list
 	mux.HandleFunc("/v1/vaults/", s.withRequestID(s.handleVaultClear))
-	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.handleVaultDelete)))
-	mux.HandleFunc("/v1/vaults/{name}/export", s.withRequestID(s.withQdrant(s.handleExport)))
-	mux.HandleFunc("/v1/vaults/{name}/import", s.withRequestID(s.withQdrant(s.handleImport)))
+	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/delete", s.handleVaultDelete))))
+	mux.HandleFunc("/v1/vaults/{name}/export", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/export", s.handleExport))))
+	mux.HandleFunc("/v1/vaults/{name}/import", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/import", s.handleImport))))
 
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))

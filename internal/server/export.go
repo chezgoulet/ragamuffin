@@ -60,9 +60,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	chunks := make([]exportChunk, 0)
 	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
 
 	for {
-		points, nextOffset, err := qc.Scroll(ctx, pageSize, nil)
+		points, nextOffset, err := qc.Scroll(ctx, pageSize, scrollOffset)
 		if err != nil {
 			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
 			return
@@ -83,6 +84,7 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		if nextOffset == nil {
 			break
 		}
+		scrollOffset = nextOffset
 	}
 
 	w.Header().Set("Content-Type", "application/json")

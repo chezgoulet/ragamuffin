@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"context"
 	"math"
 )
 
@@ -20,11 +21,16 @@ type Projection2D struct {
 
 // ProjectPCA computes a 2D PCA projection of the given vectors (#809).
 // Uses power iteration for eigenvalue decomposition — no external deps.
+// Accepts a context for cancellation; returns ctx.Err() if cancelled.
 // Input: vectors is [][]float32 where each inner slice has dimension D.
 // labels and sourceFiles are optional parallel slices for enrichment.
-func ProjectPCA(vectors [][]float32, labels, sourceFiles []string) (*Projection2D, error) {
+func ProjectPCA(ctx context.Context, vectors [][]float32, labels, sourceFiles []string) (*Projection2D, error) {
 	if len(vectors) == 0 {
 		return &Projection2D{Points: []ProjectionPoint{}}, nil
+	}
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 
 	n := len(vectors)
@@ -82,6 +88,10 @@ func ProjectPCA(vectors [][]float32, labels, sourceFiles []string) (*Projection2
 		}
 
 		for iter := 0; iter < 100; iter++ {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+
 			// v_new = cov * v
 			vNew := make([]float64, d)
 			for i := 0; i < d; i++ {
