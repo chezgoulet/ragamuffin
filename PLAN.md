@@ -53,10 +53,10 @@ Status: **All phases complete.** 19 of 27 issues fully implemented. Remaining 8 
 |---|---|---|
 | #664 | ✓ | `/v1/briefing` and `/v1/hybrid` handlers verified existing |
 | #790 | ✓ | `GET/DELETE /vault/{name}/v1/chunks` — chunk listing and bulk pruning |
-| #782 | ◐ | Plugin tool injection warning — deferred (external Hermes plugin) |
-| #784 | ◐ | Plugin health introspection tool — deferred |
-| #785 | ◐ | Plugin prefetch timing signal — deferred |
-| #795 | ◐ | Librarian health check — deferred (external script) |
+| #782 | ◐ | Tool injection warning — deferred (fix lives in Hermes framework `agent/memory_manager.py`, not plugin) |
+| #784 | ✓ | `ragamuffin_status` tool in plugin — probes `/health`, returns provider/server state |
+| #785 | ✓ | Context refresh marker: `<!-- memory-context refreshed at turn N (timestamp) -->` |
+| #795 | ✓ | `scripts/librarian_health.py` — cron script, Telegram alert if no facts in 24h |
 
 ## New routes added so far
 
