@@ -23,6 +23,7 @@
     <button data-page="agents" role="tab" aria-selected="false" aria-controls="page-agents">Agents</button>
     <button data-page="ingest" role="tab" aria-selected="false" aria-controls="page-ingest">Ingest</button>
     <button data-page="vaultadmin" role="tab" aria-selected="false" aria-controls="page-vaultadmin">Vaults</button>
+    <button data-page="embed" role="tab" aria-selected="false" aria-controls="page-embed">Embeddings</button>
   </div>
   <span id="vault-select"></span>
 </nav>
@@ -115,6 +116,17 @@
 <main id="page-vaultadmin" class="page">
   <h2>Vault Admin</h2>
   <div id="vaultadmin-content"></div>
+</main>
+
+<main id="page-embed" class="page">
+  <h2>Embedding Space Explorer</h2>
+  <div class="graph-controls">
+    <button id="embed-load">Project</button>
+    <label><input type="checkbox" id="embed-color" checked> Color by source</label>
+  </div>
+  <div id="embed-viz" style="position:relative;background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;min-height:500px"></div>
+  <div id="embed-legend" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e"></div>
+  <div id="embed-tip" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e">Pan by dragging · Zoom with scroll wheel · Click a point to inspect</div>
 </main>
 
 <script src="/static/app.js"></script>

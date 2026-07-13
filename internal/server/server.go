@@ -122,6 +122,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/gaps", 10)
 	rl.SetLimit("/v1/agents/stats", 10)
 	rl.SetLimit("/v1/chunks", 30)
+	rl.SetLimit("/v1/embedding/project", 5)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -298,6 +299,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Agent contribution statistics (#808)
 	mux.HandleFunc("/v1/agents/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
 	mux.HandleFunc("/v1/agents/{name}/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
+
+	// Embedding projection — 2D embedding explorer (#809)
+	mux.HandleFunc("/v1/embedding/project", s.withRequestID(s.withRateLimit("/v1/embedding/project", s.handleEmbedProject)))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))

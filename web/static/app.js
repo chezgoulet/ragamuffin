@@ -186,6 +186,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   const factSearch = document.getElementById('fact-search');
   if (factSearch) factSearch.addEventListener('keydown', e => { if (e.key === 'Enter') loadFacts(); });
 
+  // Embedding explorer
+  const embedLoad = document.getElementById('embed-load');
+  if (embedLoad) embedLoad.addEventListener('click', loadEmbedProj);
+  const embedColor = document.getElementById('embed-color');
+  if (embedColor) embedColor.addEventListener('change', () => {
+    // Re-render with new color scheme — re-fetches data
+    loadEmbedProj();
+  });
+
   // Listen for vault selector changes
   document.querySelectorAll('select[id$="-vault"]').forEach(sel => {
     sel.addEventListener('change', () => {
@@ -242,6 +251,7 @@ function switchPage(name) {
   if (name === 'agents') loadAgents();
   if (name === 'ingest') loadIngest();
   if (name === 'vaultadmin') loadVaultAdmin();
+  if (name === 'embed') loadEmbedProj();
   if (name === 'graph') {
     state.activeVault = document.getElementById('graph-vault').value || state.activeVault;
   }
@@ -1094,7 +1104,191 @@ async function loadVaultAdmin() {
     renderError(container, `Vault admin failed: ${err.message}`, loadVaultAdmin);
   }
 }
-function escapeHtml(s) {
+
+// ── Embedding Space Explorer (#809) ──────────────────────────────────────────
+async function loadEmbedProj() {
+  const container = document.getElementById('embed-viz');
+  renderLoading(container, 'Computing 2D projection…');
+  try {
+    const data = await apiJSON('/v1/embedding/project');
+    const points = data.points || [];
+    if (!points.length) {
+      renderEmpty(container, 'No data to project', 'Ingest documents first to see the embedding space.');
+      return;
+    }
+    renderEmbedCanvas(points);
+  } catch (err) {
+    renderError(container, `Projection failed: ${err.message}`, loadEmbedProj);
+  }
+}
+
+let embedSim = null;
+
+function renderEmbedCanvas(points) {
+  const container = document.getElementById('embed-viz');
+  const legend = document.getElementById('embed-legend');
+  container.innerHTML = '';
+
+  const canvas = document.createElement('canvas');
+  canvas.width = container.clientWidth || 800;
+  canvas.height = 500;
+  canvas.style.width = '100%';
+  canvas.style.height = '500px';
+  canvas.style.cursor = 'grab';
+  container.appendChild(canvas);
+
+  const ctx = canvas.getContext('2d');
+
+  // Compute bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  points.forEach(p => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  });
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const margin = 40;
+  const scale = Math.min((canvas.width - margin * 2) / rangeX, (canvas.height - margin * 2) / rangeY);
+  const ox = (canvas.width - rangeX * scale) / 2 - minX * scale;
+  const oy = (canvas.height - rangeY * scale) / 2 - minY * scale;
+
+  function toScreen(x, y) {
+    return { sx: x * scale + ox, sy: y * scale + oy };
+  }
+
+  // Generate colors by source file
+  const colors = ['#58a6ff','#7ee787','#d2a8ff','#ff7b72','#79c0ff','#ffa657','#a5d6ff','#c9d1d9'];
+  const sourceColors = {};
+  let colorIdx = 0;
+
+  // Viewport state
+  let viewX = 0, viewY = 0, zoom = 1;
+  let isDragging = false, dragStartX, dragStartY, viewStartX, viewStartY;
+  let hoveredIdx = -1;
+  let pickedIdx = -1;
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-canvas.width / 2 + viewX, -canvas.height / 2 + viewY);
+
+    const colorBySource = document.getElementById('embed-color') && document.getElementById('embed-color').checked;
+
+    points.forEach((p, i) => {
+      let { sx, sy } = toScreen(p.x, p.y);
+      sx += viewX;
+      sy += viewY;
+      const r = 4;
+      if (sx < -50 || sx > canvas.width * 2 || sy < -50 || sy > canvas.height * 2) return;
+
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+
+      let color = '#58a6ff';
+      if (colorBySource && p.source_file) {
+        if (!sourceColors[p.source_file]) {
+          sourceColors[p.source_file] = colors[colorIdx % colors.length];
+          colorIdx++;
+        }
+        color = sourceColors[p.source_file];
+      }
+
+      ctx.fillStyle = color;
+      const isActive = pickedIdx === i || hoveredIdx === i;
+      ctx.globalAlpha = isActive ? 1 : 0.6;
+      ctx.fill();
+
+      if (isActive) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      if (isActive && p.label) {
+        ctx.fillStyle = '#c9d1d9';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.label.length > 20 ? p.label.slice(0, 18) + '…' : p.label, sx, sy - r - 4);
+      }
+    });
+
+    ctx.restore();
+  }
+
+  function hitTest(sx, sy) {
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      let { sx: psx, sy: psy } = toScreen(p.x, p.y);
+      psx = (psx + viewX) * zoom + canvas.width / 2 - canvas.width / 2 * zoom;
+      psy = (psy + viewY) * zoom + canvas.height / 2 - canvas.height / 2 * zoom;
+      const dx = sx - (canvas.width / 2 + (psx - canvas.width / 2) * zoom);
+      const dy = sy - (canvas.height / 2 + (psy - canvas.height / 2) * zoom);
+      if (dx * dx + dy * dy < 400) return i;
+    }
+    return -1;
+  }
+
+  // Mouse events
+  canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const hit = hitTest(sx, sy);
+    if (hit >= 0) {
+      pickedIdx = pickedIdx === hit ? -1 : hit;
+      draw();
+    } else {
+      isDragging = true;
+      dragStartX = sx;
+      dragStartY = sy;
+      viewStartX = viewX;
+      viewStartY = viewY;
+    }
+  });
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const hit = hitTest(sx, sy);
+    hoveredIdx = hit;
+    if (isDragging) {
+      viewX = viewStartX + (sx - dragStartX) / zoom;
+      viewY = viewStartY + (sy - dragStartY) / zoom;
+      draw();
+    } else {
+      draw();
+    }
+  });
+  canvas.addEventListener('mouseup', () => { isDragging = false; });
+  canvas.addEventListener('mouseleave', () => { isDragging = false; hoveredIdx = -1; draw(); });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    zoom = Math.max(0.1, Math.min(20, zoom * delta));
+    draw();
+  }, { passive: false });
+
+  // Legend
+  const colorBySource = document.getElementById('embed-color') && document.getElementById('embed-color').checked;
+  if (colorBySource && Object.keys(sourceColors).length > 0) {
+    let legHtml = '';
+    for (const [src, color] of Object.entries(sourceColors)) {
+      legHtml += `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span> ${escapeHtml(src)}</span>`;
+    }
+    legend.innerHTML = legHtml;
+  } else {
+    legend.innerHTML = `<span style="color:#8b949e">${points.length} points</span>`;
+  }
+
+  draw();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
   if (!s) return '';
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
