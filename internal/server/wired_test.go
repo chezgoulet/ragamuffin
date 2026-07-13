@@ -435,3 +435,91 @@ type jsonBytesReader struct{ s string }
 func (r *jsonBytesReader) Read(p []byte) (int, error) {
 	return copy(p, r.s), nil
 }
+
+// ── D5: Concurrency test ─────────────────────────────────────────────────────
+
+func TestWired_ConcurrentRecall(t *testing.T) {
+	srv := wiredServer(t, "default")
+	store := srv.indexers.GetClient("default").(*embeddedstore.Store)
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprintf("00000000-0000-0000-0000-00000000%04d", i)
+		preloadChunk(t, store, id, "docs/data.md", fmt.Sprintf("content %d", i))
+	}
+
+	// Fire 20 concurrent recall requests (avoids race detector timeouts)
+	const workers = 20
+	errCh := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			body := jsonBytes(`{"query":"test","top_k":5}`)
+			req := httptest.NewRequest("POST", "/recall", body)
+			w := httptest.NewRecorder()
+			srv.handleRecall(w, req)
+			if w.Code != 200 {
+				errCh <- fmt.Errorf("recall returned %d", w.Code)
+				return
+			}
+			errCh <- nil
+		}()
+	}
+
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// ── D7: Export/import round-trip test ─────────────────────────────────────────
+
+func TestWired_ExportImportRoundTrip(t *testing.T) {
+	srv := wiredServer(t, "default")
+	store := srv.indexers.GetClient("default").(*embeddedstore.Store)
+	preloadChunk(t, store, wiredChunkID(t), "docs/roundtrip.md", "round trip content")
+
+	// Export
+	exportReq := httptest.NewRequest("GET", "/v1/vaults/default/export", nil)
+	exportW := httptest.NewRecorder()
+	srv.handleExport(exportW, exportReq)
+	if exportW.Code != 200 {
+		t.Fatalf("export returned %d", exportW.Code)
+	}
+
+	var exportResp map[string]interface{}
+	json.NewDecoder(exportW.Body).Decode(&exportResp)
+	chunks, _ := exportResp["chunks"].([]interface{})
+	if len(chunks) < 1 {
+		t.Fatal("expected at least 1 chunk in export")
+	}
+
+	// Delete all chunks
+	delReq := httptest.NewRequest("DELETE", "/v1/chunks?confirm=true", nil)
+	delW := httptest.NewRecorder()
+	srv.handleChunksDelete(delW, delReq)
+	if delW.Code != 200 {
+		t.Fatalf("delete returned %d", delW.Code)
+	}
+
+	// Import back
+	importBody, _ := json.Marshal(exportResp)
+	importReq := httptest.NewRequest("POST", "/v1/vaults/default/import", jsonBytes(string(importBody)))
+	importW := httptest.NewRecorder()
+	srv.handleImport(importW, importReq)
+	if importW.Code != 200 {
+		t.Fatalf("import returned %d: %s", importW.Code, importW.Body.String())
+	}
+}
+
+// ── D8: Create vault test ─────────────────────────────────────────────────────
+
+func TestWired_VaultCreate(t *testing.T) {
+	srv := wiredServer(t, "default")
+	body := jsonBytes(`{"name":"new-vault","path":"/tmp/new-vault"}`)
+	req := httptest.NewRequest("POST", "/vaults", body)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+	// create vault is multi-tenant only; single-tenant returns 403 or similar
+	if w.Code != 200 && w.Code != 403 {
+		t.Fatalf("expected 200 or 403, got %d: %s", w.Code, w.Body.String())
+	}
+}

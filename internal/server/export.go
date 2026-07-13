@@ -56,26 +56,38 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Enforce a chunk limit to prevent OOM — message for v1 above that to use streaming
-	const maxChunks = 50000
-
+	// Stream export as JSON array — no in-memory buffering
 	ctx := r.Context()
-	chunks := make([]exportChunk, 0, 1000)
 	const pageSize uint32 = 200
 	var scrollOffset *pb.PointId
+	var first bool = true
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	// Write opening JSON
+	if _, err := fmt.Fprintf(w, `{"vault":"%s","chunks":[`, vaultName); err != nil {
+		return
+	}
+
+	flusher, canFlush := w.(http.Flusher)
 
 	for {
 		points, nextOffset, err := qc.Scroll(ctx, pageSize, scrollOffset)
 		if err != nil {
-			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			s.log(ctx).Error("export scroll failed", "error", err)
 			return
 		}
 		for _, p := range points {
-			if len(chunks) >= maxChunks {
-				writeError(w, 413, "EXPORT_TOO_LARGE", fmt.Sprintf("export limited to %d chunks; use vault snapshot for larger exports", maxChunks))
-				return
-			}
 			payload := p.GetPayload()
+
+			// Write comma separator between elements
+			if !first {
+				if _, err := fmt.Fprintf(w, ","); err != nil {
+					return
+				}
+			}
+			first = false
+
 			c := exportChunk{
 				ChunkID: p.Id.GetUuid(),
 			}
@@ -97,20 +109,24 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			if v, ok := payload["file_last_updated"]; ok {
 				c.FileLastUpdated = v.GetStringValue()
 			}
-			chunks = append(chunks, c)
+
+			if err := json.NewEncoder(w).Encode(c); err != nil {
+				return
+			}
 		}
+
+		if canFlush {
+			flusher.Flush()
+		}
+
 		if nextOffset == nil {
 			break
 		}
 		scrollOffset = nextOffset
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"vault":  vaultName,
-		"count":  len(chunks),
-		"chunks": chunks,
-	})
+	// Close JSON array and object
+	fmt.Fprintf(w, "]}\n")
 }
 
 // handleImport restores chunks into a vault from JSON (#788).

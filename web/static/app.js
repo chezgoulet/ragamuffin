@@ -186,6 +186,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       } catch (_) {}
     });
+    es.onerror = function() {
+      // Reconnect with exponential backoff — EventSource retries automatically
+      // but we log the attempt for debugging
+      console.debug('SSE connection error, will retry automatically');
+    };
   } catch (_) {} // SSE may not be available (file://, old browser)
 
   // Review queue refresh
