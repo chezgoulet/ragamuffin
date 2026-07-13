@@ -17,6 +17,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
@@ -1411,6 +1412,238 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		"status":  "accepted",
 		"vault":   vaultName,
 		"message": "Re-index started. Monitor progress via /health.",
+	})
+}
+
+// ── /v1/debt — Knowledge Debt (#806) ──────────────────────────────────────────
+
+func (s *Server) handleDebt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+	resp := map[string]any{}
+
+	// Aggregate vault stats from indexers
+	totalFiles := 0
+	totalChunks := 0
+	vaultCount := 0
+	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+		files, chunks, lastIdx, indexing, _, _ := idx.Stats()
+		totalFiles += files
+		totalChunks += chunks
+		vaultCount++
+		_ = lastIdx
+		_ = indexing
+	})
+	resp["vault_count"] = vaultCount
+	resp["total_files"] = totalFiles
+	resp["total_chunks"] = totalChunks
+
+	// Aggregate review queue data from facts collection
+	if s.facts != nil {
+		reviewFilter := &pb.Filter{
+			Must: []*pb.Condition{
+				{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "status",
+							Match: &pb.Match{
+								MatchValue: &pb.Match_Keyword{Keyword: "needs_review"},
+							},
+						},
+					},
+				},
+			},
+		}
+		reviewPoints, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, reviewFilter, 1000, "")
+		if err == nil {
+			staleCount := 0
+			conflictCount := 0
+			lowConfCount := 0
+			oldest := ""
+			for _, p := range reviewPoints {
+				payload := p.GetPayload()
+				if reasons, ok := payload["review_reasons"]; ok {
+					reasonStr := reasons.GetStringValue()
+					if strings.Contains(reasonStr, "stale") { staleCount++ }
+					if strings.Contains(reasonStr, "contradiction") { conflictCount++ }
+					if strings.Contains(reasonStr, "low_confidence") { lowConfCount++ }
+				}
+				if created, ok := payload["created_at"]; ok {
+					if oldest == "" || created.GetStringValue() < oldest {
+						oldest = created.GetStringValue()
+					}
+				}
+			}
+			resp["review_queue_size"] = len(reviewPoints)
+			resp["review_by_reason"] = map[string]int{
+				"stale":          staleCount,
+				"contradiction":  conflictCount,
+				"low_confidence": lowConfCount,
+			}
+			if oldest != "" {
+				resp["oldest_review_item"] = oldest
+			}
+		} else {
+			resp["review_queue_size"] = 0
+			s.log(ctx).Warn("debt: review scan failed", "error", err)
+		}
+	}
+
+	// Aggregate pruner health
+	if s.pruner != nil {
+		health := s.pruner.Health()
+		resp["pruner"] = health
+	} else {
+		resp["pruner"] = map[string]any{"enabled": false}
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// ── /v1/gaps — Knowledge Gap Mapping (#807) ────────────────────────────────────
+
+func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	_ = r.Context()
+	resp := map[string]any{
+		"covered_topics":   []string{},
+		"poorly_covered":   []map[string]any{},
+		"recommendations":  []string{},
+	}
+
+	// Identify vaults with few files — potential coverage gaps
+	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+		files, chunks, _, _, _, _ := idx.Stats()
+		if files < 10 {
+			resp["poorly_covered"] = append(resp["poorly_covered"].([]map[string]any), map[string]any{
+				"vault":  name,
+				"files":  files,
+				"chunks": chunks,
+				"severity": "low_coverage",
+			})
+		}
+	})
+
+	// Recommendations based on gap analysis
+	if len(resp["poorly_covered"].([]map[string]any)) > 0 {
+		resp["recommendations"] = []string{
+			"Add documentation to vaults with fewer than 10 files",
+			"Schedule regular indexing of new source materials",
+		}
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// ── /v1/agents/stats — Agent Contribution Heatmap (#808) ────────────────────────
+
+func (s *Server) handleAgentStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Agent name is optional — if provided, return stats for a single agent
+	agentName := r.PathValue("name")
+
+	if agentName != "" {
+		s.handleSingleAgentStats(w, r, ctx, agentName)
+		return
+	}
+
+	// Aggregate over all facts via Scroll
+	if s.facts == nil {
+		writeJSON(w, 200, map[string]any{"agents": []map[string]any{}})
+		return
+	}
+
+	type agentAccum struct {
+		FactCount int
+		ConfSum   float64
+		FlagCount int
+	}
+	agents := map[string]*agentAccum{}
+	var offset string
+	const pageSize uint32 = 200
+
+	for {
+		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, nil, pageSize, offset)
+		if err != nil {
+			break
+		}
+		if len(points) == 0 {
+			break
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+			sourceStr := payload["source"].GetStringValue()
+			if sourceStr == "" {
+				sourceStr = "unknown"
+			}
+			conf := payload["confidence"].GetDoubleValue()
+			status := payload["status"].GetStringValue()
+
+			if agents[sourceStr] == nil {
+				agents[sourceStr] = &agentAccum{}
+			}
+			agents[sourceStr].FactCount++
+			agents[sourceStr].ConfSum += conf
+			if status == "needs_review" {
+				agents[sourceStr].FlagCount++
+			}
+		}
+		// Use last point ID as cursor
+		if len(points) > 0 {
+			offset = points[len(points)-1].GetId().GetUuid()
+		}
+	}
+
+	agentList := make([]map[string]any, 0, len(agents))
+	for name, acc := range agents {
+		avgConf := 0.0
+		if acc.FactCount > 0 {
+			avgConf = acc.ConfSum / float64(acc.FactCount)
+		}
+		flagRate := 0.0
+		if acc.FactCount > 0 {
+			flagRate = float64(acc.FlagCount) / float64(acc.FactCount) * 100
+		}
+		agentList = append(agentList, map[string]any{
+			"agent":          name,
+			"facts_written":  acc.FactCount,
+			"avg_confidence": avgConf,
+			"flag_count":     acc.FlagCount,
+			"flag_rate_pct":  flagRate,
+		})
+	}
+
+	if agentList == nil {
+		agentList = []map[string]any{}
+	}
+
+	writeJSON(w, 200, map[string]any{"agents": agentList})
+}
+
+func (s *Server) handleSingleAgentStats(w http.ResponseWriter, r *http.Request, ctx context.Context, agentName string) {
+	if s.facts == nil {
+		_ = ctx
+		writeJSON(w, 200, map[string]any{"agent": agentName, "facts_written": 0})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"agent":        agentName,
+		"facts_written": 0,
+		"detail":       "per-agent detail requires fact-source aggregation",
 	})
 }
 

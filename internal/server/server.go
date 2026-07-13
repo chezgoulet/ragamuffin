@@ -118,6 +118,9 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/review", cfg.RateLimitReview)
 	rl.SetLimit("/v1/verify", 30)
+	rl.SetLimit("/v1/debt", 10)
+	rl.SetLimit("/v1/gaps", 10)
+	rl.SetLimit("/v1/agents/stats", 10)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -276,6 +279,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Verify — fact validation (#810)
 	mux.HandleFunc("/v1/verify", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/verify", s.handleVerify))))
+
+	// Knowledge debt + gaps — aggregated health (#806, #807)
+	mux.HandleFunc("/v1/debt", s.withRequestID(s.withRateLimit("/v1/debt", s.handleDebt)))
+	mux.HandleFunc("/v1/gaps", s.withRequestID(s.withRateLimit("/v1/gaps", s.handleGaps)))
+
+	// Agent contribution statistics (#808)
+	mux.HandleFunc("/v1/agents/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
+	mux.HandleFunc("/v1/agents/{name}/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))
