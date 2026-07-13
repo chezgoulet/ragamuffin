@@ -428,6 +428,37 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		// Embed once, share across all vault searches.
+		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+		if err != nil {
+			writeError(w, 502, "EMBEDDING_API_ERROR", err.Error())
+			return
+		}
+
+		// Build filter chain once (applies to all vaults).
+		filter := recallFilter(req)
+		if isTemporalRecall(req.TimeFilter) {
+			dateTo := temporalRecallDate(req.TimeFilter)
+			if dateTo != "" {
+				cond := &pb.Condition{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "file_last_updated",
+							Range: &pb.Range{
+								Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+							},
+						},
+					},
+				}
+				if filter != nil {
+					filter.Must = append(filter.Must, cond)
+				} else {
+					filter = &pb.Filter{Must: []*pb.Condition{cond}}
+				}
+			}
+		}
+
 		var mu sync.Mutex
 		var wg sync.WaitGroup
 		errCh := make(chan error, len(vaultNames))
@@ -435,18 +466,53 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 			wg.Add(1)
 			go func(vaultName string) {
 				defer wg.Done()
-				// Temporarily set the vault in context for per-vault resource resolution.
 				vCtx := context.WithValue(ctx, vaultNameKey, vaultName)
-				results, _, err := s.doRecall(vCtx, req)
+				qc := s.qdrantFor(vCtx)
+				if qc == nil {
+					errCh <- fmt.Errorf("vault %s: no database connection", vaultName)
+					return
+				}
+				results, err := qc.Search(vCtx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
 				if err != nil {
 					errCh <- fmt.Errorf("vault %s: %w", vaultName, err)
 					return
 				}
-				for i := range results {
-					results[i].Vault = vaultName
+				mapped := make([]recallResult, 0, len(results))
+				for _, r := range results {
+					payload := r.Payload
+					res := recallResult{
+						Score:   r.Score,
+						ChunkID: r.Id.GetUuid(),
+						Vault:   vaultName,
+					}
+					if v, ok := payload["text"]; ok {
+						res.Text = v.GetStringValue()
+					}
+					if v, ok := payload["first_paragraph"]; ok {
+						res.FirstParagraph = v.GetStringValue()
+					}
+					if v, ok := payload["source_file"]; ok {
+						res.SourceFile = v.GetStringValue()
+					}
+					if v, ok := payload["header"]; ok {
+						res.Header = v.GetStringValue()
+					}
+					if v, ok := payload["chunk_index"]; ok {
+						res.ChunkIndex = int(v.GetIntegerValue())
+					}
+					if v, ok := payload["file_last_updated"]; ok {
+						res.FileLastUpdated = v.GetStringValue()
+					}
+					if req.Detail == "l0" {
+						res.Text = ""
+						res.FirstParagraph = ""
+					} else if req.Detail == "l1" {
+						res.Text = ""
+					}
+					mapped = append(mapped, res)
 				}
 				mu.Lock()
-				out = append(out, results...)
+				out = append(out, mapped...)
 				mu.Unlock()
 			}(vn)
 		}

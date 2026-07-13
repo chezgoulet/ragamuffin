@@ -682,6 +682,56 @@ else
   echo "FAIL: /v1/links/graph depth cap unexpected: $(echo $RESP | head -c 100)"
 fi
 
+# ── /v1/verify ───────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/verify ---"
+
+# Verify with a known "fact" — should return insufficient_data (no real vault data)
+RESP=$(curl -s -X POST "$BASE/v1/verify" \
+  -H "Content-Type: application/json" \
+  -d '{"fact":"All engineers must use 2FA","top_k":5}')
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'status' in d
+assert d['status'] in ('confirmed','conflicts','insufficient_data')
+assert 'supporting_sources' in d
+assert isinstance(d['supporting_sources'], list)
+assert 'conflicting_sources' in d
+assert isinstance(d['conflicting_sources'], list)
+assert 'confidence' in d
+assert isinstance(d['confidence'], (int,float))
+" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/verify returns valid structure (status=$(echo $RESP | python3 -c "import sys,json;print(json.load(sys.stdin)['status'])" 2>/dev/null))"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/verify unexpected response: $(echo $RESP | head -c 200)"
+fi
+
+# Verify method rejection (GET)
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/verify" 2>&1)
+if [ "$RESP" = "405" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: GET /v1/verify returns 405"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: GET /v1/verify expected 405, got $RESP"
+fi
+
+# Verify missing fact rejection
+RESP=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/verify" \
+  -H "Content-Type: application/json" \
+  -d '{}' 2>&1)
+if [ "$RESP" = "400" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: POST /v1/verify empty body returns 400"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: POST /v1/verify empty body expected 400, got $RESP"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="

@@ -18,8 +18,10 @@ const RETRY_ATTEMPTS = 3;
 const RETRY_BACKOFF_MS = [1000, 2000, 4000];
 const ATTEMPT_TIMEOUT_MS = 10000;
 const CIRCUIT_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 30000;
 
 const circuitFailures = {}; // endpoint -> consecutive failure count
+const circuitOpenedAt = {}; // endpoint -> timestamp when circuit opened
 
 function circuitKey(url) {
   // Collapse dynamic path segments so the breaker tracks logical endpoints.
@@ -28,8 +30,16 @@ function circuitKey(url) {
 
 async function apiFetch(url, options = {}) {
   const key = circuitKey(url);
-  if ((circuitFailures[key] || 0) >= CIRCUIT_THRESHOLD) {
-    throw new ApiError(`endpoint temporarily unavailable (circuit open): ${key}`, 0, true);
+  const fails = circuitFailures[key] || 0;
+  const opened = circuitOpenedAt[key] || 0;
+
+  // Circuit breaker: if open and still within cooldown, fail fast.
+  if (fails >= CIRCUIT_THRESHOLD) {
+    if (Date.now() - opened < CIRCUIT_COOLDOWN_MS) {
+      throw new ApiError(`endpoint temporarily unavailable (circuit open): ${key}`, 0, true);
+    }
+    // Cooldown expired — half-open: allow one probe, set to threshold-1
+    circuitFailures[key] = CIRCUIT_THRESHOLD - 1;
   }
 
   let lastErr;
@@ -58,7 +68,10 @@ async function apiFetch(url, options = {}) {
     }
   }
   circuitFailures[key] = (circuitFailures[key] || 0) + 1;
-  if (circuitFailures[key] >= CIRCUIT_THRESHOLD) setOnline(false);
+  if (circuitFailures[key] >= CIRCUIT_THRESHOLD) {
+    circuitOpenedAt[key] = Date.now();
+    setOnline(false);
+  }
   throw lastErr instanceof ApiError ? lastErr : new ApiError(String(lastErr && lastErr.message || lastErr), 0, false);
 }
 
@@ -114,10 +127,19 @@ function setOnline(online) {
 function initOfflineDetection() {
   window.addEventListener('offline', () => setOnline(false));
   window.addEventListener('online', () => setOnline(true));
-  // Periodic health probe to detect server-side outages navigator.onLine misses.
+  // Periodic health probe — detects server-side outages navigator.onLine misses.
+  // Uses AbortSignal.timeout() with a fallback for older browsers.
   setInterval(async () => {
+    let signal;
     try {
-      const res = await fetch('/health', { signal: AbortSignal.timeout(5000) });
+      signal = AbortSignal.timeout(5000);
+    } catch {
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 5000);
+      signal = ctrl.signal;
+    }
+    try {
+      const res = await fetch('/health', { signal });
       setOnline(res.ok);
     } catch { setOnline(false); }
   }, 30000);

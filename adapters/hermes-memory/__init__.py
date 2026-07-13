@@ -692,13 +692,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         Environment variables take precedence over file values.
         """
-        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        config_path = self._config_file_path()
         if not config_path:
-            hermes_home = os.environ.get("HERMES_HOME", "")
-            if hermes_home:
-                config_path = os.path.join(hermes_home, "ragamuffin.json")
-
-        if not config_path or not os.path.exists(config_path):
             return
 
         self._config_path = config_path

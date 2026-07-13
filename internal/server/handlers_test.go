@@ -432,6 +432,104 @@ func TestHandleAudit_SampleSizeCap(t *testing.T) {
 	}
 }
 
+func TestHandleAudit_GET(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/audit", nil)
+	w := httptest.NewRecorder()
+	srv.handleAudit(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200 for GET audit, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	checks, _ := resp["checks_run"].([]interface{})
+	if len(checks) != 4 {
+		t.Errorf("expected 4 default checks for GET, got %d", len(checks))
+	}
+	// Verify UI-friendly aliases are present
+	if _, ok := resp["staleness"]; !ok {
+		t.Error("expected staleness alias in GET response")
+	}
+	if _, ok := resp["contradictions"]; !ok {
+		t.Error("expected contradictions alias in GET response")
+	}
+}
+
+// ── /v1/verify ─────────────────────────────────────────────────────────────────
+
+func TestHandleVerify_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/verify", nil)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 405 {
+		t.Errorf("expected 405 for GET, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_MissingFact(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing fact, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_Defaults(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"fact":"test fact statement"}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200 with defaults, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["status"] != "insufficient_data" {
+		t.Errorf("expected insufficient_data status (no qdrant), got %v", resp["status"])
+	}
+	if _, ok := resp["supporting_sources"]; !ok {
+		t.Error("expected supporting_sources in response")
+	}
+	if _, ok := resp["conflicting_sources"]; !ok {
+		t.Error("expected conflicting_sources in response")
+	}
+}
+
+func TestHandleVerify_TopKClamping(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"fact":"test","top_k":200}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200 with clamped top_k, got %d", w.Code)
+	}
+}
+
 func TestHandleVaults_MultiTenant(t *testing.T) {
 	cfg := &config.Config{
 		Vaults: map[string]*config.VaultConfig{
