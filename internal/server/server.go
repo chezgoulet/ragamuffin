@@ -125,6 +125,8 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/vaults/delete", 10)
 	rl.SetLimit("/v1/vaults/export", 5)
 	rl.SetLimit("/v1/vaults/import", 5)
+	rl.SetLimit("/v1/vaults/merge", 1)
+	rl.SetLimit("/v1/vaults/archive", 5)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -285,6 +287,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/delete", s.handleVaultDelete))))
 	mux.HandleFunc("/v1/vaults/{name}/export", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/export", s.handleExport))))
 	mux.HandleFunc("/v1/vaults/{name}/import", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/import", s.handleImport))))
+	mux.HandleFunc("POST /v1/vaults/{from}/merge/{into}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/merge", s.handleVaultMerge))))
+	mux.HandleFunc("POST /v1/vaults/{name}/archive", s.withRequestID(s.withRateLimit("/v1/vaults/archive", s.handleVaultArchive)))
 
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
@@ -1150,6 +1154,144 @@ func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, 200, map[string]any{
 		"status": "deleted",
+		"vault":  vaultName,
+	})
+}
+
+// ── POST /vault/{from}/merge/{into} — vault merge (#789) ────────────────────
+
+func (s *Server) handleVaultMerge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "merge is only available in multi-tenant mode")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	fromVault := r.PathValue("from")
+	intoVault := r.PathValue("into")
+	if fromVault == "" || intoVault == "" {
+		writeError(w, 400, "INVALID_REQUEST", "from and into vault names are required")
+		return
+	}
+	if fromVault == intoVault {
+		writeError(w, 400, "INVALID_REQUEST", "cannot merge a vault into itself")
+		return
+	}
+
+	fromQc := s.indexers.GetClient(fromVault)
+	intoQc := s.indexers.GetClient(intoVault)
+	if fromQc == nil || intoQc == nil {
+		writeError(w, 404, "NOT_FOUND", "source or destination vault not found")
+		return
+	}
+
+	ctx := r.Context()
+	moved := 0
+	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
+
+	for {
+		points, nextOffset, err := fromQc.Scroll(ctx, pageSize, scrollOffset)
+		if err != nil {
+			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			return
+		}
+		if len(points) == 0 {
+			break
+		}
+		pts := make([]*pb.PointStruct, 0, len(points))
+		for _, p := range points {
+			pt := &pb.PointStruct{
+				Id:      p.Id,
+				Payload: p.Payload,
+			}
+			// Copy vector data if present
+			if vecOut := p.GetVectors(); vecOut != nil {
+				if vec := vecOut.GetVector(); vec != nil && len(vec.GetData()) > 0 {
+					pt.Vectors = &pb.Vectors{
+						VectorsOptions: &pb.Vectors_Vector{
+							Vector: &pb.Vector{Data: vec.GetData()},
+						},
+					}
+				}
+			}
+			pts = append(pts, pt)
+		}
+		if err := intoQc.Upsert(ctx, pts); err != nil {
+			writeError(w, 502, "UPSERT_FAILED", fmt.Sprintf("batch upsert failed: %v", err))
+			return
+		}
+		moved += len(points)
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
+	}
+
+	// Delete source vault after successful merge
+	if err := fromQc.DeleteFiltered(ctx, fromQc.Collection(), &pb.Filter{}); err != nil {
+		s.logger.Warn("merge: failed to clear source vault", "from", fromVault, "error", err)
+	}
+	s.indexers.Remove(fromVault)
+	delete(s.cfg.Vaults, fromVault)
+
+	s.logger.Info("vaults merged", "from", fromVault, "into", intoVault, "points", moved)
+	writeJSON(w, 200, map[string]any{
+		"status":    "merged",
+		"from":      fromVault,
+		"into":      intoVault,
+		"points_moved": moved,
+	})
+}
+
+// ── POST /vault/{name}/archive — vault archive (#789) ───────────────────────
+
+func (s *Server) handleVaultArchive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "archive is only available in multi-tenant mode")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	vaultName := r.PathValue("name")
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	// Remove from config and indexers (soft-delete — Qdrant data preserved)
+	s.mu.Lock()
+	delete(s.cfg.Vaults, vaultName)
+	s.mu.Unlock()
+	s.indexers.Remove(vaultName)
+
+	s.logger.Info("vault archived", "name", vaultName)
+	writeJSON(w, 200, map[string]any{
+		"status": "archived",
 		"vault":  vaultName,
 	})
 }
