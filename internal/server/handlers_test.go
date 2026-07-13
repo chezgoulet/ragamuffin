@@ -1348,3 +1348,86 @@ func TestHandleVaultClear_BadPath(t *testing.T) {
 		t.Errorf("expected 400 (not /clear), got %d", w.Code)
 	}
 }
+
+// ── /v1/refresh ──────────────────────────────────────────────────────────────
+
+func TestHandleRefresh_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/refresh", nil)
+	w := httptest.NewRecorder()
+	srv.handleRefresh(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRefresh_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/v1/refresh", body)
+	w := httptest.NewRecorder()
+	srv.handleRefresh(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+// ── /vaults (POST — create vault) ────────────────────────────────────────────
+
+func TestHandleVaults_POST_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/vaults", body)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestHandleVaults_POST_MissingName(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"path":"/tmp"}`)
+	req := httptest.NewRequest("POST", "/vaults", body)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing name, got %d", w.Code)
+	}
+}
+
+// ── /inbox (method dispatch) ─────────────────────────────────────────────────
+
+func TestHandleInbox_PUT(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/inbox", nil)
+	w := httptest.NewRecorder()
+	srv.handleInbox(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405 for PUT, got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks (GET — list via handleChunksListGET) ──────────────────────────
+
+func TestHandleChunksListGET_NoQdrant(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/chunks", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksListGET(w, req)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks (DELETE via handleChunksDelete) ───────────────────────────────
+
+func TestHandleChunksDelete_NoQdrant(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("DELETE", "/v1/chunks?confirm=true", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksDelete(w, req)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
+	}
+}
