@@ -127,6 +127,8 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/vaults/import", 5)
 	rl.SetLimit("/v1/vaults/merge", 1)
 	rl.SetLimit("/v1/vaults/archive", 5)
+	rl.SetLimit("/v1/digest", 10)
+	rl.SetLimit("/v1/contradictions", 10)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -308,6 +310,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Embedding projection — 2D embedding explorer (#809)
 	mux.HandleFunc("/v1/embedding/project", s.withRequestID(s.withRateLimit("/v1/embedding/project", s.handleEmbedProject)))
+
+	// Digest — daily knowledge change digest (#824)
+	mux.HandleFunc("/v1/digest", s.withRequestID(s.withRateLimit("/v1/digest", s.handleDigest)))
+
+	// Contradictions — cross-vault fact conflict detection (#823)
+	mux.HandleFunc("/v1/contradictions", s.withRequestID(s.withRateLimit("/v1/contradictions", s.handleContradictions)))
 
 	// Config viewer — non-sensitive runtime settings (#811)
 	mux.HandleFunc("/v1/config", s.withRequestID(s.handleConfig))

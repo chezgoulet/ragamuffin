@@ -22,6 +22,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
+	"github.com/chezgoulet/ragamuffin/internal/logging"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
@@ -31,16 +32,19 @@ import (
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slogLevel(),
-	}))
-	slog.SetDefault(logger)
-
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("config load failed", "error", err)
+		slog.Error("config load failed", "error", err)
 		os.Exit(1)
 	}
+
+	// Use multi-handler logger when error tracking is configured (#814)
+	reporter := logging.New(logging.Config{
+		TelegramBotToken: cfg.ErrorTrackingTelegramBotToken,
+		TelegramChatID:   cfg.ErrorTrackingTelegramChatID,
+	})
+	logger := slog.New(reporter.Handler())
+	slog.SetDefault(logger)
 
 	// Validate config — fail fast on misconfiguration
 	if errs := cfg.Validate(); len(errs) > 0 {

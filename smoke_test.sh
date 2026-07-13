@@ -889,6 +889,42 @@ else
   echo "FAIL: /v1/vaults/nonexistent/export expected 404, got $RESP"
 fi
 
+# ── /v1/digest ──────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/digest ---"
+RESP=$(curl -s "$BASE/v1/digest" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'total_events' in d; assert 'period_hours' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/digest returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/digest unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/contradictions ─────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/contradictions ---"
+RESP=$(curl -s "$BASE/v1/contradictions" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'contradictions' in d; assert 'count' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/contradictions returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/contradictions unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /health/uptime_seconds ─────────────────────────────────────────────────
+echo ""
+echo "--- /health (uptime_seconds) ---"
+RESP=$(curl -s "$BASE/health" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'uptime_seconds' in d; assert isinstance(d['uptime_seconds'], int)" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /health includes uptime_seconds"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /health missing uptime_seconds: $(echo $RESP | head -c 150)"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="
