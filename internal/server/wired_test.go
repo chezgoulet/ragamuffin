@@ -14,7 +14,6 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/config"
 	"github.com/chezgoulet/ragamuffin/internal/embeddedstore"
-	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
@@ -96,13 +95,17 @@ func wiredServer(t *testing.T, vaultName string) *Server {
 	broker := events.NewBroker()
 	emitter := events.NewEmitter("", "test", slog.Default(), nil, broker, nil)
 
-	// Deterministic embedding — hash-based for reproducibility
-	_ = embedding.New("http://127.0.0.1:1", "none", "test", time.Millisecond)
+	// Stub embedding: returns a deterministic 4-element vector for any input
+	stubEmbed := &testutil.MockEmbedder{
+		EmbedSingleFn: func(_ context.Context, text string) ([]float32, error) {
+			return []float32{0.1, 0.2, 0.3, 0.4}, nil
+		},
+	}
 
 	p := pruner.New(factsStore, chunkStore, nil, mockLLM, slog.Default(), pruner.PrunerConfig{Enabled: false})
 	ext := extraction.New(extraction.Config{Enabled: false}, mockLLM, nil, factsStore, slog.Default())
 
-	return New(cfg, chunkStore, factsStore, nil, mockLLM, idxm, nil, rl, nil, ls, p, emitter, broker, slog.Default(), ext, nil)
+	return New(cfg, chunkStore, factsStore, stubEmbed, mockLLM, idxm, nil, rl, nil, ls, p, emitter, broker, slog.Default(), ext, nil)
 }
 
 func wiredChunkID(t *testing.T) string { return "00000000-0000-0000-0000-000000000001" }
