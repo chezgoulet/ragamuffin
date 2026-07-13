@@ -434,7 +434,12 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Embed once, share across all vault searches.
-		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+		ec := s.embeddingFor(ctx)
+		if ec == nil {
+			writeError(w, 502, "EMBEDDING_API_ERROR", "embedding not configured")
+			return
+		}
+		vector, err := ec.EmbedSingle(ctx, req.Query)
 		if err != nil {
 			writeError(w, 502, "EMBEDDING_API_ERROR", err.Error())
 			return
@@ -580,7 +585,11 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if req.Expand && !req.All {
 		factsQc := s.factsQdrantFor(ctx)
 		if factsQc != nil {
-			vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+			ec := s.embeddingFor(ctx)
+			if ec == nil {
+				return
+			}
+			vector, err := ec.EmbedSingle(ctx, req.Query)
 			if err == nil {
 				factResults, err := factsQc.Search(ctx, vector, uint64(req.TopK), 0, "", nil)
 				if err == nil && len(factResults) > 0 {
@@ -768,6 +777,13 @@ func (s *Server) handleBatchRecall(w http.ResponseWriter, r *http.Request) {
 			ec := s.indexers.GetEmbedder(vaultName)
 			if ec == nil {
 				ec = s.embeddingFor(r.Context())
+			}
+			if ec == nil {
+				results[i] = batchRecallEntry{
+					QueryIndex: i,
+					Error:      "embedding not configured",
+				}
+				return
 			}
 
 			// Embed query

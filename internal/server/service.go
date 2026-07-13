@@ -121,6 +121,10 @@ func (s *Server) doVerify(ctx context.Context, req verifyRequest) (verifyRespons
 		Conflicting: []verifySource{},
 	}
 
+	if s.embeddingFor(ctx) == nil {
+		return empty, fmt.Errorf("embedding not configured")
+	}
+
 	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Fact)
 	if err != nil {
 		return empty, fmt.Errorf("embedding failed: %w", err)
@@ -227,7 +231,11 @@ func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, t
 	}
 
 	// Build explanation from chunk search results
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
+	ec := s.embeddingFor(ctx)
+	if ec == nil {
+		return answer, sources, modeUsed, nil, nil
+	}
+	vector, err := ec.EmbedSingle(ctx, query)
 	if err != nil {
 		return answer, sources, modeUsed, nil, nil // explanation is optional
 	}
