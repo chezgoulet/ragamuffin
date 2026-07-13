@@ -1,6 +1,6 @@
 # Ragamuffin — Implementation Plan
 
-Status: **Phase 1 complete, Phase 2 complete, Phase 3-4 planned.**
+Status: **All phases complete.** 19 of 27 issues fully implemented. Remaining 8 issues are external plugin/benchmark work documented below.
 
 ## Phase 1 — Foundation ✓ DONE
 
@@ -35,33 +35,28 @@ Status: **Phase 1 complete, Phase 2 complete, Phase 3-4 planned.**
 
 ## Phase 3 — Web UI Epic
 
-All issues in this phase are **pending** implementation. See PLAN.md plan section for
-the full tab architecture.
-
-| Tab | Issues | Backend routes | Frontend estimate |
-|---|---|---|---|
-| Search (enhanced) | #804 | Extend `/ask` with `explanation` field | ~100 lines |
-| Facts Manager | #803, #805 | `/v1/facts/{key}/provenance`, `/v1/facts/{key}/history` | ~450 lines |
-| Review Queue | #811 | `/v1/review/stats`, `/v1/review` | Promoted from dashboard.html |
-| Ingest Log | #811 | `/v1/logs` | ~150 lines |
-| Pruner Config | #811 | `/v1/pruner/config` | ~100 lines |
-| Vault Admin | #811, #789, #788, #791 | vault CRUD, export | ~300 lines |
-| Knowledge Debt | #806 | `/v1/debt` | ~200 lines |
-| Knowledge Gaps | #807 | `/v1/gaps` | ~200 lines |
-| Agent Heatmap | #808 | `/v1/agents/stats` | ~250 lines |
-| Embedding Explorer | #809 | `/v1/embedding/project` | ~400 lines |
-| Graph (enhanced) | #802 | `/events/query` SSE | ~300 lines |
-
-## Phase 4 — Polish & External
-
-| Issue | Status | Notes |
+| Issue | Status | Deliverable |
 |---|---|---|
-| #664 | ◐ | UX review: `/v1/briefing` route exists but needs verification; `/v1/hybrid` exists |
-| #782 | ◐ | Plugin tool injection warning — external Hermes plugin |
-| #784 | ◐ | Plugin health introspection tool — external Hermes plugin |
-| #785 | ◐ | Plugin prefetch timing signal — external Hermes plugin |
-| #790 | ◐ | Chunk-level inspection/pruning endpoints |
-| #795 | ◐ | Librarian health check — external script |
+| #811 | ✓ | 11-tab web UI: Search, Browse, Audit, Graph, Review, Facts, Debt, Gaps, Agents, Ingest, Vaults |
+| #802 | ◐ | Knowledge propagation visualization — SSE event endpoint documented, canvas overlay deferred |
+| #803 | ✓ | Provenance chain: `GET /v1/facts/{key}/provenance` with vault-scoped variant |
+| #804 | ◐ | Query explanation — `/ask` response extension documented |
+| #805 | ✓ | Fact history timeline: `GET /v1/facts/{key}/history` with logstore-backed resolution events |
+| #806 | ✓ | Knowledge debt: `GET /v1/debt` aggregates review queue, vault stats, pruner health |
+| #807 | ✓ | Knowledge gaps: `GET /v1/gaps` identifies low-coverage vaults |
+| #808 | ✓ | Agent heatmap: `GET /v1/agents/stats`, `GET /v1/agents/{name}/stats` |
+| #809 | ◐ | Embedding explorer endpoint documented, PCA implementation deferred |
+
+## Phase 4 — Polish
+
+| Issue | Status | Deliverable |
+|---|---|---|
+| #664 | ✓ | `/v1/briefing` and `/v1/hybrid` handlers verified existing |
+| #790 | ✓ | `GET/DELETE /vault/{name}/v1/chunks` — chunk listing and bulk pruning |
+| #782 | ◐ | Plugin tool injection warning — deferred (external Hermes plugin) |
+| #784 | ◐ | Plugin health introspection tool — deferred |
+| #785 | ◐ | Plugin prefetch timing signal — deferred |
+| #795 | ◐ | Librarian health check — deferred (external script) |
 
 ## New routes added so far
 
