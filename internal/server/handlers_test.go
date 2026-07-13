@@ -432,6 +432,93 @@ func TestHandleAudit_SampleSizeCap(t *testing.T) {
 	}
 }
 
+func TestHandleAudit_GET(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/audit", nil)
+	w := httptest.NewRecorder()
+	srv.handleAudit(w, req)
+
+	if w.Code != 200 {
+		t.Errorf("expected 200 for GET audit, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	checks, _ := resp["checks_run"].([]interface{})
+	if len(checks) != 4 {
+		t.Errorf("expected 4 default checks for GET, got %d", len(checks))
+	}
+	// Verify UI-friendly aliases are present
+	if _, ok := resp["staleness"]; !ok {
+		t.Error("expected staleness alias in GET response")
+	}
+	if _, ok := resp["contradictions"]; !ok {
+		t.Error("expected contradictions alias in GET response")
+	}
+}
+
+// ── /v1/verify ─────────────────────────────────────────────────────────────────
+
+func TestHandleVerify_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/verify", nil)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 405 {
+		t.Errorf("expected 405 for GET, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_MissingFact(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing fact, got %d", w.Code)
+	}
+}
+
+func TestHandleVerify_Defaults(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"fact":"test fact statement"}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	// Without an embedding API, the handler returns 502 EMBEDDING_API_ERROR
+	if w.Code != 502 {
+		t.Errorf("expected 502 (embedding not configured), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleVerify_TopKClamping(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"fact":"test","top_k":200}`)
+	req := httptest.NewRequest("POST", "/v1/verify", body)
+	w := httptest.NewRecorder()
+	srv.handleVerify(w, req)
+
+	if w.Code != 502 {
+		t.Errorf("expected 502 (embedding not configured), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestHandleVaults_MultiTenant(t *testing.T) {
 	cfg := &config.Config{
 		Vaults: map[string]*config.VaultConfig{
@@ -613,5 +700,727 @@ func TestVaultRouting_ContextRoundTrip(t *testing.T) {
 	ctx := context.WithValue(context.Background(), vaultNameKey, "docs")
 	if got := vaultFromContext(ctx); got != "docs" {
 		t.Errorf("expected docs, got %q", got)
+	}
+}
+
+// ── /v1/debt ─────────────────────────────────────────────────────────────────
+
+func TestHandleDebt_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/debt", nil)
+	w := httptest.NewRecorder()
+	srv.handleDebt(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleDebt_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/debt", nil)
+	w := httptest.NewRecorder()
+	srv.handleDebt(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["vault_count"]; !ok {
+		t.Error("expected vault_count in response")
+	}
+}
+
+// ── /v1/gaps ─────────────────────────────────────────────────────────────────
+
+func TestHandleGaps_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/gaps", nil)
+	w := httptest.NewRecorder()
+	srv.handleGaps(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleGaps_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/gaps", nil)
+	w := httptest.NewRecorder()
+	srv.handleGaps(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["poorly_covered"]; !ok {
+		t.Error("expected poorly_covered in response")
+	}
+}
+
+// ── /v1/agents/stats ─────────────────────────────────────────────────────────
+
+func TestHandleAgentStats_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/agents/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleAgentStats(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleAgentStats_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/agents/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleAgentStats(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["agents"]; !ok {
+		t.Error("expected agents in response")
+	}
+}
+
+// ── /v1/chunks (list) ────────────────────────────────────────────────────────
+
+func TestHandleChunksList_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/chunks", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksList(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/embedding/project ─────────────────────────────────────────────────────
+
+func TestHandleEmbedProject_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/v1/embedding/project", nil)
+	w := httptest.NewRecorder()
+	srv.handleEmbedProject(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleEmbedProject_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/embedding/project", nil)
+	w := httptest.NewRecorder()
+	srv.handleEmbedProject(w, req)
+
+	// Without a Qdrant client, the handler returns 404 (no backend)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
+	}
+}
+
+// ── /v1/config ────────────────────────────────────────────────────────────────
+
+func TestHandleConfig_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/config", nil)
+	w := httptest.NewRecorder()
+	srv.handleConfig(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleConfig_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/config", nil)
+	w := httptest.NewRecorder()
+	srv.handleConfig(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["version"]; !ok {
+		t.Error("expected version in response")
+	}
+}
+
+// ── /v1/facts/{key}/provenance ───────────────────────────────────────────────
+
+func TestHandleProvenance_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/facts/nonexistent/provenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleProvenance(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/facts/{key}/history ──────────────────────────────────────────────────
+
+func TestHandleFactHistory_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/facts/nonexistent/history", nil)
+	w := httptest.NewRecorder()
+	srv.handleFactHistory(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── DELETE /v1/vaults/{name} ─────────────────────────────────────────────────
+
+func TestHandleVaultDelete_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/vaults/test", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaultDelete(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+func TestHandleExport_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/vaults/test/export", nil)
+	w := httptest.NewRecorder()
+	// Set path value to simulate route
+	req.SetPathValue("name", "test")
+	srv.handleExport(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── Import ───────────────────────────────────────────────────────────────────
+
+func TestHandleImport_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/vaults/test/import", nil)
+	w := httptest.NewRecorder()
+	req.SetPathValue("name", "test")
+	srv.handleImport(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/auth/check ────────────────────────────────────────────────────────────
+
+func TestHandleAuthCheck_PUT(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/v1/auth/check", nil)
+	w := httptest.NewRecorder()
+	srv.handleAuthCheck(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405 for PUT, got %d", w.Code)
+	}
+}
+
+func TestHandleAuthCheck_GET_Unauthenticated(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/auth/check", nil)
+	w := httptest.NewRecorder()
+	srv.handleAuthCheck(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["authenticated"] != false {
+		t.Errorf("expected authenticated=false, got %v", resp["authenticated"])
+	}
+}
+
+// ── /v1/briefing ──────────────────────────────────────────────────────────────
+
+func TestHandleBriefing_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/briefing", nil)
+	w := httptest.NewRecorder()
+	srv.handleBriefing(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/hybrid ────────────────────────────────────────────────────────────────
+
+func TestHandleHybrid_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/hybrid", nil)
+	w := httptest.NewRecorder()
+	srv.handleHybrid(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/pruner/ ────────────────────────────────────────────────────────────────
+
+func TestHandlePrunerAutoTune_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/pruner/auto-tune", nil)
+	w := httptest.NewRecorder()
+	srv.handlePrunerAutoTune(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandlePrunerAutoTune_NoPruner(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/pruner/auto-tune", nil)
+	w := httptest.NewRecorder()
+	srv.handlePrunerAutoTune(w, req)
+	if w.Code != 503 {
+		t.Errorf("expected 503 (pruner not configured), got %d", w.Code)
+	}
+}
+
+func TestHandlePrunerConfig_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/pruner/config", nil)
+	w := httptest.NewRecorder()
+	srv.handlePrunerConfig(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandlePrunerConfig_NoPruner(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/pruner/config", nil)
+	w := httptest.NewRecorder()
+	srv.handlePrunerConfig(w, req)
+	if w.Code != 503 {
+		t.Errorf("expected 503 (pruner not configured), got %d", w.Code)
+	}
+}
+
+// ── /v1/batch/recall ──────────────────────────────────────────────────────────
+
+func TestHandleBatchRecall_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/batch/recall", nil)
+	w := httptest.NewRecorder()
+	srv.handleBatchRecall(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleBatchRecall_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/v1/batch/recall", body)
+	w := httptest.NewRecorder()
+	srv.handleBatchRecall(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestHandleBatchRecall_EmptyQueries(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"queries":[]}`)
+	req := httptest.NewRequest("POST", "/v1/batch/recall", body)
+	w := httptest.NewRecorder()
+	srv.handleBatchRecall(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for empty queries, got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks/{chunk_id} ─────────────────────────────────────────────────────
+
+func TestHandleChunkGet_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/chunks/some-id", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunkGet(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleChunkGet_EmptyID(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/chunks/", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunkGet(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for empty chunk_id, got %d", w.Code)
+	}
+}
+
+func TestHandleChunkGet_InvalidUUID(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/chunks/not-a-uuid", nil)
+	req.SetPathValue("chunk_id", "not-a-uuid")
+	w := httptest.NewRecorder()
+	srv.handleChunkGet(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid UUID, got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks (DELETE via handleChunksList dispatch) ─────────────────────────
+
+func TestHandleChunksList_PUT(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/v1/chunks", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksList(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405 for PUT, got %d", w.Code)
+	}
+}
+
+// ── /reindex ──────────────────────────────────────────────────────────────────
+
+func TestHandleReindex_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/reindex", nil)
+	w := httptest.NewRecorder()
+	srv.handleReindex(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/snapshot ──────────────────────────────────────────────────────────────
+
+func TestHandleSnapshot_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/snapshot", nil)
+	w := httptest.NewRecorder()
+	srv.handleSnapshot(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/logs ──────────────────────────────────────────────────────────────────
+
+func TestHandleLogs_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/v1/logs", nil)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405 for PUT, got %d", w.Code)
+	}
+}
+
+func TestHandleLogsPost_MissingAgent(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"type":"test","body":"hello"}`)
+	req := httptest.NewRequest("POST", "/v1/logs", body)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing agent, got %d", w.Code)
+	}
+}
+
+func TestHandleLogsPost_MissingType(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"agent":"test","body":"hello"}`)
+	req := httptest.NewRequest("POST", "/v1/logs", body)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing type, got %d", w.Code)
+	}
+}
+
+func TestHandleLogsPost_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{bad json`)
+	req := httptest.NewRequest("POST", "/v1/logs", body)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleLogsGet_InvalidSince(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/logs?since=not-a-date", nil)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid since, got %d", w.Code)
+	}
+}
+
+func TestHandleLogsGet_InvalidUntil(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/logs?until=not-a-date", nil)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid until, got %d", w.Code)
+	}
+}
+
+// ── /inbox ─────────────────────────────────────────────────────────────────────
+
+func TestHandleInboxCreate_EmptyContent(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"content":"","source":"test"}`)
+	req := httptest.NewRequest("POST", "/inbox", body)
+	w := httptest.NewRecorder()
+	srv.handleInbox(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for empty content, got %d", w.Code)
+	}
+}
+
+// ── /v1/links ──────────────────────────────────────────────────────────────────
+
+func TestHandleLinks_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/links", nil)
+	w := httptest.NewRecorder()
+	srv.handleLinks(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleLinks_MissingPath(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/links", nil)
+	w := httptest.NewRecorder()
+	srv.handleLinks(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing path, got %d", w.Code)
+	}
+}
+
+func TestHandleBacklinks_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/links/backlinks", nil)
+	w := httptest.NewRecorder()
+	srv.handleBacklinks(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleLinkGraph_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/links/graph", nil)
+	w := httptest.NewRecorder()
+	srv.handleLinkGraph(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/extraction/stats ───────────────────────────────────────────────────────
+
+func TestHandleExtractionStats_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/extraction/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleExtractionStats(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleExtractionStats_NoExtractor(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/extraction/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleExtractionStats(w, req)
+	if w.Code != 503 {
+		t.Errorf("expected 503 (no extractor), got %d", w.Code)
+	}
+}
+
+// ── /v1/documents ──────────────────────────────────────────────────────────────
+
+func TestHandleDocuments_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/documents", nil)
+	w := httptest.NewRecorder()
+	srv.handleDocuments(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleDocuments_MissingContent(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"source":"test"}`)
+	req := httptest.NewRequest("POST", "/v1/documents", body)
+	w := httptest.NewRecorder()
+	srv.handleDocuments(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing content, got %d", w.Code)
+	}
+}
+
+func TestHandleDocuments_MissingSource(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"content":"some content"}`)
+	req := httptest.NewRequest("POST", "/v1/documents", body)
+	w := httptest.NewRecorder()
+	srv.handleDocuments(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing source, got %d", w.Code)
+	}
+}
+
+// ── /events ───────────────────────────────────────────────────────────────────
+
+func TestHandleEvents_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/events", nil)
+	w := httptest.NewRecorder()
+	srv.handleEvents(w, req)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (broker nil), got %d", w.Code)
+	}
+}
+
+// ── /v1/sessions/batch ─────────────────────────────────────────────────────────
+
+func TestHandleBatchSessions_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/sessions/batch", nil)
+	w := httptest.NewRecorder()
+	srv.handleBatchSessions(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleBatchSessions_EmptySessions(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"sessions":[]}`)
+	req := httptest.NewRequest("POST", "/v1/sessions/batch", body)
+	w := httptest.NewRecorder()
+	srv.handleBatchSessions(w, req)
+
+	// Without a logstore, the handler returns 503
+	if w.Code != 503 {
+		t.Errorf("expected 503 (logstore not configured), got %d", w.Code)
+	}
+}
+
+// ── /v1/vaults/{name}/clear ───────────────────────────────────────────────────
+
+func TestHandleVaultClear_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/vaults/docs/clear", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaultClear(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleVaultClear_BadPath(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"confirm":true}`)
+	req := httptest.NewRequest("POST", "/v1/vaults/noclear", body)
+	w := httptest.NewRecorder()
+	srv.handleVaultClear(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 (not /clear), got %d", w.Code)
+	}
+}
+
+// ── /v1/refresh ──────────────────────────────────────────────────────────────
+
+func TestHandleRefresh_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/refresh", nil)
+	w := httptest.NewRecorder()
+	srv.handleRefresh(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRefresh_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/v1/refresh", body)
+	w := httptest.NewRecorder()
+	srv.handleRefresh(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+// ── /vaults (POST — create vault) ────────────────────────────────────────────
+
+func TestHandleVaults_POST_InvalidJSON(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`not json`)
+	req := httptest.NewRequest("POST", "/vaults", body)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for invalid JSON, got %d", w.Code)
+	}
+}
+
+func TestHandleVaults_POST_MissingName(t *testing.T) {
+	srv := newTestServer()
+	body := bytes.NewBufferString(`{"path":"/tmp"}`)
+	req := httptest.NewRequest("POST", "/vaults", body)
+	w := httptest.NewRecorder()
+	srv.handleVaults(w, req)
+	if w.Code != 400 {
+		t.Errorf("expected 400 for missing name, got %d", w.Code)
+	}
+}
+
+// ── /inbox (method dispatch) ─────────────────────────────────────────────────
+
+func TestHandleInbox_PUT(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/inbox", nil)
+	w := httptest.NewRecorder()
+	srv.handleInbox(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405 for PUT, got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks (GET — list via handleChunksListGET) ──────────────────────────
+
+func TestHandleChunksListGET_NoQdrant(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/chunks", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksListGET(w, req)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
+	}
+}
+
+// ── /v1/chunks (DELETE via handleChunksDelete) ───────────────────────────────
+
+func TestHandleChunksDelete_NoQdrant(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("DELETE", "/v1/chunks?confirm=true", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksDelete(w, req)
+	if w.Code != 404 {
+		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
 	}
 }

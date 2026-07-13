@@ -8,7 +8,9 @@ zero-dependency binary.
 1. Read [SPEC.md](SPEC.md). That's the ground truth.
 2. Read the version spec for whatever you're building (e.g., `SPEC-v0.2.md`).
 3. Read [CONTRIBUTING.md](CONTRIBUTING.md) for the staged-branch workflow.
-4. CI handles all build verification — do not run `go build` or `go test` locally.
+4. Read [ENGINEERING-STANDARD.md](ENGINEERING-STANDARD.md) — the non-negotiable
+   bar for error recovery, UX states, and accessibility on every change.
+5. CI handles all build verification — do not run `go build` or `go test` locally.
 
 ## Branch Topology
 

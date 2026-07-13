@@ -53,6 +53,11 @@ type briefingSessionSummary struct {
 // GET /v1/briefing?agent_id=...
 // GET /vault/{name}/v1/briefing?agent_id=...
 func (s *Server) handleBriefing(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
 	agentID := r.URL.Query().Get("agent_id")
 
 	// ── Server identity ──

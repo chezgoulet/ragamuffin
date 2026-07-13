@@ -34,6 +34,10 @@ jobs:
       - name: Run Go tests
         run: go test -timeout 120s ./internal/... ./cmd/...
 
+      - name: REACHLOCK_CONTRACT (R4)
+        # Proves the C3 subset of the REST surface REACHLOCK binds to.
+        run: go test -timeout 60s -run TestContract_Ragamuffin_REACHLOCK_Binding ./internal/server/
+
   # ── Docker build + push ────────────────────────────────────────────────
   docker:
     needs: [quality]

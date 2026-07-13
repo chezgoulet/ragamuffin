@@ -7,22 +7,36 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<nav id="topnav">
+<div id="offline-banner" role="alert" hidden>You are offline — showing cached data where available.</div>
+<a class="sr-only" href="#main-content">Skip to content</a>
+<nav id="topnav" aria-label="Primary">
   <span class="logo">ragamuffin</span>
-  <div class="tabs">
-    <button data-page="search" class="active">Search</button>
-    <button data-page="browse">Browse</button>
-    <button data-page="audit">Audit</button>
-    <button data-page="graph">Graph</button>
+  <div class="tabs" role="tablist" aria-label="Sections">
+    <button data-page="search" class="active" role="tab" aria-selected="true" aria-controls="page-search">Search</button>
+    <button data-page="browse" role="tab" aria-selected="false" aria-controls="page-browse">Browse</button>
+    <button data-page="audit" role="tab" aria-selected="false" aria-controls="page-audit">Audit</button>
+    <button data-page="graph" role="tab" aria-selected="false" aria-controls="page-graph">Graph</button>
+    <button data-page="review" role="tab" aria-selected="false" aria-controls="page-review">Review</button>
+    <button data-page="facts" role="tab" aria-selected="false" aria-controls="page-facts">Facts</button>
+    <button data-page="debt" role="tab" aria-selected="false" aria-controls="page-debt">Debt</button>
+    <button data-page="gaps" role="tab" aria-selected="false" aria-controls="page-gaps">Gaps</button>
+    <button data-page="agents" role="tab" aria-selected="false" aria-controls="page-agents">Agents</button>
+    <button data-page="ingest" role="tab" aria-selected="false" aria-controls="page-ingest">Ingest</button>
+    <button data-page="vaultadmin" role="tab" aria-selected="false" aria-controls="page-vaultadmin">Vaults</button>
+    <button data-page="embed" role="tab" aria-selected="false" aria-controls="page-embed">Embeddings</button>
+    <button data-page="pruner" role="tab" aria-selected="false" aria-controls="page-pruner">Pruner</button>
+    <button data-page="settings" role="tab" aria-selected="false" aria-controls="page-settings">Settings</button>
   </div>
   <span id="vault-select"></span>
 </nav>
+<span id="main-content"></span>
 
 <main id="page-search" class="page active">
   <h2>Search</h2>
   <form id="search-form">
     <input type="text" id="search-query" placeholder="Ask a question or search...">
     <select id="search-vault"></select>
+    <label><input type="checkbox" id="search-mode-ask"> Ask (LLM synthesis)</label>
     <button type="submit">Search</button>
   </form>
   <div id="search-results"></div>
@@ -53,9 +67,80 @@
       <option value="3">3</option>
     </select></label>
     <button id="graph-load">Load</button>
+    <label><input type="checkbox" id="graph-propagation"> Propagation</label>
   </div>
   <div id="graph-viz"></div>
   <div id="graph-legend"></div>
+</main>
+
+<main id="page-review" class="page">
+  <h2>Review Queue</h2>
+  <div class="review-controls">
+    <select id="review-reason"><option value="">All reasons</option><option value="stale">Stale</option><option value="contradiction">Contradiction</option><option value="low_confidence">Low Confidence</option></select>
+    <button id="review-refresh">Refresh</button>
+  </div>
+  <div id="review-stats"></div>
+  <div id="review-list"></div>
+</main>
+
+<main id="page-facts" class="page">
+  <h2>Facts Manager</h2>
+  <div class="facts-controls">
+    <input type="text" id="fact-search" placeholder="Search facts by key or value...">
+    <select id="facts-vault"></select>
+    <button id="fact-search-btn">Search</button>
+  </div>
+  <div id="facts-list"></div>
+  <div id="fact-detail"></div>
+</main>
+
+<main id="page-debt" class="page">
+  <h2>Knowledge Debt</h2>
+  <div id="debt-content" class="card-grid"></div>
+</main>
+
+<main id="page-gaps" class="page">
+  <h2>Knowledge Gaps</h2>
+  <div id="gaps-content"></div>
+</main>
+
+<main id="page-agents" class="page">
+  <h2>Agent Contribution</h2>
+  <div id="agents-content"></div>
+</main>
+
+<main id="page-ingest" class="page">
+  <h2>Ingest Log</h2>
+  <select id="ingest-vault"></select>
+  <div id="ingest-list"></div>
+</main>
+
+<main id="page-vaultadmin" class="page">
+  <h2>Vault Admin</h2>
+  <div id="vaultadmin-content"></div>
+</main>
+
+<main id="page-embed" class="page">
+  <h2>Embedding Space Explorer</h2>
+  <div class="graph-controls">
+    <button id="embed-load">Project</button>
+    <label><input type="checkbox" id="embed-color" checked> Color by source</label>
+  </div>
+  <div id="embed-viz" style="position:relative;background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;min-height:500px"></div>
+  <div id="embed-legend" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e"></div>
+  <div id="embed-tip" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e">Pan by dragging · Zoom with scroll wheel · Click a point to inspect</div>
+</main>
+
+<main id="page-pruner" class="page">
+  <h2>Pruner Configuration</h2>
+  <div id="pruner-content" class="card-grid"></div>
+  <div id="pruner-config-detail"></div>
+</main>
+
+<main id="page-settings" class="page">
+  <h2>Settings</h2>
+  <div id="settings-content" class="card-grid"></div>
+  <div id="settings-detail"></div>
 </main>
 
 <script src="/static/app.js"></script>

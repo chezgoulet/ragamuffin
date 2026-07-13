@@ -57,7 +57,7 @@ Examples:
         "--datasets",
         nargs="*",
         default=["longmemeval", "locomo"],
-        choices=["longmemeval", "locomo"],
+        choices=["longmemeval", "locomo", "narrativeqa"],
         help="Datasets to run (default: all)",
     )
     parser.add_argument(
@@ -232,7 +232,7 @@ def _flatten_messages(messages: List[Dict]) -> str:
     return "\n\n".join(parts)
 
 
-def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str, chunk_size: int = 0, ingest_delay: float = 0.0):
+def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, label: str, chunk_size: int = 0, ingest_delay: float = 0.0, use_conv_vault: bool = False):
     """Ingest all conversations into a vault. Reports progress reliably.
 
     When chunk_size > 0, split each conversation's messages into that many
@@ -241,6 +241,10 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
     When ingest_delay > 0, sleeps between each ingest call to pace writes
     and reduce Qdrant segment-flush contention. Also checks Qdrant health
     periodically and backs off if Qdrant is in a recovery state.
+
+    When use_conv_vault is True (e.g. NarrativeQA — one vault per story),
+    each conversation is ingested into its own ``conv.vault`` instead of the
+    shared ``vault`` argument.
     """
     if chunk_size:
         total_chunks = sum(max(1, len(c.messages) // (len(c.messages) // chunk_size + 1))
@@ -259,6 +263,9 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
         if not conv.messages:
             continue
 
+        # Target vault: per-conversation (NarrativeQA) or the shared one.
+        target_vault = conv.vault if use_conv_vault else vault
+
         if chunk_size > 0:
             # Split messages into evenly-sized groups
             msgs = conv.messages
@@ -276,13 +283,13 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
             # Check Qdrant health periodically; back off during
             # segment-flush cycles to avoid "Storage timeout" errors.
             if progress_count % 50 == 0:
-                healthy, reason = client.qdrant_collection_status(f"ragamuffin_{vault}")
+                healthy, reason = client.qdrant_collection_status(f"ragamuffin_{target_vault}")
                 if not healthy:
                     reason_str = reason or "unknown"
                     log(f"  ⏳ Qdrant not ready ({reason_str}) — waiting 5s...")
                     for _ in range(12):  # up to 60s
                         time.sleep(5)
-                        healthy, reason = client.qdrant_collection_status(f"ragamuffin_{vault}")
+                        healthy, reason = client.qdrant_collection_status(f"ragamuffin_{target_vault}")
                         if healthy:
                             log(f"  ✓ Qdrant ready, resuming ingest")
                             break
@@ -303,7 +310,7 @@ def ingest_all(client: RagamuffinClient, convs: List[Conversation], vault: str, 
                 client.ingest(
                     content=content,
                     source=source,
-                    vault=vault,
+                    vault=target_vault,
                     tags=tags,
                 )
                 ok += 1
@@ -336,8 +343,13 @@ def run_qa(
     cfg: Config,
     label: str,
     benchmark_label: str,
+    vault_resolver=None,
 ) -> Tuple[List[Dict], float, int, int]:
     """Run Q&A for one config against a populated vault.
+
+    ``vault_resolver(text, gt, qt) -> vault_name`` optionally maps each
+    question to its own vault (NarrativeQA: one vault per story). When None,
+    the shared ``vault`` is used for all questions.
 
     Returns (results_list, accuracy, correct, total).
     Reports progress after each batch.
@@ -352,14 +364,23 @@ def run_qa(
     t0 = time.perf_counter()
     health_counter = 0
 
-    for i, (text, gt, qt) in enumerate(qdata):
+    for i, item in enumerate(qdata):
+        # NarrativeQA qdata carries a 4th element (conversation_id) for
+        # per-story vault routing; other datasets use 3-tuples.
+        if len(item) >= 4:
+            text, gt, qt, conv_id = item[:4]
+        else:
+            text, gt, qt = item[:3]
+            conv_id = ""
         qid = f"{label}-{i:04d}"
         answer = ""
         error = None
         start = time.perf_counter()
 
+        target_vault = vault_resolver(text, gt, qt, conv_id) if vault_resolver else vault
+
         try:
-            resp = client.ask(text, vault, mode=cfg.ask_mode)
+            resp = client.ask(text, target_vault, mode=cfg.ask_mode)
             answer = resp.get("answer", resp.get("response", ""))
             errors_consecutive = 0
         except Exception as e:
@@ -531,7 +552,7 @@ def post_to_github(
         "",
     ]
 
-    for bench in ["longmemeval", "locomo"]:
+    for bench in all_scores.keys():
         body_lines.append(f"### {bench}")
         body_lines.append("")
         body_lines.append("| Config | Accuracy | Correct/Total | Baseline (D) | Δ |")
@@ -583,8 +604,15 @@ def run_benchmark(
     skip_configs: Optional[List[str]] = None,
     chunk_size: int = 0,
     ingest_delay: float = 0.0,
+    use_conv_vault: bool = False,
+    vault_resolver=None,
 ) -> Dict[str, Dict]:
-    """Run full benchmark (ingest + all configs). Returns scores dict."""
+    """Run full benchmark (ingest + all configs). Returns scores dict.
+
+    ``use_conv_vault`` ingests each conversation into its own vault
+    (NarrativeQA). ``vault_resolver`` maps each question to its vault at ask
+    time (same per-story strategy).
+    """
     if skip_configs is None:
         skip_configs = []
 
@@ -593,7 +621,8 @@ def run_benchmark(
     # Phase 1: Ingest
     if not skip_ingest:
         convs, qdata = loader_fn()
-        ingest_all(client, convs, vault, label, chunk_size=chunk_size, ingest_delay=ingest_delay)
+        ingest_all(client, convs, vault, label, chunk_size=chunk_size,
+                   ingest_delay=ingest_delay, use_conv_vault=use_conv_vault)
     else:
         # Just load questions, no conversations needed
         _, qdata = loader_fn()
@@ -605,7 +634,10 @@ def run_benchmark(
             continue
 
         try:
-            results, acc, correct, total = run_qa(client, vault, qdata, cfg, label, label)
+            results, acc, correct, total = run_qa(
+                client, vault, qdata, cfg, label, label,
+                vault_resolver=vault_resolver,
+            )
             scoring = save_results(results, cfg, label, correct, total)
             scores[cfg.value] = scoring
             save_checkpoint(label, list(scores.keys()))
@@ -648,12 +680,50 @@ def _run_dataset(label: str, vault: str, client: RagamuffinClient, skip_configs:
             log(f"Questions: {len(qdata)} unique")
             return convs, qdata
 
+    elif label == "narrativeqa":
+        log_header("DATASET: NarrativeQA (deepmind/narrativeqa — public-domain Gutenberg only)")
+        _NQA_VAULT_MAP: Dict[str, str] = {}
+
+        def load_fn():
+            from benchmarks.loaders.narrativeqa import NarrativeQALoader
+            log("Loading NarrativeQA dataset...")
+            t0 = time.perf_counter()
+            loader = NarrativeQALoader(
+                dataset_path=os.path.join(os.path.dirname(__file__), "data", "NarrativeQA"),
+                config_label="D",
+                kinds=["gutenberg"],
+                per_story_vaults=True,
+            )
+            convs = loader.load()
+            elapsed = time.perf_counter() - t0
+            log(f"Loaded {len(convs)} stories ({elapsed:.1f}s)")
+            if not convs:
+                raise RuntimeError("No NarrativeQA stories loaded — run download_datasets.sh")
+            # Build conversation_id -> vault map for per-story ask routing.
+            for c in convs:
+                _NQA_VAULT_MAP[c.id] = c.vault
+            qs = loader.questions(convs[0])
+            # qdata items: (text, gt, qtype, conversation_id)
+            qdata = [(q.text, q.ground_truth, q.question_type, q.conversation_id) for q in qs]
+            log(f"Questions: {len(qdata)} unique")
+            return convs, qdata
+
+        # Per-story vault resolver: route each question to its story's vault.
+        def _nqa_resolver(text, gt, qt, conv_id):
+            return _NQA_VAULT_MAP.get(conv_id, vault)
+
+    # Wire per-story vault routing for NarrativeQA.
+    use_conv_vault = (label == "narrativeqa")
+    vault_resolver = _nqa_resolver if label == "narrativeqa" else None
+
     return run_benchmark(
         label, vault, load_fn, client,
         skip_ingest=False,
         skip_configs=skip_configs,
         chunk_size=chunk_size,
         ingest_delay=ingest_delay,
+        use_conv_vault=use_conv_vault,
+        vault_resolver=vault_resolver,
     )
 
 
@@ -689,11 +759,13 @@ def main():
     log(f"Results: {RESULTS_DIR}")
     log(f"Status:  {STATUS_FILE}")
 
-    # Determine vault names — unique per run, or static if --clean
+    # Determine vault names — unique per run, or static if --clean.
+    # (NarrativeQA uses per-story vaults, so no shared name is needed there.)
     if args.clean:
         lme_vault = "lme-bench-clean"
         locomo_vault = "locomo-bench-clean"
-        log("Clean mode: clearing vaults...")
+        nqa_vault = "nqa-bench-clean"
+        log("Clean mode: clearing shared vaults...")
         for v in [lme_vault, locomo_vault]:
             try:
                 result = client.clear_vault(v)
@@ -708,40 +780,42 @@ def main():
     else:
         lme_vault = f"lme-bench-{RUN_ID}"
         locomo_vault = f"locomo-bench-{RUN_ID}"
-        log(f"Unique vault names: {lme_vault}, {locomo_vault}")
+        nqa_vault = f"nqa-bench-{RUN_ID}"
+        log(f"Unique shared-vault names: {lme_vault}, {locomo_vault} (NarrativeQA: per-story)")
 
     # Set Qdrant health check URL if provided
     if args.qdrant_url:
         os.environ["RAGAMUFFIN_QDRANT_URL"] = args.qdrant_url
 
     # ── Run selected datasets ──────────────────────────────────────────
-    lme_scores = _run_dataset(
-        "longmemeval", lme_vault, client,
-        skip_configs=[],
-        datasets=args.datasets,
-        chunk_size=args.chunks,
-        ingest_delay=args.ingest_delay,
-    )
-    locomo_scores = _run_dataset(
-        "locomo", locomo_vault, client,
-        skip_configs=[],
-        datasets=args.datasets,
-        chunk_size=args.chunks,
-        ingest_delay=args.ingest_delay,
-    )
+    all_scores: Dict[str, Dict] = {}
+    vault_for = {
+        "longmemeval": lme_vault,
+        "locomo": locomo_vault,
+        "narrativeqa": nqa_vault,
+    }
+    for ds in args.datasets:
+        scores = _run_dataset(
+            ds, vault_for[ds], client,
+            skip_configs=[],
+            datasets=args.datasets,
+            chunk_size=args.chunks,
+            ingest_delay=args.ingest_delay,
+        )
+        all_scores[ds] = scores
 
     # ── Summary ─────────────────────────────────────────────────────────
-    all_scores = {"longmemeval": lme_scores, "locomo": locomo_scores}
     baseline = {
         "longmemeval": {"D": 0.533},
         "locomo": {"D": 0.467},
+        "narrativeqa": {"D": None},
     }
 
     log("")
     log("╔" + "═" * 53 + "╗")
     log("║  SUMMARY")
     log("╚" + "═" * 53 + "╝")
-    for bench in ["longmemeval", "locomo"]:
+    for bench in args.datasets:
         scores = all_scores.get(bench, {})
         log(f"  {bench}:")
         for cv in ["A", "B", "C", "D"]:

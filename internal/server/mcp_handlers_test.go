@@ -76,6 +76,7 @@ func TestMCPTools_Definitions(t *testing.T) {
 		"ragamuffin_draft",
 		"ragamuffin_facts",
 		"ragamuffin_audit",
+		"ragamuffin_verify",
 		"ragamuffin_graph",
 		"ragamuffin_stats",
 		"ragamuffin_session_create",
@@ -595,8 +596,8 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	if !ok || len(tools) == 0 {
 		t.Fatal("expected non-empty tools list")
 	}
-	if len(tools) != 13 {
-		t.Errorf("expected 13 tools, got %d", len(tools))
+	if len(tools) != 14 {
+		t.Errorf("expected 14 tools, got %d", len(tools))
 	}
 }
 

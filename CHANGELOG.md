@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Features
+- **Auto session-to-fact storage (Hermes adapter)**: `on_session_end` now automatically extracts key decisions, conclusions, config facts, and preferences from the transcript and writes them to the vault as deduplicated facts via `POST /v1/facts`. Fact keys are deterministic (`house/<domain>/<topic>`), so a later session reaching the same conclusion overwrites the earlier value instead of creating a duplicate. No manual `ragamuffin_learn`/`ragamuffin_fact_put` call required. Toggle with `RAGAMUFFIN_AUTO_SESSION_FACTS` (default `true`) and namespace prefix `RAGAMUFFIN_SESSION_FACTS_PREFIX` (default `house`). (#793)
+
 ## v1.0.0-rc.1
 
 ### Features

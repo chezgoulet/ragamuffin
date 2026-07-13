@@ -62,9 +62,15 @@ type Config struct {
 	// setting RAGAMUFFIN_VAULTS_ROOT + RAGAMUFFIN_AUTO_PROVISION_VAULTS=true.
 	MultiTenantMode bool
 
-	// Required
+	// Required (only when VectorStore=="qdrant"; optional for "embedded")
 	QdrantURL       string
 	EmbeddingAPIKey string
+
+	// Optional — Vector store
+	// "qdrant" (default) — use Qdrant gRPC at QdrantURL
+	// "embedded" — use internal/embeddedstore (no Qdrant container required)
+	VectorStore    string
+	EmbeddedDBPath string // SQLite file for embedded store; empty = in-memory
 
 	// Optional — Qdrant
 	QdrantCollection string
@@ -262,9 +268,20 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "must set either RAGAMUFFIN_VAULT_PATH (single-tenant) or RAGAMUFFIN_VAULTS (multi-tenant)")
 	}
 
-	// Qdrant URL must be parseable
-	if _, err := parseURL(c.QdrantURL); err != nil {
-		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_QDRANT_URL %q is not a valid URL: %v", c.QdrantURL, err))
+	// Qdrant URL must be parseable when the vector store is Qdrant.
+	// For the embedded store it is not required.
+	if c.VectorStore == "qdrant" {
+		if _, err := parseURL(c.QdrantURL); err != nil {
+			errs = append(errs, fmt.Sprintf("RAGAMUFFIN_QDRANT_URL %q is not a valid URL: %v", c.QdrantURL, err))
+		}
+	}
+
+	// Vector store selection
+	switch c.VectorStore {
+	case "qdrant", "embedded":
+		// valid
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_VECTOR_STORE must be 'qdrant' or 'embedded', got %q", c.VectorStore))
 	}
 
 	// Embedding dims must be positive (only valid for single-tenant or instance-level)
@@ -381,15 +398,26 @@ func parseURL(raw string) (interface{}, error) {
 // Load reads configuration from environment variables with defaults.
 // RAGAMUFFIN_VAULT_PATH (single-tenant) and RAGAMUFFIN_VAULTS (multi-tenant)
 // are mutually exclusive. One must be set.
+//
+// RAGAMUFFIN_QDRANT_URL is required only when RAGAMUFFIN_VECTOR_STORE=qdrant
+// (the default). When RAGAMUFFIN_VECTOR_STORE=embedded, no Qdrant is needed.
 func Load() (*Config, error) {
-	qdrantURL, err := requireEnv("RAGAMUFFIN_QDRANT_URL")
-	if err != nil {
-		return nil, err
+	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant")
+	qdrantURL := os.Getenv("RAGAMUFFIN_QDRANT_URL")
+	if vectorStore == "qdrant" {
+		var err error
+		qdrantURL, err = requireEnv("RAGAMUFFIN_QDRANT_URL")
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cfg := &Config{
 		QdrantURL:       qdrantURL,
 		EmbeddingAPIKey: os.Getenv("RAGAMUFFIN_EMBEDDING_API_KEY"),
+
+		VectorStore:    envOrDefault("RAGAMUFFIN_VECTOR_STORE", aliasOrDefault("REACHLOCK_VECTOR_STORE", "qdrant")),
+		EmbeddedDBPath: firstEnv("RAGAMUFFIN_EMBEDDED_DB_PATH", "REACHLOCK_EMBEDDED_DB_PATH"),
 
 		QdrantCollection: envOrDefault("RAGAMUFFIN_QDRANT_COLLECTION", "ragamuffin"),
 		FactsCollection:  envOrDefault("RAGAMUFFIN_FACTS_COLLECTION", "ragamuffin_facts"),
@@ -398,7 +426,7 @@ func Load() (*Config, error) {
 		WatchInterval:    envOrDefault("RAGAMUFFIN_WATCH_INTERVAL", "60s"),
 		WatcherMode:      envOrDefault("RAGAMUFFIN_WATCHER_MODE", "poll"),
 
-		EmbeddingProvider: envOrDefault("RAGAMUFFIN_EMBEDDING_PROVIDER", "openai"),
+		EmbeddingProvider: envOrDefault("RAGAMUFFIN_EMBEDDING_PROVIDER", aliasOrDefault("REACHLOCK_EMBED_PROVIDER", "openai")),
 		EmbeddingModel:    envOrDefault("RAGAMUFFIN_EMBEDDING_MODEL", "text-embedding-3-small"),
 		EmbeddingBaseURL:  envOrDefault("RAGAMUFFIN_EMBEDDING_BASE_URL", "https://api.openai.com/v1"),
 		EmbeddingDims:     envInt("RAGAMUFFIN_EMBEDDING_DIMS", 1536),
@@ -670,6 +698,30 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return i
+}
+
+// aliasOrDefault returns the value of `key` from the environment, falling
+// back to `def`. It exists so Ragamuffin's config can accept the
+// REACHLOCK_* prefix used by the single-player deployment profile
+// (see docs/REACHLOCK-VAULT-CONVENTIONS.md) without forking the
+// RAGAMUFFIN_* primary names.
+func aliasOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+// firstEnv returns the first non-empty value among the given keys.
+// Used so a REACHLOCK_* env var can override the RAGAMUFFIN_* default
+// for a single deployment.
+func firstEnv(keys ...string) string {
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func envCSV(key string) []string {

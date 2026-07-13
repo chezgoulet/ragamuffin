@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +17,9 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
@@ -279,6 +284,9 @@ type recallRequest struct {
 	Filters        *recallFilters `json:"filters,omitempty"`
 	Detail         string         `json:"detail"`
 	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
+	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
+	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
+	Expand         bool           `json:"expand,omitempty"`      // associative recall: also search facts (#794)
 }
 
 type recallResult struct {
@@ -290,6 +298,7 @@ type recallResult struct {
 	ChunkIndex      int     `json:"chunk_index"`
 	Score           float32 `json:"score"`
 	FileLastUpdated string  `json:"file_last_updated"`
+	Vault           string  `json:"vault,omitempty"` // set by cross-vault recall (#792)
 }
 
 // recallFilter builds a Qdrant filter from the optional filters object.
@@ -407,10 +416,142 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	out, topScore, err := s.doRecall(ctx, req)
-	if err != nil {
-		writeError(w, 502, "SEARCH_ERROR", err.Error())
-		return
+	var out []recallResult
+	var topScore float32
+
+	// Cross-vault recall (#792): search all vaults or a specific list.
+	if req.All || req.Vaults != "" {
+		var vaultNames []string
+		if req.All {
+			vaultNames = s.indexers.VaultNames()
+		} else {
+			for _, v := range strings.Split(req.Vaults, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					vaultNames = append(vaultNames, v)
+				}
+			}
+		}
+
+		// Embed once, share across all vault searches.
+		ec := s.embeddingFor(ctx)
+		if ec == nil {
+			writeError(w, 502, "EMBEDDING_API_ERROR", "embedding not configured")
+			return
+		}
+		vector, err := ec.EmbedSingle(ctx, req.Query)
+		if err != nil {
+			writeError(w, 502, "EMBEDDING_API_ERROR", err.Error())
+			return
+		}
+
+		// Build filter chain once (applies to all vaults).
+		filter := recallFilter(req)
+		if isTemporalRecall(req.TimeFilter) {
+			dateTo := temporalRecallDate(req.TimeFilter)
+			if dateTo != "" {
+				cond := &pb.Condition{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "file_last_updated",
+							Range: &pb.Range{
+								Lte: float64Ptr(parseRFC3339Unix(dateTo)),
+							},
+						},
+					},
+				}
+				if filter != nil {
+					filter.Must = append(filter.Must, cond)
+				} else {
+					filter = &pb.Filter{Must: []*pb.Condition{cond}}
+				}
+			}
+		}
+
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(vaultNames))
+		for _, vn := range vaultNames {
+			wg.Add(1)
+			go func(vaultName string) {
+				defer wg.Done()
+				vCtx := context.WithValue(ctx, vaultNameKey, vaultName)
+				qc := s.qdrantFor(vCtx)
+				if qc == nil {
+					errCh <- fmt.Errorf("vault %s: no database connection", vaultName)
+					return
+				}
+				results, err := qc.Search(vCtx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
+				if err != nil {
+					errCh <- fmt.Errorf("vault %s: %w", vaultName, err)
+					return
+				}
+				mapped := make([]recallResult, 0, len(results))
+				for _, r := range results {
+					payload := r.Payload
+					res := recallResult{
+						Score:   r.Score,
+						ChunkID: r.Id.GetUuid(),
+						Vault:   vaultName,
+					}
+					if v, ok := payload["text"]; ok {
+						res.Text = v.GetStringValue()
+					}
+					if v, ok := payload["first_paragraph"]; ok {
+						res.FirstParagraph = v.GetStringValue()
+					}
+					if v, ok := payload["source_file"]; ok {
+						res.SourceFile = v.GetStringValue()
+					}
+					if v, ok := payload["header"]; ok {
+						res.Header = v.GetStringValue()
+					}
+					if v, ok := payload["chunk_index"]; ok {
+						res.ChunkIndex = int(v.GetIntegerValue())
+					}
+					if v, ok := payload["file_last_updated"]; ok {
+						res.FileLastUpdated = v.GetStringValue()
+					}
+					if req.Detail == "l0" {
+						res.Text = ""
+						res.FirstParagraph = ""
+					} else if req.Detail == "l1" {
+						res.Text = ""
+					}
+					mapped = append(mapped, res)
+				}
+				mu.Lock()
+				out = append(out, mapped...)
+				mu.Unlock()
+			}(vn)
+		}
+		wg.Wait()
+		close(errCh)
+
+		// Collect errors but don't fail — partial results are better than none.
+		var errs []string
+		for err := range errCh {
+			errs = append(errs, err.Error())
+		}
+		if len(errs) > 0 {
+			s.log(ctx).Warn("cross-vault recall: partial errors", "errors", errs)
+		}
+
+		// Sort all results by score descending and cap at top_k
+		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+		if len(out) > req.TopK {
+			out = out[:req.TopK]
+		}
+		if len(out) > 0 {
+			topScore = out[0].Score
+		}
+	} else {
+		var err error
+		out, topScore, err = s.doRecall(ctx, req)
+		if err != nil {
+			writeError(w, 502, "SEARCH_ERROR", err.Error())
+			return
+		}
 	}
 
 	// Synthesize answer if requested (unique to REST — MCP doesn't expose answer mode)
@@ -439,6 +580,50 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Associative recall (#794): when expand=true, also search the facts
+	// collection for semantically related facts and merge them into results.
+	if req.Expand && !req.All {
+		factsQc := s.factsQdrantFor(ctx)
+		if factsQc != nil {
+			ec := s.embeddingFor(ctx)
+			if ec == nil {
+				return
+			}
+			vector, err := ec.EmbedSingle(ctx, req.Query)
+			if err == nil {
+				factResults, err := factsQc.Search(ctx, vector, uint64(req.TopK), 0, "", nil)
+				if err == nil && len(factResults) > 0 {
+					for _, fr := range factResults {
+						payload := fr.GetPayload()
+						if payload == nil {
+							continue
+						}
+						result := recallResult{
+							ChunkID:    fr.Id.GetUuid(),
+							SourceFile: payload["fact_key"].GetStringValue(),
+							Text:       payload["fact_value"].GetStringValue(),
+							Score:      fr.Score,
+						}
+						if sf, ok := payload["source_file"]; ok && sf.GetStringValue() != "" {
+							result.SourceFile = sf.GetStringValue()
+						}
+						if h, ok := payload["header"]; ok {
+							result.Header = h.GetStringValue()
+						}
+						out = append(out, result)
+					}
+					sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+					if len(out) > req.TopK {
+						out = out[:req.TopK]
+					}
+					if len(out) > 0 {
+						topScore = out[0].Score
+					}
+				}
+			}
+		}
+	}
+
 	resp := map[string]any{
 		"results":   out,
 		"top_score": topScore,
@@ -456,6 +641,16 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.log(ctx).Warn("links: enrichment failed", "error", err)
 		}
+	}
+
+	// Emit query processed event (#802)
+	if s.emitter != nil {
+		vault := vaultFromContext(r.Context())
+		s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+			Query:   req.Query,
+			Results: len(out),
+			Vault:   vault,
+		})
 	}
 
 	writeJSON(w, 200, resp)
@@ -582,6 +777,13 @@ func (s *Server) handleBatchRecall(w http.ResponseWriter, r *http.Request) {
 			ec := s.indexers.GetEmbedder(vaultName)
 			if ec == nil {
 				ec = s.embeddingFor(r.Context())
+			}
+			if ec == nil {
+				results[i] = batchRecallEntry{
+					QueryIndex: i,
+					Error:      "embedding not configured",
+				}
+				return
 			}
 
 			// Embed query
@@ -732,12 +934,171 @@ func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+// ── /vault/{name}/v1/chunks — Chunk listing and pruning (#790) ───────────────
+
+type chunkSummary struct {
+	ChunkID         string `json:"chunk_id"`
+	SourceFile      string `json:"source_file"`
+	Header          string `json:"header"`
+	ChunkIndex      int    `json:"chunk_index"`
+	FileLastUpdated string `json:"file_last_updated"`
+}
+
+func (s *Server) handleChunksList(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.handleChunksListGET(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		s.handleChunksDelete(w, r)
+		return
+	}
+	writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET and DELETE are accepted")
+}
+
+func (s *Server) handleChunksListGET(w http.ResponseWriter, r *http.Request) {
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	limit := uint32(100)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 500 {
+			limit = uint32(v)
+		}
+	}
+
+	ctx := r.Context()
+	chunks := make([]chunkSummary, 0)
+	var scrollOffset *pb.PointId
+
+	for uint32(len(chunks)) < limit {
+		need := limit - uint32(len(chunks))
+		if need > 200 {
+			need = 200
+		}
+		points, nextOffset, err := qc.Scroll(ctx, need, scrollOffset)
+		if err != nil {
+			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			return
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+			c := chunkSummary{
+				ChunkID: p.Id.GetUuid(),
+			}
+			if v, ok := payload["source_file"]; ok {
+				c.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["header"]; ok {
+				c.Header = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				c.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["file_last_updated"]; ok {
+				c.FileLastUpdated = v.GetStringValue()
+			}
+			chunks = append(chunks, c)
+		}
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
+	}
+
+	if chunks == nil {
+		chunks = []chunkSummary{}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"vault":  vaultName,
+		"count":  len(chunks),
+		"chunks": chunks,
+	})
+}
+
+func (s *Server) handleChunksDelete(w http.ResponseWriter, r *http.Request) {
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	ctx := r.Context()
+
+	// Build filter from query params
+	source := r.URL.Query().Get("source")
+	var filter *pb.Filter
+	if source != "" {
+		filter = &pb.Filter{
+			Must: []*pb.Condition{
+				{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "source_file",
+							Match: &pb.Match{
+								MatchValue: &pb.Match_Keyword{Keyword: source},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	// If no source filter, require confirm=true
+	if filter == nil {
+		confirm := r.URL.Query().Get("confirm")
+		if confirm != "true" {
+			writeError(w, 400, "INVALID_REQUEST", "bulk delete without source filter requires confirm=true")
+			return
+		}
+	}
+
+	before := qc.Collection()
+	if err := qc.DeleteFiltered(ctx, before, filter); err != nil {
+		writeError(w, 502, "DELETE_FAILED", fmt.Sprintf("delete failed: %v", err))
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"deleted": true,
+		"vault":   vaultName,
+	})
+}
+
 // ── /ask ───────────────────────────────────────────────────────────────────────
 
 type askRequest struct {
 	Query string `json:"query"`
 	Mode  string `json:"mode"`
 	TopK  int    `json:"top_k"`
+}
+
+// explanationEntry is a single chunk's contribution to an /ask response (#804).
+type explanationEntry struct {
+	SourceFile string  `json:"source_file"`
+	ChunkIndex int     `json:"chunk_index"`
+	Score      float32 `json:"score"`
+	Included   bool    `json:"included"`
+	Text       string  `json:"text,omitempty"`
 }
 
 // queryContext retrieves context text for /ask requests.
@@ -936,17 +1297,30 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	answer, sources, modeUsed, err := s.doAsk(ctx, req.Query, req.Mode, req.TopK)
+	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK)
 	if err != nil {
 		writeError(w, 502, "ASK_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, 200, map[string]any{
+	resp := map[string]any{
 		"answer":    answer,
 		"sources":   sources,
 		"mode_used": modeUsed,
-	})
+	}
+	if len(explanation) > 0 {
+		resp["explanation"] = explanation
+	}
+
+	// Emit query processed event (#802)
+	if s.emitter != nil {
+		vault := vaultFromContext(r.Context())
+		s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+			Query: req.Query, Results: len(sources), Vault: vault,
+		})
+	}
+
+	writeJSON(w, 200, resp)
 }
 
 // ── /draft ─────────────────────────────────────────────────────────────────────
@@ -1015,20 +1389,38 @@ type auditRequest struct {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
 	var req auditRequest
-	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if err.Error() == "http: request body too large" {
-			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
-		} else {
-			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+	// GET requests (used by the web UI) run the default check set with no body.
+	// Optional query parameters allow tuning without a JSON payload.
+	if r.Method == http.MethodGet {
+		if v := r.URL.Query().Get("stale_days"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				req.StaleDays = n
+			}
 		}
-		return
+		if v := r.URL.Query().Get("checks"); v != "" {
+			req.Checks = strings.Split(v, ",")
+		}
+		if v := r.URL.Query().Get("sample_size"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				req.SampleSize = n
+			}
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			if err.Error() == "http: request body too large" {
+				writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
+			} else {
+				writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+			}
+			return
+		}
 	}
 	if req.StaleDays <= 0 {
 		req.StaleDays = 90
@@ -1126,6 +1518,16 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// UI-friendly aliases: the web UI reads staleness/contradictions/gaps.
+	if v, ok := resp["stale_files"]; ok {
+		resp["staleness"] = v
+	}
+	if v, ok := resp["semantic_conflicts"]; ok {
+		resp["contradictions"] = v
+	} else if v, ok := resp["fact_conflicts"]; ok {
+		resp["contradictions"] = v
+	}
+
 	writeJSON(w, 200, resp)
 }
 
@@ -1211,6 +1613,411 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		"vault":   vaultName,
 		"message": "Re-index started. Monitor progress via /health.",
 	})
+}
+
+// ── /v1/debt — Knowledge Debt (#806) ──────────────────────────────────────────
+
+func (s *Server) handleDebt(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+	resp := map[string]any{}
+
+	// Aggregate vault stats from indexers
+	totalFiles := 0
+	totalChunks := 0
+	vaultCount := 0
+	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+		files, chunks, lastIdx, indexing, _, _ := idx.Stats()
+		totalFiles += files
+		totalChunks += chunks
+		vaultCount++
+		_ = lastIdx
+		_ = indexing
+	})
+	resp["vault_count"] = vaultCount
+	resp["total_files"] = totalFiles
+	resp["total_chunks"] = totalChunks
+
+	// Aggregate review queue data from facts collection
+	if s.facts != nil {
+		reviewFilter := &pb.Filter{
+			Must: []*pb.Condition{
+				{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "status",
+							Match: &pb.Match{
+								MatchValue: &pb.Match_Keyword{Keyword: "needs_review"},
+							},
+						},
+					},
+				},
+			},
+		}
+		reviewPoints, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, reviewFilter, 1000, "")
+		if err == nil {
+			staleCount := 0
+			conflictCount := 0
+			lowConfCount := 0
+			oldest := ""
+			for _, p := range reviewPoints {
+				payload := p.GetPayload()
+				if reasons, ok := payload["review_reasons"]; ok {
+					reasonStr := reasons.GetStringValue()
+					if strings.Contains(reasonStr, "stale") {
+						staleCount++
+					}
+					if strings.Contains(reasonStr, "contradiction") {
+						conflictCount++
+					}
+					if strings.Contains(reasonStr, "low_confidence") {
+						lowConfCount++
+					}
+				}
+				if created, ok := payload["created_at"]; ok {
+					if oldest == "" || created.GetStringValue() < oldest {
+						oldest = created.GetStringValue()
+					}
+				}
+			}
+			resp["review_queue_size"] = len(reviewPoints)
+			resp["review_by_reason"] = map[string]int{
+				"stale":          staleCount,
+				"contradiction":  conflictCount,
+				"low_confidence": lowConfCount,
+			}
+			if oldest != "" {
+				resp["oldest_review_item"] = oldest
+			}
+		} else {
+			resp["review_queue_size"] = 0
+			s.log(ctx).Warn("debt: review scan failed", "error", err)
+		}
+	}
+
+	// Aggregate pruner health
+	if s.pruner != nil {
+		health := s.pruner.Health()
+		resp["pruner"] = health
+	} else {
+		resp["pruner"] = map[string]any{"enabled": false}
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// ── /v1/gaps — Knowledge Gap Mapping (#807) ────────────────────────────────────
+
+func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	_ = r.Context()
+	resp := map[string]any{
+		"covered_topics":  []string{},
+		"poorly_covered":  []map[string]any{},
+		"recommendations": []string{},
+	}
+
+	// Identify vaults with few files — potential coverage gaps
+	s.indexers.ForEach(func(name string, idx *indexer.Indexer) {
+		files, chunks, _, _, _, _ := idx.Stats()
+		if files < 10 {
+			resp["poorly_covered"] = append(resp["poorly_covered"].([]map[string]any), map[string]any{
+				"vault":    name,
+				"files":    files,
+				"chunks":   chunks,
+				"severity": "low_coverage",
+			})
+		}
+	})
+
+	// Recommendations based on gap analysis
+	if len(resp["poorly_covered"].([]map[string]any)) > 0 {
+		resp["recommendations"] = []string{
+			"Add documentation to vaults with fewer than 10 files",
+			"Schedule regular indexing of new source materials",
+		}
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// ── /v1/agents/stats — Agent Contribution Heatmap (#808) ────────────────────────
+
+func (s *Server) handleAgentStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+
+	// Agent name is optional — if provided, return stats for a single agent
+	agentName := r.PathValue("name")
+
+	if agentName != "" {
+		s.handleSingleAgentStats(w, r, ctx, agentName)
+		return
+	}
+
+	// Aggregate over all facts via Scroll
+	if s.facts == nil {
+		writeJSON(w, 200, map[string]any{"agents": []map[string]any{}})
+		return
+	}
+
+	type agentAccum struct {
+		FactCount int
+		ConfSum   float64
+		FlagCount int
+	}
+	agents := map[string]*agentAccum{}
+	var offset string
+	const pageSize uint32 = 200
+
+	for {
+		points, err := s.facts.ScrollFiltered(ctx, s.cfg.FactsCollection, nil, pageSize, offset)
+		if err != nil {
+			break
+		}
+		if len(points) == 0 {
+			break
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+			sourceStr := payload["source"].GetStringValue()
+			if sourceStr == "" {
+				sourceStr = "unknown"
+			}
+			conf := payload["confidence"].GetDoubleValue()
+			status := payload["status"].GetStringValue()
+
+			if agents[sourceStr] == nil {
+				agents[sourceStr] = &agentAccum{}
+			}
+			agents[sourceStr].FactCount++
+			agents[sourceStr].ConfSum += conf
+			if status == "needs_review" {
+				agents[sourceStr].FlagCount++
+			}
+		}
+		// Use last point ID as cursor
+		if len(points) > 0 {
+			offset = points[len(points)-1].GetId().GetUuid()
+		}
+	}
+
+	agentList := make([]map[string]any, 0, len(agents))
+	for name, acc := range agents {
+		avgConf := 0.0
+		if acc.FactCount > 0 {
+			avgConf = acc.ConfSum / float64(acc.FactCount)
+		}
+		flagRate := 0.0
+		if acc.FactCount > 0 {
+			flagRate = float64(acc.FlagCount) / float64(acc.FactCount) * 100
+		}
+		agentList = append(agentList, map[string]any{
+			"agent":          name,
+			"facts_written":  acc.FactCount,
+			"avg_confidence": avgConf,
+			"flag_count":     acc.FlagCount,
+			"flag_rate_pct":  flagRate,
+		})
+	}
+
+	if agentList == nil {
+		agentList = []map[string]any{}
+	}
+
+	writeJSON(w, 200, map[string]any{"agents": agentList})
+}
+
+func (s *Server) handleSingleAgentStats(w http.ResponseWriter, r *http.Request, ctx context.Context, agentName string) {
+	if s.facts == nil {
+		_ = ctx
+		writeJSON(w, 200, map[string]any{"agent": agentName, "facts_written": 0})
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"agent":         agentName,
+		"facts_written": 0,
+		"detail":        "per-agent detail requires fact-source aggregation",
+	})
+}
+
+// ── /v1/verify — Knowledge Validation (#810) ──────────────────────────────────
+
+type verifyRequest struct {
+	Fact string `json:"fact"`
+	TopK int    `json:"top_k"`
+}
+
+type verifySource struct {
+	SourceFile string  `json:"source_file"`
+	Text       string  `json:"text"`
+	Score      float32 `json:"score"`
+}
+
+type verifyResponse struct {
+	Status          string         `json:"status"`
+	Supporting      []verifySource `json:"supporting_sources"`
+	Conflicting     []verifySource `json:"conflicting_sources"`
+	Confidence      float64        `json:"confidence"`
+	ConflictSummary string         `json:"conflict_summary,omitempty"`
+	LLMUsed         bool           `json:"llm_used"`
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	var req verifyRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 256 KB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
+		return
+	}
+	if req.Fact == "" {
+		writeError(w, 400, "INVALID_REQUEST", "fact is required")
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 10
+	}
+	if req.TopK > 50 {
+		req.TopK = 50
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	resp, err := s.doVerify(ctx, req)
+	if err != nil {
+		writeError(w, 502, "VERIFY_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, 200, resp)
+}
+
+// ── /v1/embedding/project — 2D Embedding Explorer (#809) ──────────────────────
+
+type vaultProjection struct {
+	proj *embedding.Projection2D
+	ts   time.Time
+}
+
+var (
+	projectCache    = make(map[string]*vaultProjection)
+	projectCacheMu  sync.RWMutex
+	projectCacheTTL = 24 * time.Hour
+)
+
+func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET and POST are accepted")
+		return
+	}
+
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	// Return cached if fresh for this vault
+	projectCacheMu.RLock()
+	if cached, ok := projectCache[vaultName]; ok && time.Since(cached.ts) < projectCacheTTL {
+		proj := cached.proj
+		projectCacheMu.RUnlock()
+		writeJSON(w, 200, proj)
+		return
+	}
+	projectCacheMu.RUnlock()
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	ctx := r.Context()
+
+	// Scroll all chunks with vectors using ScrollWithVectors
+	var vectors [][]float32
+	var labels []string
+	var sources []string
+	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
+
+	for {
+		points, nextOffset, err := qc.ScrollWithVectors(ctx, pageSize, scrollOffset)
+		if err != nil {
+			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			return
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+			if payload == nil {
+				continue
+			}
+			label := ""
+			if h, ok := payload["header"]; ok {
+				label = h.GetStringValue()
+			}
+			src := ""
+			if sf, ok := payload["source_file"]; ok {
+				src = sf.GetStringValue()
+			}
+			// Extract the actual embedding vector
+			vec := p.GetVectors()
+			if vec == nil {
+				continue
+			}
+			v := vec.GetVector()
+			if v == nil || len(v.GetData()) == 0 {
+				continue
+			}
+			vectors = append(vectors, v.GetData())
+			labels = append(labels, label)
+			sources = append(sources, src)
+		}
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
+	}
+
+	if len(vectors) == 0 {
+		writeJSON(w, 200, &embedding.Projection2D{Points: []embedding.ProjectionPoint{}})
+		return
+	}
+
+	projection, err := embedding.ProjectPCA(ctx, vectors, labels, sources)
+	if err != nil {
+		writeError(w, 500, "PROJECTION_FAILED", fmt.Sprintf("PCA failed: %v", err))
+		return
+	}
+
+	// Cache and return
+	projectCacheMu.Lock()
+	projectCache[vaultName] = &vaultProjection{proj: projection, ts: time.Now()}
+	projectCacheMu.Unlock()
+
+	writeJSON(w, 200, projection)
 }
 
 // ── Temporal recall helpers ────────────────────────────────────────────────

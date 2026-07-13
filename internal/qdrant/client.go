@@ -284,10 +284,34 @@ func (c *Client) CountFiles(ctx context.Context) (int, error) {
 
 // Scroll returns a page of points from the collection, ordered by point ID.
 // offset is the point ID to start from (nil for beginning). limit caps results.
+// Does NOT include vectors. Use ScrollWithVectors to preserve vector data (#788).
 func (c *Client) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
 	req := &pb.ScrollPoints{
 		CollectionName: c.collection,
 		WithPayload:    pb.NewWithPayload(true),
+		WithVectors:    &pb.WithVectorsSelector{SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: false}},
+	}
+	if limit > 0 {
+		req.Limit = &limit
+	}
+	if offset != nil {
+		req.Offset = offset
+	}
+
+	resp, err := c.points.Scroll(ctx, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp.Result, resp.NextPageOffset, nil
+}
+
+// ScrollWithVectors returns a page of points INCLUDING their vectors.
+// Use for export/backup where embedding must be preserved (#788).
+func (c *Client) ScrollWithVectors(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	req := &pb.ScrollPoints{
+		CollectionName: c.collection,
+		WithPayload:    pb.NewWithPayload(true),
+		WithVectors:    &pb.WithVectorsSelector{SelectorOptions: &pb.WithVectorsSelector_Enable{Enable: true}},
 	}
 	if limit > 0 {
 		req.Limit = &limit

@@ -24,7 +24,29 @@ fact-level retrieval accuracy across long conversation transcripts.
 
 Dataset downloaded via `download_datasets.sh` into `data/locomo/`.
 
-## Configs
+### NarrativeQA
+
+~1,572 public-domain stories (Project Gutenberg novels & plays) and ~30k
+abstractive QA pairs from DeepMind's long-form reading-comprehension dataset.
+Tests whether Ragamuffin can answer genuine comprehension questions about
+full novels (*Moby Dick*, *A Tale of Two Cities*, *1984*, *The Hobbit*).
+
+- **Ingestion:** one vault per story (`nqa-gutenberg-<docid8>`) by default;
+  film scripts (`kind=movie`) are skipped to avoid copyrighted texts.
+- **Filtering:** `--max-words` caps story size (default 100k ≈ 133k tokens)
+  to stay within ingest/context limits.
+- **Scoring:** LLM-judge (GPT-4o) over reference answers joined with `|`,
+  exact-match fallback. Per-type breakdown: character/setting/temporal/cause/
+  method/plot/comprehension.
+- **Data:** parquet files downloaded from HuggingFace via
+  `download_datasets.sh` (or auto-downloaded on first run; needs `pyarrow`).
+
+```bash
+# Smoke test — 3 stories, Config D
+python3 benchmarks/run_narrativeqa.py --max-stories 3
+# Full Gutenberg set via the unified runner
+python3 benchmarks/run.py --datasets narrativeqa --config d
+```
 
 The harness runs each benchmark against four Ragamuffin configurations:
 

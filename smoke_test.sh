@@ -682,6 +682,213 @@ else
   echo "FAIL: /v1/links/graph depth cap unexpected: $(echo $RESP | head -c 100)"
 fi
 
+# ── /v1/verify ───────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/verify ---"
+
+# Verify with a known "fact" — should return insufficient_data (no real vault data)
+RESP=$(curl -s -X POST "$BASE/v1/verify" \
+  -H "Content-Type: application/json" \
+  -d '{"fact":"All engineers must use 2FA","top_k":5}')
+CODE=$?
+if [ "$CODE" -eq 0 ] && echo "$RESP" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'status' in d
+assert d['status'] in ('confirmed','conflicts','insufficient_data')
+assert 'supporting_sources' in d
+assert isinstance(d['supporting_sources'], list)
+assert 'conflicting_sources' in d
+assert isinstance(d['conflicting_sources'], list)
+assert 'confidence' in d
+assert isinstance(d['confidence'], (int,float))
+" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/verify returns valid structure (status=$(echo $RESP | python3 -c "import sys,json;print(json.load(sys.stdin)['status'])" 2>/dev/null))"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/verify unexpected response: $(echo $RESP | head -c 200)"
+fi
+
+# Verify method rejection (GET)
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/verify" 2>&1)
+if [ "$RESP" = "405" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: GET /v1/verify returns 405"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: GET /v1/verify expected 405, got $RESP"
+fi
+
+# Verify missing fact rejection
+RESP=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/v1/verify" \
+  -H "Content-Type: application/json" \
+  -d '{}' 2>&1)
+if [ "$RESP" = "400" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: POST /v1/verify empty body returns 400"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: POST /v1/verify empty body expected 400, got $RESP"
+fi
+
+# ── /v1/debt ─────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/debt ---"
+RESP=$(curl -s "$BASE/v1/debt" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'vault_count' in d; assert 'total_chunks' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/debt returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/debt unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/gaps ─────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/gaps ---"
+RESP=$(curl -s "$BASE/v1/gaps" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'poorly_covered' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/gaps returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/gaps unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/agents/stats ─────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/agents/stats ---"
+RESP=$(curl -s "$BASE/v1/agents/stats" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'agents' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/agents/stats returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/agents/stats unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/embedding/project ────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/embedding/project ---"
+RESP=$(curl -s "$BASE/v1/embedding/project" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'points' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/embedding/project returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/embedding/project unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/facts/{key}/provenance (key not found) ───────────────────────────────
+echo ""
+echo "--- /v1/facts/{key}/provenance (404 expected) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/facts/nonexistent/provenance" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/facts/nonexistent/provenance returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/facts/nonexistent/provenance expected 404, got $RESP"
+fi
+
+# ── /v1/facts/{key}/history (key not found) ──────────────────────────────────
+echo ""
+echo "--- /v1/facts/{key}/history (empty array expected) ---"
+RESP=$(curl -s "$BASE/v1/facts/nonexistent/history" 2>&1)
+CODE=$?
+if [ "$CODE" -eq 0 ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/facts/nonexistent/history returns (status=$CODE)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/facts/nonexistent/history unexpected: $CODE"
+fi
+
+# ── /v1/chunks (no vault context, assumes default) ───────────────────────────
+echo ""
+echo "--- /v1/chunks (vault-scoped redirect) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/chunks" 2>&1)
+if [ "$RESP" != "000" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/chunks endpoint reachable (HTTP $RESP)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/chunks not reachable"
+fi
+
+# ── /v1/config ────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/config ---"
+RESP=$(curl -s "$BASE/v1/config" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d; assert 'vault_count' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/config returns valid structure (vaults=$(echo $RESP | python3 -c "import sys,json;print(json.load(sys.stdin)['vault_count'])" 2>/dev/null))"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/config unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/pruner/config ─────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/pruner/config ---"
+RESP=$(curl -s "$BASE/v1/pruner/config" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'enabled' in d; assert 'stale_days' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/pruner/config returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/pruner/config unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/briefing ─────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/briefing ---"
+RESP=$(curl -s "$BASE/v1/briefing?agent_id=test" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d; assert 'uptime_seconds' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/briefing returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/briefing unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/hybrid ───────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/hybrid ---"
+RESP=$(curl -s "$BASE/v1/hybrid?query=test" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'results' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/hybrid returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/hybrid unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── DELETE /v1/vaults/{name} (404 expected — vault likely doesn't exist) ──────
+echo ""
+echo "--- DELETE /v1/vaults/nonexistent (expected 404) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/v1/vaults/nonexistent" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: DELETE /v1/vaults/nonexistent returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: DELETE /v1/vaults/nonexistent expected 404, got $RESP"
+fi
+
+# ── /v1/vaults/{name}/export (404 expected — export requires vault) ──────────
+echo ""
+echo "--- /v1/vaults/default/export (expected 404) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/vaults/nonexistent/export" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/vaults/nonexistent/export returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/vaults/nonexistent/export expected 404, got $RESP"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="

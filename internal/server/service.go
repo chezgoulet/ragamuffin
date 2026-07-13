@@ -110,6 +110,94 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 	return out, topScore, nil
 }
 
+// doVerify validates a fact statement against the vault (#810).
+// Searches for semantically similar chunks, groups them into supporting vs
+// conflicting, and optionally produces an LLM conflict summary.
+func (s *Server) doVerify(ctx context.Context, req verifyRequest) (verifyResponse, error) {
+	empty := verifyResponse{
+		Status:      "insufficient_data",
+		Confidence:  0,
+		Supporting:  []verifySource{},
+		Conflicting: []verifySource{},
+	}
+
+	if s.embeddingFor(ctx) == nil {
+		return empty, fmt.Errorf("embedding not configured")
+	}
+
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Fact)
+	if err != nil {
+		return empty, fmt.Errorf("embedding failed: %w", err)
+	}
+
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), 0, "", nil)
+	if err != nil {
+		return empty, fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(results) == 0 {
+		return empty, nil
+	}
+
+	var supporting, conflicting []verifySource
+	scoreThreshold := float32(0.65)
+
+	for _, r := range results {
+		src := verifySource{
+			SourceFile: r.Payload["source_file"].GetStringValue(),
+			Text:       r.Payload["text"].GetStringValue(),
+			Score:      r.Score,
+		}
+		if r.Score >= scoreThreshold {
+			supporting = append(supporting, src)
+		} else {
+			conflicting = append(conflicting, src)
+		}
+	}
+
+	resp := verifyResponse{
+		Supporting:  supporting,
+		Conflicting: conflicting,
+		Confidence:  float64(float32(len(supporting)) / float32(len(results))),
+	}
+
+	switch {
+	case len(supporting) > len(conflicting):
+		resp.Status = "confirmed"
+	case len(conflicting) > 0:
+		resp.Status = "conflicts"
+	default:
+		resp.Status = "insufficient_data"
+	}
+
+	// LLM conflict summary (optional — graceful degradation)
+	if resp.Status == "conflicts" && s.cfg.HasLLM() {
+		synthesizer := s.llmFor(ctx)
+		if synthesizer != nil {
+			var b strings.Builder
+			b.WriteString("Fact to validate: ")
+			b.WriteString(req.Fact)
+			b.WriteString("\n\nConflicting sources:\n")
+			for _, c := range conflicting {
+				fmt.Fprintf(&b, "- %s (score %.2f): %s\n", c.SourceFile, c.Score, c.Text)
+			}
+			b.WriteString("\nSupporting sources:\n")
+			for _, c := range supporting {
+				fmt.Fprintf(&b, "- %s (score %.2f): %s\n", c.SourceFile, c.Score, c.Text)
+			}
+			summary, err := synthesizer.Synthesize(ctx, "Summarize whether this fact is valid given the supporting and conflicting evidence", b.String())
+			if err == nil {
+				resp.ConflictSummary = summary
+				resp.LLMUsed = true
+			} else {
+				s.logger.Warn("verify: LLM conflict summary failed", "error", err)
+			}
+		}
+	}
+
+	return resp, nil
+}
+
 // ── Ask / Synthesis ────────────────────────────────────────────────────────────
 
 // doAsk handles the full ask pipeline: retrieval + LLM synthesis.
@@ -130,6 +218,54 @@ func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (strin
 	}
 
 	return answer, sources, modeUsed, nil
+}
+
+// doAskWithExplanation is like doAsk but also returns chunk-level explanation (#804).
+// Uses doAsk for the core synthesis, then builds explanation from a fresh search.
+// The double search is acceptable because explanation is only generated for the REST
+// handler (not MCP), and the cost is one extra embedding + one extra search.
+func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int) (string, []string, string, []explanationEntry, error) {
+	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK)
+	if err != nil {
+		return "", nil, "", nil, err
+	}
+
+	// Build explanation from chunk search results
+	ec := s.embeddingFor(ctx)
+	if ec == nil {
+		return answer, sources, modeUsed, nil, nil
+	}
+	vector, err := ec.EmbedSingle(ctx, query)
+	if err != nil {
+		return answer, sources, modeUsed, nil, nil // explanation is optional
+	}
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0, "", nil)
+	if err != nil {
+		return answer, sources, modeUsed, nil, nil
+	}
+
+	explanation := make([]explanationEntry, 0, len(results))
+	for _, r := range results {
+		payload := r.GetPayload()
+		entry := explanationEntry{
+			Score:    r.Score,
+			Included: r.Score >= 0.5,
+		}
+		if payload != nil {
+			if v, ok := payload["source_file"]; ok {
+				entry.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				entry.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["text"]; ok {
+				entry.Text = v.GetStringValue()
+			}
+		}
+		explanation = append(explanation, entry)
+	}
+
+	return answer, sources, modeUsed, explanation, nil
 }
 
 // ── Chunk Get ──────────────────────────────────────────────────────────────────
