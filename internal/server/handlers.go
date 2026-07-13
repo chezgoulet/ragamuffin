@@ -78,11 +78,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"status":    status,
-		"qdrant":    qdrantStatus,
-		"embedding": embeddingStatus,
-		"llm":       llmStatus,
-		"indexing":  indexing,
+		"status":         status,
+		"qdrant":         qdrantStatus,
+		"embedding":      embeddingStatus,
+		"llm":            llmStatus,
+		"indexing":       indexing,
+		"uptime_seconds": int(time.Since(s.started).Seconds()),
 	}
 	if indexing {
 		resp["status"] = "indexing"
