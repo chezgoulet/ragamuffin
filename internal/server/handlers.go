@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -280,6 +281,8 @@ type recallRequest struct {
 	Filters        *recallFilters `json:"filters,omitempty"`
 	Detail         string         `json:"detail"`
 	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
+	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
+	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
 }
 
 type recallResult struct {
@@ -291,6 +294,7 @@ type recallResult struct {
 	ChunkIndex      int     `json:"chunk_index"`
 	Score           float32 `json:"score"`
 	FileLastUpdated string  `json:"file_last_updated"`
+	Vault           string  `json:"vault,omitempty"` // set by cross-vault recall (#792)
 }
 
 // recallFilter builds a Qdrant filter from the optional filters object.
@@ -408,10 +412,71 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	out, topScore, err := s.doRecall(ctx, req)
-	if err != nil {
-		writeError(w, 502, "SEARCH_ERROR", err.Error())
-		return
+	var out []recallResult
+	var topScore float32
+
+	// Cross-vault recall (#792): search all vaults or a specific list.
+	if req.All || req.Vaults != "" {
+		var vaultNames []string
+		if req.All {
+			vaultNames = s.indexers.VaultNames()
+		} else {
+			for _, v := range strings.Split(req.Vaults, ",") {
+				v = strings.TrimSpace(v)
+				if v != "" {
+					vaultNames = append(vaultNames, v)
+				}
+			}
+		}
+		var mu sync.Mutex
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(vaultNames))
+		for _, vn := range vaultNames {
+			wg.Add(1)
+			go func(vaultName string) {
+				defer wg.Done()
+				// Temporarily set the vault in context for per-vault resource resolution.
+				vCtx := context.WithValue(ctx, vaultNameKey, vaultName)
+				results, _, err := s.doRecall(vCtx, req)
+				if err != nil {
+					errCh <- fmt.Errorf("vault %s: %w", vaultName, err)
+					return
+				}
+				for i := range results {
+					results[i].Vault = vaultName
+				}
+				mu.Lock()
+				out = append(out, results...)
+				mu.Unlock()
+			}(vn)
+		}
+		wg.Wait()
+		close(errCh)
+
+		// Collect errors but don't fail — partial results are better than none.
+		var errs []string
+		for err := range errCh {
+			errs = append(errs, err.Error())
+		}
+		if len(errs) > 0 {
+			s.log(ctx).Warn("cross-vault recall: partial errors", "errors", errs)
+		}
+
+		// Sort all results by score descending and cap at top_k
+		sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+		if len(out) > req.TopK {
+			out = out[:req.TopK]
+		}
+		if len(out) > 0 {
+			topScore = out[0].Score
+		}
+	} else {
+		var err error
+		out, topScore, err = s.doRecall(ctx, req)
+		if err != nil {
+			writeError(w, 502, "SEARCH_ERROR", err.Error())
+			return
+		}
 	}
 
 	// Synthesize answer if requested (unique to REST — MCP doesn't expose answer mode)

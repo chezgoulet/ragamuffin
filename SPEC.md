@@ -178,6 +178,8 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `source_filter` | string | no | — | Restrict to files under this path prefix |
 | `detail` | string | no | `l2` | Response detail level: `l0` (no text/first_paragraph), `l1` (first_paragraph only), `l2` (full) |
 | `time_filter` | string | no | `active` | Temporal filter: `active` (current index state), `active_at:<RFC3339>`, or `all`. `active_at` limits to chunks indexed before a point in time. |
+| `vaults` | string | no | — | Cross-vault: comma-separated vault names to search. All results returned with `vault` field set. (#792) |
+| `all` | boolean | no | false | Cross-vault: search all configured vaults and merge results ranked by score. (#792) |
 
 **Response:**
 ```json
@@ -191,7 +193,8 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
       "header": "## Review Cycle",
       "chunk_index": 3,
       "score": 0.87,
-      "file_last_updated": "2026-05-09T10:21:13Z"
+      "file_last_updated": "2026-05-09T10:21:13Z",
+      "vault": "docs"
     }
   ],
   "top_score": 0.87
