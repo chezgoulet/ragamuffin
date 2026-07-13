@@ -97,8 +97,7 @@ func wiredServer(t *testing.T, vaultName string) *Server {
 	emitter := events.NewEmitter("", "test", slog.Default(), nil, broker, nil)
 
 	// Deterministic embedding — hash-based for reproducibility
-	ec := embedding.New("http://127.0.0.1:1", "none", "test", time.Millisecond)
-	_ = ec
+	_ = embedding.New("http://127.0.0.1:1", "none", "test", time.Millisecond)
 
 	p := pruner.New(factsStore, chunkStore, nil, mockLLM, slog.Default(), pruner.PrunerConfig{Enabled: false})
 	ext := extraction.New(extraction.Config{Enabled: false}, mockLLM, nil, factsStore, slog.Default())

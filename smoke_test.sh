@@ -841,6 +841,54 @@ else
   echo "FAIL: /v1/pruner/config unexpected: $(echo $RESP | head -c 150)"
 fi
 
+# ── /v1/briefing ─────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/briefing ---"
+RESP=$(curl -s "$BASE/v1/briefing?agent_id=test" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d; assert 'uptime_seconds' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/briefing returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/briefing unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/hybrid ───────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/hybrid ---"
+RESP=$(curl -s "$BASE/v1/hybrid?query=test" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'results' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/hybrid returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/hybrid unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── DELETE /v1/vaults/{name} (404 expected — vault likely doesn't exist) ──────
+echo ""
+echo "--- DELETE /v1/vaults/nonexistent (expected 404) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE "$BASE/v1/vaults/nonexistent" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: DELETE /v1/vaults/nonexistent returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: DELETE /v1/vaults/nonexistent expected 404, got $RESP"
+fi
+
+# ── /v1/vaults/{name}/export (404 expected — export requires vault) ──────────
+echo ""
+echo "--- /v1/vaults/default/export (expected 404) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/vaults/nonexistent/export" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/vaults/nonexistent/export returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/vaults/nonexistent/export expected 404, got $RESP"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="
