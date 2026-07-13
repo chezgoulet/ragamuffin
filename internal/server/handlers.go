@@ -1311,6 +1311,15 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	if len(explanation) > 0 {
 		resp["explanation"] = explanation
 	}
+
+	// Emit query processed event (#802)
+	if s.emitter != nil {
+		vault := vaultFromContext(r.Context())
+		s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+			Query: req.Query, Results: len(sources), Vault: vault,
+		})
+	}
+
 	writeJSON(w, 200, resp)
 }
 
