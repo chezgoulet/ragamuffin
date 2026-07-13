@@ -108,7 +108,7 @@ docs/
 
 ### Docker
 
-- `FROM scratch` in the final stage. `CGO_ENABLED=0` in the build stage.
+- `FROM alpine:3.21` in the final stage (CA certificates for HTTPS embedding APIs, `wget` for Docker healthcheck). `FROM golang:1.25-alpine` in the build stage. `CGO_ENABLED=0` for a static binary.
 - Image name: `ghcr.io/chezgoulet/ragamuffin`.
 - The docker-compose follows the project's cross-stack networking pattern.
   All containers on the internal `ragamuffin` network. No published ports

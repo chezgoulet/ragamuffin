@@ -92,7 +92,7 @@ Key rules:
 
 - **Standard library first.** External dependencies are minimized and
   audited. See the allowed list above.
-- **`CGO_ENABLED=0`** in build. The final Docker image is `FROM scratch`.
+- **`CGO_ENABLED=0`** in build. The final Docker image is `FROM alpine:3.21` (CA certificates for HTTPS embedding APIs, healthcheck tooling).
 - **`slog` for logging.** Structured, JSON to stderr. No `fmt.Println`.
 - **Handler pattern** — decode → validate → execute → respond. All errors
   go through `writeError`, successes through `writeJSON`.
