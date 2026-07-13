@@ -180,6 +180,7 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `time_filter` | string | no | `active` | Temporal filter: `active` (current index state), `active_at:<RFC3339>`, or `all`. `active_at` limits to chunks indexed before a point in time. |
 | `vaults` | string | no | — | Cross-vault: comma-separated vault names to search. All results returned with `vault` field set. (#792) |
 | `all` | boolean | no | false | Cross-vault: search all configured vaults and merge results ranked by score. (#792) |
+| `expand` | boolean | no | false | Associative recall: also search the facts collection for semantically related facts and merge into results. Improves discovery when exact phrasing doesn't match. (#794) |
 
 **Response:**
 ```json
@@ -1226,6 +1227,35 @@ Create a new vault (requires write access).
   "path": "/data/vaults/projects"
 }
 ```
+
+---
+
+### `DELETE /v1/vaults/{name}` — Delete vault
+
+Permanently deletes a vault and all its data (chunks, facts, sessions). Multi-tenant only. Requires write access.
+
+**Response:**
+```json
+{
+  "status": "deleted",
+  "vault": "docs"
+}
+```
+
+---
+
+### `GET /v1/vaults/{name}/export` — Export vault data
+
+Downloads all chunks from a vault as JSON. Each chunk includes source metadata and the embedding vector. Requires write access. Subject to rate limiting (5 rpm).
+
+**Response:** `{"vault": "docs", "count": 247, "chunks": [...]}`
+
+### `POST /v1/vaults/{name}/import` — Import vault data
+
+Restores chunks into a vault from a prior export. Upserts in batches of 100. Max 100,000 chunks per import, max 100 MB body. Requires write access.
+
+**Request:** `{"chunks": [{"source_file": "...", "text": "...", "vector": [...]}]}`
+**Response:** `{"vault": "docs", "imported": 247}`
 
 ---
 
