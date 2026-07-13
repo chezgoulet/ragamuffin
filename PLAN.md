@@ -26,10 +26,10 @@ Status: **Phase 1 complete, Phase 2 in progress.**
 | Issue | Status | What |
 |---|---|---|
 | #810 | ✓ | `/v1/verify` handler + `doVerify` + MCP `ragamuffin_verify` tool. Accepts a fact, searches vault, groups supporting/conflicting sources, optional LLM conflict summary. Documented in SPEC.md |
-| #789 | ◐ | Vault management: create, merge, archive, delete — **pending** |
+| #792 | ✓ | Cross-vault unified search: `all=true` searches all vaults concurrently, `vaults=a,b,c` targets specific vaults. Results merged by score with `vault` field. Documented in SPEC.md |
+| #789 | ◐ | Vault management: create/merge/archive/delete — listing and creation exist at `/vaults`; **delete pending** |
 | #788 | ◐ | Export/import vault data — **pending** |
 | #791 | ◐ | Manual re-index trigger — `/reindex` exists but needs vault-scoped variant verified |
-| #792 | ◐ | Cross-vault unified search — **pending** |
 | #794 | ◐ | Associative recall / query expansion — **pending** |
 | #793 | ✓ | Already committed in testing: auto session-to-fact storage |
 | #690 | ✓ | Already committed in testing: NarrativeQA benchmark |
@@ -70,6 +70,7 @@ the full tab architecture.
 |---|---|---|---|
 | `/v1/verify` | POST | #810 | ✓ |
 | `/vault/{name}/v1/verify` | POST | #810 | ✓ |
+| `/recall` | POST | #792 | ✓ extended with `all`/`vaults` params |
 
 ## Key design decisions
 
