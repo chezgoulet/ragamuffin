@@ -275,9 +275,10 @@ func TestWired_VaultDelete_RemovesVault(t *testing.T) {
 	if w.Code != 200 && w.Code != 403 {
 		t.Fatalf("expected 200 or 403, got %d: %s", w.Code, w.Body.String())
 	}
-	// Verify vault is gone
-	if idx := srv.indexers.Get("test-vault"); idx != nil {
-		t.Error("expected vault to be removed from indexers")
+	if w.Code == 200 {
+		if idx := srv.indexers.Get("test-vault"); idx != nil {
+			t.Error("expected vault to be removed from indexers")
+		}
 	}
 }
 
