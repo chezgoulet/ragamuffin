@@ -283,6 +283,7 @@ type recallRequest struct {
 	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
 	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
 	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
+	Expand         bool           `json:"expand,omitempty"`      // associative recall: also search facts (#794)
 }
 
 type recallResult struct {
@@ -567,6 +568,46 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 				answer = ans
 			} else {
 				s.logger.Warn("answer synthesis failed", "error", err)
+			}
+		}
+	}
+
+	// Associative recall (#794): when expand=true, also search the facts
+	// collection for semantically related facts and merge them into results.
+	if req.Expand && !req.All {
+		factsQc := s.factsQdrantFor(ctx)
+		if factsQc != nil {
+			vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+			if err == nil {
+				factResults, err := factsQc.Search(ctx, vector, uint64(req.TopK), 0, "", nil)
+				if err == nil && len(factResults) > 0 {
+					for _, fr := range factResults {
+						payload := fr.GetPayload()
+						if payload == nil {
+							continue
+						}
+						result := recallResult{
+							ChunkID:    fr.Id.GetUuid(),
+							SourceFile: payload["fact_key"].GetStringValue(),
+							Text:       payload["fact_value"].GetStringValue(),
+							Score:      fr.Score,
+						}
+						if sf, ok := payload["source_file"]; ok && sf.GetStringValue() != "" {
+							result.SourceFile = sf.GetStringValue()
+						}
+						if h, ok := payload["header"]; ok {
+							result.Header = h.GetStringValue()
+						}
+						out = append(out, result)
+					}
+					sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+					if len(out) > req.TopK {
+						out = out[:req.TopK]
+					}
+					if len(out) > 0 {
+						topScore = out[0].Score
+					}
+				}
 			}
 		}
 	}

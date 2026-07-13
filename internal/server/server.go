@@ -266,6 +266,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Vault operations — clear, create, list
 	mux.HandleFunc("/v1/vaults/", s.withRequestID(s.handleVaultClear))
 	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.handleVaultDelete)))
+	mux.HandleFunc("/v1/vaults/{name}/export", s.withRequestID(s.withQdrant(s.handleExport)))
+	mux.HandleFunc("/v1/vaults/{name}/import", s.withRequestID(s.withQdrant(s.handleImport)))
 
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
