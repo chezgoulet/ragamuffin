@@ -23,6 +23,11 @@ func (m *mockQdrantStore) Upsert(_ context.Context, points []*qdrant.PointStruct
 func (m *mockQdrantStore) Scroll(_ context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
 	return nil, nil, nil
 }
+
+func (m *mockQdrantStore) ScrollWithVectors(_ context.Context, _ uint32, _ *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
+	return nil, nil, nil
+}
+
 func (m *mockQdrantStore) Close() error                                              { return nil }
 func (m *mockQdrantStore) Collection() string                                        { return "test" }
 func (m *mockQdrantStore) GetVectorSize(_ context.Context, _ string) (uint64, error) { return 0, nil }

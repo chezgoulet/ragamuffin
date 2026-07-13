@@ -80,6 +80,10 @@ func (m *mockFactStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*p
 	return nil, nil, nil
 }
 
+func (m *mockFactStore) ScrollWithVectors(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	return nil, nil, nil
+}
+
 func (m *mockFactStore) ScrollFiltered(_ context.Context, _ string, _ *pb.Filter, _ uint32, _ string) ([]*pb.RetrievedPoint, error) {
 	return m.scrollFilteredResult, m.scrollFilteredErr
 }

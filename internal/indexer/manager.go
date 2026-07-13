@@ -135,6 +135,17 @@ func (m *Manager) ForEach(fn func(name string, idx *Indexer)) {
 	}
 }
 
+// Remove deletes a vault's indexer and clients by name. No-op if not found.
+func (m *Manager) Remove(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.indexers, name)
+	delete(m.clients, name)
+	delete(m.factClients, name)
+	delete(m.llmClients, name)
+	delete(m.embedClients, name)
+}
+
 // VaultStats holds aggregated stats for a vault.
 type VaultStats struct {
 	FileCount   int

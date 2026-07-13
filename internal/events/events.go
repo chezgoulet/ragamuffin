@@ -32,6 +32,7 @@ const (
 	TypeFactFlagged     = "fact.flagged"
 	TypeFactReviewed    = "fact.reviewed"
 	TypePrunerComplete  = "pruner.scan.complete"
+	TypeQueryProcessed  = "query.processed"
 )
 
 // FileChangedData is the payload for vault.file.changed.
@@ -91,6 +92,13 @@ type ServerStartedData struct {
 	GoVersion string `json:"go_version"`
 	Host      string `json:"host"`
 	Port      string `json:"port"`
+}
+
+// QueryProcessedData is the payload for query.processed (#802).
+type QueryProcessedData struct {
+	Query   string `json:"query"`
+	Results int    `json:"results"`
+	Vault   string `json:"vault,omitempty"`
 }
 
 // New creates a CloudEvent with required fields populated.

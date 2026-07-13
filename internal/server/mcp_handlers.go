@@ -110,6 +110,19 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
+			Name:        "ragamuffin_verify",
+			Description: "Validate a fact statement against the vault. Returns whether the fact is confirmed, conflicts with existing knowledge, or has insufficient data. Supports optional LLM conflict summary.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
+				},
+				"required": []string{"fact"},
+			},
+		},
+		{
 			Name:        "ragamuffin_graph",
 			Description: "Entity and link graph from the vault. Returns node-relationship data showing entity co-occurrence, file cross-references, and knowledge clustering.",
 			InputSchema: map[string]interface{}{
@@ -240,6 +253,8 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpFacts(ctx, args)
 	case "ragamuffin_audit":
 		return s.mcpAudit(ctx, args)
+	case "ragamuffin_verify":
+		return s.mcpVerify(ctx, args)
 	case "ragamuffin_graph":
 		return s.mcpGraph(ctx, args)
 	case "ragamuffin_stats":
@@ -496,6 +511,21 @@ func (s *Server) mcpAudit(ctx context.Context, args map[string]interface{}) (int
 		Checks:     checks,
 		SampleSize: sampleSize,
 	})
+}
+
+func (s *Server) mcpVerify(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	fact, _ := args["fact"].(string)
+	if fact == "" {
+		return nil, fmt.Errorf("fact is required")
+	}
+	topK := 10
+	if v, ok := args["top_k"].(float64); ok && v > 0 {
+		topK = int(v)
+		if topK > 50 {
+			topK = 50
+		}
+	}
+	return s.doVerify(ctx, verifyRequest{Fact: fact, TopK: topK})
 }
 
 func (s *Server) mcpGraph(ctx context.Context, args map[string]interface{}) (interface{}, error) {

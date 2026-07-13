@@ -136,6 +136,10 @@ func (s *factsMockStore) Count(_ context.Context) (uint64, error) { return uint6
 func (s *factsMockStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
 	return nil, nil, nil
 }
+
+func (s *factsMockStore) ScrollWithVectors(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	return nil, nil, nil
+}
 func (s *factsMockStore) Search(_ context.Context, _ []float32, _ uint64, _ float32, _ string, _ *pb.Filter) ([]*pb.ScoredPoint, error) {
 	return nil, nil
 }

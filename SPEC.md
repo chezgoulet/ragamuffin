@@ -178,6 +178,9 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
 | `source_filter` | string | no | — | Restrict to files under this path prefix |
 | `detail` | string | no | `l2` | Response detail level: `l0` (no text/first_paragraph), `l1` (first_paragraph only), `l2` (full) |
 | `time_filter` | string | no | `active` | Temporal filter: `active` (current index state), `active_at:<RFC3339>`, or `all`. `active_at` limits to chunks indexed before a point in time. |
+| `vaults` | string | no | — | Cross-vault: comma-separated vault names to search. All results returned with `vault` field set. (#792) |
+| `all` | boolean | no | false | Cross-vault: search all configured vaults and merge results ranked by score. (#792) |
+| `expand` | boolean | no | false | Associative recall: also search the facts collection for semantically related facts and merge into results. Improves discovery when exact phrasing doesn't match. (#794) |
 
 **Response:**
 ```json
@@ -191,7 +194,8 @@ Semantic search. Returns top-k chunks with source paths, scores, and timestamps.
       "header": "## Review Cycle",
       "chunk_index": 3,
       "score": 0.87,
-      "file_last_updated": "2026-05-09T10:21:13Z"
+      "file_last_updated": "2026-05-09T10:21:13Z",
+      "vault": "docs"
     }
   ],
   "top_score": 0.87
@@ -787,6 +791,178 @@ Review queue statistics. Returns counts broken down by reason type and source ty
 
 ---
 
+### `/v1/verify` — POST
+
+Knowledge validation endpoint. Accepts a fact statement and returns validation results from the vault — whether it checks out against existing knowledge, conflicts, or needs more context. Optionally uses LLM synthesis for conflict resolution summary.
+
+**Request:**
+```json
+{
+  "fact": "All engineers must use 2FA",
+  "top_k": 10
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `fact` | string | yes | — | The fact statement to validate |
+| `top_k` | integer | no | 10 | Max sources to retrieve (1–50) |
+
+**Response:**
+```json
+{
+  "status": "confirmed",
+  "supporting_sources": [
+    {"source_file": "policies/security.md", "text": "2FA is mandatory for all engineering staff...", "score": 0.87}
+  ],
+  "conflicting_sources": [],
+  "confidence": 1.0,
+  "conflict_summary": "",
+  "llm_used": false
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `confirmed` | More supporting than conflicting evidence |
+| `conflicts` | Conflicting or borderline evidence exists; `conflict_summary` populated when LLM is configured |
+| `insufficient_data` | No semantically similar chunks found |
+
+Routes: `POST /v1/verify` (global) and `POST /vault/{name}/v1/verify` (vault-scoped).
+
+---
+
+### `/v1/facts/{key}/provenance` — GET
+
+Fact lineage/provenance chain. Returns the source, source_type, timestamps, and related chunks for a given fact key.
+
+**Path parameter:** `key` — Fact key (e.g. `org/prefer-rust-cli`).
+
+**Response:**
+```json
+{
+  "key": "org/prefer-rust-cli",
+  "value": "All new CLI tools should use Rust",
+  "source": "engineering-review-2026-05",
+  "source_type": "pr_discussion",
+  "created_at": "2026-05-09T10:21:13Z",
+  "updated_at": "2026-05-10T14:30:00Z",
+  "related_chunks": ["uuid1", "uuid2"]
+}
+```
+
+Routes: `GET /v1/facts/{key}/provenance` (global) and `GET /vault/{name}/v1/facts/{key}/provenance` (vault-scoped).
+
+---
+
+### `/v1/facts/{key}/history` — GET
+
+Fact lifecycle event timeline. Returns events in chronological order: creation, updates, review resolutions (confirm, supersede, reject).
+
+**Path parameter:** `key` — Fact key.
+
+**Response:**
+```json
+[
+  {"event": "created", "timestamp": "2026-05-09T10:21:13Z"},
+  {"event": "updated", "timestamp": "2026-05-10T14:30:00Z"},
+  {"event": "confirm", "timestamp": "2026-05-11T09:00:00Z"}
+]
+```
+
+Routes: `GET /v1/facts/{key}/history` (global) and `GET /vault/{name}/v1/facts/{key}/history` (vault-scoped).
+
+---
+
+### `/v1/debt` — GET
+
+Knowledge debt dashboard. Aggregates review queue stats, vault counts, and pruner health into a single response for the web UI.
+
+**Response:**
+```json
+{
+  "vault_count": 3,
+  "total_files": 247,
+  "total_chunks": 1893,
+  "review_queue_size": 12,
+  "review_by_reason": {"stale": 5, "contradiction": 3, "low_confidence": 4},
+  "pruner": {"enabled": true, "stale_days": 90}
+}
+```
+
+---
+
+### `/v1/gaps` — GET
+
+Knowledge coverage gap analysis. Identifies vaults with low file counts and returns recommendations.
+
+**Response:**
+```json
+{
+  "poorly_covered": [
+    {"vault": "docs", "files": 3, "chunks": 12, "severity": "low_coverage"}
+  ],
+  "recommendations": ["Add documentation to vaults with fewer than 10 files"]
+}
+```
+
+---
+
+### `/v1/agents/stats` — GET
+
+Per-agent contribution statistics. Aggregates facts by source field, returning confidence and flag-rate metrics.
+
+**Response:**
+```json
+{
+  "agents": [
+    {"agent": "review-bot", "facts_written": 1200, "avg_confidence": 0.88, "flag_count": 12, "flag_rate_pct": 1.0}
+  ]
+}
+```
+
+Also: `GET /v1/agents/{name}/stats` for per-agent detail.
+
+---
+
+### `/v1/chunks` — GET, DELETE
+
+Chunk listing and pruning for a vault. List chunks with metadata, or bulk-delete by source filter.
+
+**Query parameters (GET):** `limit` (1–500, default 100)
+
+**Query parameters (DELETE):** `source` — delete all chunks from a specific source file. Use `confirm=true` to bulk-delete without a source filter.
+
+**Response (GET):**
+```json
+{
+  "vault": "docs",
+  "count": 100,
+  "chunks": [
+    {"chunk_id": "uuid", "source_file": "docs/policy.md", "header": "## Section", "chunk_index": 3, "file_last_updated": "2026-05-09T10:21:13Z"}
+  ]
+}
+```
+
+Vault-scoped: `GET|DELETE /vault/{name}/v1/chunks`.
+
+---
+
+### `/v1/embedding/project` — GET
+
+2D PCA projection of all chunks in the vault for the Embedding Space Explorer. Uses power iteration for eigenvalue decomposition (pure Go, zero external deps). Computed on first request, cached for 24 hours.
+
+**Response:**
+```json
+{
+  "points": [
+    {"x": 0.45, "y": -0.12, "source_file": "docs/policy.md", "label": "## Review Cycle"}
+  ]
+}
+```
+
+---
+
 ### `/v1/ingest` — POST
 
 Ingest a document or observation into the vault. Chunks are created, embedded, and stored in Qdrant. Requires write access.
@@ -1185,6 +1361,35 @@ Create a new vault (requires write access).
 
 ---
 
+### `DELETE /v1/vaults/{name}` — Delete vault
+
+Permanently deletes a vault and all its data (chunks, facts, sessions). Multi-tenant only. Requires write access.
+
+**Response:**
+```json
+{
+  "status": "deleted",
+  "vault": "docs"
+}
+```
+
+---
+
+### `GET /v1/vaults/{name}/export` — Export vault data
+
+Downloads all chunks from a vault as JSON. Each chunk includes source metadata and the embedding vector. Requires write access. Subject to rate limiting (5 rpm).
+
+**Response:** `{"vault": "docs", "count": 247, "chunks": [...]}`
+
+### `POST /v1/vaults/{name}/import` — Import vault data
+
+Restores chunks into a vault from a prior export. Upserts in batches of 100. Max 100,000 chunks per import, max 100 MB body. Requires write access.
+
+**Request:** `{"chunks": [{"source_file": "...", "text": "...", "vector": [...]}]}`
+**Response:** `{"vault": "docs", "imported": 247}`
+
+---
+
 ### `/events` — GET
 
 Server-Sent Events stream of vault and lifecycle CloudEvents. SSE format:
@@ -1233,6 +1438,10 @@ All global endpoints have vault-scoped variants under `/vault/{name}/`:
 | `GET /vault/{name}/graph` | `/graph` |
 | `POST /vault/{name}/inbox` | `/inbox` |
 | `GET,DELETE /vault/{name}/inbox/{id}` | `/inbox/{id}` |
+| `POST /vault/{name}/v1/verify` | `/v1/verify` |
+| `GET,DELETE /vault/{name}/v1/chunks` | `/v1/chunks` |
+| `GET /vault/{name}/v1/facts/{key}/provenance` | `/v1/facts/{key}/provenance` |
+| `GET /vault/{name}/v1/facts/{key}/history` | `/v1/facts/{key}/history` |
 
 ---
 

@@ -7,16 +7,162 @@ const state = {
   browseTree: {},
   auditData: null,
   graphData: null,
+  online: true,
+  showExplanation: true,
 };
+
+// ── Engineering Standard: fetch wrapper (#812) ──────────────────────────────────
+// Every API call goes through apiFetch: retry with exponential backoff, per-attempt
+// timeout, circuit breaker per endpoint, and offline detection. See
+// ENGINEERING-STANDARD.md for the contract every view must satisfy.
+const RETRY_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+const ATTEMPT_TIMEOUT_MS = 10000;
+const CIRCUIT_THRESHOLD = 3;
+const CIRCUIT_COOLDOWN_MS = 30000;
+
+const circuitFailures = {}; // endpoint -> consecutive failure count
+const circuitOpenedAt = {}; // endpoint -> timestamp when circuit opened
+
+function circuitKey(url) {
+  // Collapse dynamic path segments so the breaker tracks logical endpoints.
+  return url.split('?')[0].replace(/\/[0-9a-f-]{8,}/gi, '/{id}');
+}
+
+async function apiFetch(url, options = {}) {
+  const key = circuitKey(url);
+  const fails = circuitFailures[key] || 0;
+  const opened = circuitOpenedAt[key] || 0;
+
+  // Circuit breaker: if open and still within cooldown, fail fast.
+  if (fails >= CIRCUIT_THRESHOLD) {
+    if (Date.now() - opened < CIRCUIT_COOLDOWN_MS) {
+      throw new ApiError(`endpoint temporarily unavailable (circuit open): ${key}`, 0, true);
+    }
+    // Cooldown expired — half-open: allow one probe, set to threshold-1
+    circuitFailures[key] = CIRCUIT_THRESHOLD - 1;
+  }
+
+  let lastErr;
+  for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (res.status >= 500) {
+        throw new ApiError(`HTTP ${res.status}`, res.status, false);
+      }
+      circuitFailures[key] = 0;
+      setOnline(true);
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      const isLast = attempt === RETRY_ATTEMPTS - 1;
+      // Client errors (4xx) surface immediately without retry.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        throw err;
+      }
+      if (isLast) break;
+      await sleep(RETRY_BACKOFF_MS[attempt] || 4000);
+    }
+  }
+  circuitFailures[key] = (circuitFailures[key] || 0) + 1;
+  if (circuitFailures[key] >= CIRCUIT_THRESHOLD) {
+    circuitOpenedAt[key] = Date.now();
+    setOnline(false);
+  }
+  throw lastErr instanceof ApiError ? lastErr : new ApiError(String(lastErr && lastErr.message || lastErr), 0, false);
+}
+
+// apiJSON fetches and parses JSON, surfacing structured backend errors.
+async function apiJSON(url, options) {
+  const res = await apiFetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(data.message || `HTTP ${res.status}`, res.status, false);
+  }
+  return data;
+}
+
+class ApiError extends Error {
+  constructor(message, status, circuitOpen) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status || 0;
+    this.circuitOpen = !!circuitOpen;
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── State rendering helpers (loading / empty / error) ───────────────────────────
+function renderLoading(container, label = 'Loading…') {
+  container.innerHTML = `<div class="state state-loading" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div><span>${escapeHtml(label)}</span></div>`;
+}
+
+function renderEmpty(container, message, hint = '') {
+  container.innerHTML = `<div class="state state-empty" role="status">
+    <p class="state-msg">${escapeHtml(message)}</p>
+    ${hint ? `<p class="state-hint">${escapeHtml(hint)}</p>` : ''}</div>`;
+}
+
+function renderError(container, message, onRetry) {
+  container.innerHTML = `<div class="state state-error" role="alert">
+    <p class="state-msg">${escapeHtml(message)}</p>
+    <button class="retry-btn" type="button" aria-label="Retry">Retry</button></div>`;
+  const btn = container.querySelector('.retry-btn');
+  if (btn && onRetry) btn.addEventListener('click', onRetry);
+}
+
+// ── Offline detection ───────────────────────────────────────────────────────────
+function setOnline(online) {
+  if (state.online === online) return;
+  state.online = online;
+  const banner = document.getElementById('offline-banner');
+  if (banner) banner.hidden = online;
+}
+
+function initOfflineDetection() {
+  window.addEventListener('offline', () => setOnline(false));
+  window.addEventListener('online', () => setOnline(true));
+  // Periodic health probe — detects server-side outages navigator.onLine misses.
+  // Uses AbortSignal.timeout() with a fallback for older browsers.
+  setInterval(async () => {
+    let signal;
+    try {
+      signal = AbortSignal.timeout(5000);
+    } catch {
+      const ctrl = new AbortController();
+      setTimeout(() => ctrl.abort(), 5000);
+      signal = ctrl.signal;
+    }
+    try {
+      const res = await fetch('/health', { signal });
+      setOnline(res.ok);
+    } catch { setOnline(false); }
+  }, 30000);
+}
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  initOfflineDetection();
+
   // Load vaults
   await loadVaults();
 
-  // Tab switching
-  document.querySelectorAll('.tabs button').forEach(btn => {
+  // Tab switching + keyboard navigation (arrow keys move focus, Enter/Space activate)
+  const tabButtons = Array.from(document.querySelectorAll('.tabs button'));
+  tabButtons.forEach((btn, i) => {
     btn.addEventListener('click', () => switchPage(btn.dataset.page));
+    btn.addEventListener('keydown', e => {
+      let target = null;
+      if (e.key === 'ArrowRight') target = tabButtons[(i + 1) % tabButtons.length];
+      else if (e.key === 'ArrowLeft') target = tabButtons[(i - 1 + tabButtons.length) % tabButtons.length];
+      if (target) { e.preventDefault(); target.focus(); switchPage(target.dataset.page); }
+    });
   });
 
   // Search
@@ -28,6 +174,46 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Graph
   document.getElementById('graph-load').addEventListener('click', loadGraph);
 
+  // SSE — listen for query processed events (#802) on the existing /events stream
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('query.processed', function(e) {
+      try {
+        const data = JSON.parse(e.data);
+        if (data && data.subject) {
+          if (!state.litNodes) state.litNodes = new Set();
+          state.litNodes.add(data.subject);
+        }
+      } catch (_) {}
+    });
+    es.onerror = function() {
+      // Reconnect with exponential backoff — EventSource retries automatically
+      // but we log the attempt for debugging
+      console.debug('SSE connection error, will retry automatically');
+    };
+  } catch (_) {} // SSE may not be available (file://, old browser)
+
+  // Review queue refresh
+  const reviewRefresh = document.getElementById('review-refresh');
+  if (reviewRefresh) reviewRefresh.addEventListener('click', loadReview);
+  const reviewReason = document.getElementById('review-reason');
+  if (reviewReason) reviewReason.addEventListener('change', loadReview);
+
+  // Facts search
+  const factSearchBtn = document.getElementById('fact-search-btn');
+  if (factSearchBtn) factSearchBtn.addEventListener('click', loadFacts);
+  const factSearch = document.getElementById('fact-search');
+  if (factSearch) factSearch.addEventListener('keydown', e => { if (e.key === 'Enter') loadFacts(); });
+
+  // Embedding explorer
+  const embedLoad = document.getElementById('embed-load');
+  if (embedLoad) embedLoad.addEventListener('click', loadEmbedProj);
+  const embedColor = document.getElementById('embed-color');
+  if (embedColor) embedColor.addEventListener('change', () => {
+    // Re-render with new color scheme — re-fetches data
+    loadEmbedProj();
+  });
+
   // Listen for vault selector changes
   document.querySelectorAll('select[id$="-vault"]').forEach(sel => {
     sel.addEventListener('change', () => {
@@ -38,8 +224,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadVaults() {
   try {
-    const res = await fetch('/vaults');
-    const data = await res.json();
+    const data = await apiJSON('/vaults');
     state.vaults = data.vaults || [];
     populateVaultSelectors();
   } catch (err) {
@@ -48,7 +233,7 @@ async function loadVaults() {
 }
 
 function populateVaultSelectors() {
-  const selectors = ['search-vault', 'browse-vault', 'audit-vault', 'graph-vault'];
+  const selectors = ['search-vault', 'browse-vault', 'audit-vault', 'graph-vault', 'facts-vault', 'ingest-vault'];
   selectors.forEach(id => {
     const sel = document.getElementById(id);
     if (!sel) return;
@@ -69,12 +254,25 @@ function switchPage(name) {
   state.page = name;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${name}`).classList.add('active');
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-  document.querySelector(`.tabs button[data-page="${name}"]`).classList.add('active');
+  document.querySelectorAll('.tabs button').forEach(b => {
+    const active = b.dataset.page === name;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
 
   // Lazy load
   if (name === 'browse') loadBrowse();
   if (name === 'audit') loadAudit();
+  if (name === 'review') loadReview();
+  if (name === 'facts') loadFacts();
+  if (name === 'debt') loadDebt();
+  if (name === 'gaps') loadGaps();
+  if (name === 'agents') loadAgents();
+  if (name === 'ingest') loadIngest();
+  if (name === 'vaultadmin') loadVaultAdmin();
+  if (name === 'embed') loadEmbedProj();
+  if (name === 'pruner') loadPruner();
+  if (name === 'settings') loadSettings();
   if (name === 'graph') {
     state.activeVault = document.getElementById('graph-vault').value || state.activeVault;
   }
@@ -85,25 +283,42 @@ async function doSearch() {
   const query = document.getElementById('search-query').value.trim();
   if (!query) return;
   const vault = document.getElementById('search-vault').value;
+  const useAsk = document.getElementById('search-mode-ask').checked;
   const container = document.getElementById('search-results');
-  container.innerHTML = '<div class="loading">Searching...</div>';
+  renderLoading(container, useAsk ? 'Synthesizing…' : 'Searching…');
 
   try {
-    const url = vault ? `/vault/${vault}/recall?query=${encodeURIComponent(query)}` : `/recall?query=${encodeURIComponent(query)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    renderSearchResults(data);
+    let data;
+    if (useAsk) {
+      const url = vault ? `/vault/${vault}/ask` : '/ask';
+      data = await apiJSON(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query, top_k: 8, mode: 'auto'}),
+      });
+      renderAskResults(data);
+    } else {
+      const url = vault ? `/vault/${vault}/recall?query=${encodeURIComponent(query)}` : `/recall?query=${encodeURIComponent(query)}`;
+      data = await apiJSON(url);
+      renderSearchResults(data);
+    }
   } catch (err) {
-    container.innerHTML = `<div class="error">Search failed: ${err.message}</div>`;
+    renderError(container, `Search failed: ${err.message}`, doSearch);
   }
 }
 
 function renderSearchResults(data) {
   const container = document.getElementById('search-results');
   const results = data.results || [];
+
+  // Track matching source files for graph propagation (#802)
+  state.litNodes = new Set();
+  results.forEach(r => {
+    if (r.source_file) state.litNodes.add(r.source_file);
+  });
+
   if (results.length === 0) {
-    container.innerHTML = '<div class="card">No results found.</div>';
+    renderEmpty(container, 'No results found', 'Try a different query or select another vault.');
     return;
   }
   let html = `<div class="card"><div class="value">${results.length}</div><div class="sub">results</div></div>`;
@@ -119,24 +334,73 @@ function renderSearchResults(data) {
   container.innerHTML = html;
 }
 
+function renderAskResults(data) {
+  const container = document.getElementById('search-results');
+  if (!data.answer) {
+    renderEmpty(container, 'No answer generated', 'The LLM could not answer this query.');
+    return;
+  }
+  let html = `<div class="card" style="margin-bottom:1rem">
+    <h3>Answer</h3>
+    <p style="line-height:1.6">${escapeHtml(data.answer)}</p>
+    <div style="color:#8b949e;font-size:0.85rem;margin-top:0.5rem">
+      Mode: ${data.mode_used || 'rag'} | Sources: ${(data.sources || []).length}
+    </div>
+  </div>`;
+
+  // Explanation toggle (#804)
+  if (data.explanation && data.explanation.length) {
+    const showExplain = state.showExplanation !== false;
+    html += `<div class="card" style="margin-bottom:1rem">
+      <button id="explain-toggle" class="retry-btn" style="margin-bottom:0.5rem" onclick="toggleExplanation()">
+        ${showExplain ? 'Hide' : 'Show'} chunk explanation (${data.explanation.length} chunks)
+      </button>
+      <div id="explain-panel" style="${showExplain ? '' : 'display:none'}">`;
+    data.explanation.forEach(e => {
+      html += `<div class="result-item" style="margin-bottom:0.4rem;padding:0.5rem 0.75rem">
+        <div class="source">${escapeHtml(e.source_file || 'unknown')} [${e.chunk_index || 0}]</div>
+        <div class="score">Score: ${(e.score * 100).toFixed(1)}% ${e.included ? '✓ included' : '✗ excluded'}</div>
+        ${e.text ? `<div class="preview" style="font-size:0.8rem">${escapeHtml(e.text).slice(0, 300)}</div>` : ''}
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  if (data.sources && data.sources.length) {
+    html += `<div class="card"><h3>Sources</h3><ul style="color:#58a6ff;font-size:0.85rem">`;
+    data.sources.forEach(s => { html += `<li>${escapeHtml(s)}</li>`; });
+    html += '</ul></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleExplanation() {
+  state.showExplanation = !state.showExplanation;
+  const panel = document.getElementById('explain-panel');
+  const btn = document.getElementById('explain-toggle');
+  if (panel) panel.style.display = state.showExplanation ? '' : 'none';
+  if (btn) btn.textContent = (state.showExplanation ? 'Hide' : 'Show') + ' chunk explanation';
+}
+
 // ── Browse ─────────────────────────────────────────────────────────────────────
 async function loadBrowse() {
   const vault = document.getElementById('browse-vault').value;
   const container = document.getElementById('browse-tree');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  renderLoading(container, 'Loading files…');
 
   try {
     const url = vault ? `/vault/${vault}/graph?limit=100` : '/graph?limit=100';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (!data.nodes) { container.innerHTML = '<div class="card">No files indexed.</div>'; return; }
-
-    const files = data.nodes.filter(n => n.type === 'file').map(n => n.label);
+    const data = await apiJSON(url);
+    const files = (data.nodes || []).filter(n => n.type === 'file').map(n => n.label);
+    if (files.length === 0) {
+      renderEmpty(container, 'No files indexed', 'Add files to this vault or trigger a re-index.');
+      return;
+    }
     const dirs = buildDirTree(files);
     container.innerHTML = renderDirTree(dirs);
   } catch (err) {
-    container.innerHTML = `<div class="error">Browse failed: ${err.message}</div>`;
+    renderError(container, `Browse failed: ${err.message}`, loadBrowse);
   }
 }
 
@@ -171,17 +435,22 @@ function renderDirTree(tree, depth = 0) {
 async function loadAudit() {
   const vault = document.getElementById('audit-vault').value;
   const container = document.getElementById('audit-summary');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  const detail = document.getElementById('audit-detail');
+  renderLoading(container, 'Running audit…');
+  if (detail) detail.innerHTML = '';
 
   try {
     const url = vault ? `/vault/${vault}/audit` : '/audit';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiJSON(url);
     state.auditData = data;
+    const total = (data.staleness || []).length + (data.contradictions || []).length + (data.gaps || []).length;
+    if (total === 0) {
+      renderEmpty(container, 'No issues found', 'This vault is healthy — no stale files, contradictions, or gaps detected.');
+      return;
+    }
     renderAudit(data);
   } catch (err) {
-    container.innerHTML = `<div class="error">Audit failed: ${err.message}</div>`;
+    renderError(container, `Audit failed: ${err.message}`, loadAudit);
   }
 }
 
@@ -222,7 +491,7 @@ async function loadGraph() {
   const entity = document.getElementById('graph-entity').value.trim();
   const depth = document.getElementById('graph-depth').value;
   const container = document.getElementById('graph-viz');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  renderLoading(container, 'Building graph…');
 
   // Kill any running sim
   if (graphSim) { clearInterval(graphSim); graphSim = null; }
@@ -233,13 +502,15 @@ async function loadGraph() {
     if (entity) params.push(`entity=${encodeURIComponent(entity)}`);
     url += params.join('&');
 
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiJSON(url);
     state.graphData = data;
+    if (!(data.nodes || []).length) {
+      renderEmpty(container, 'No graph data', 'This vault has no linked entities yet.');
+      return;
+    }
     renderGraphCanvas(data);
   } catch (err) {
-    container.innerHTML = `<div class="error">Graph failed: ${err.message}</div>`;
+    renderError(container, `Graph failed: ${err.message}`, loadGraph);
   }
 }
 
@@ -301,6 +572,7 @@ function renderGraphCanvas(data) {
   }
 
   // Force-directed simulation step
+  let pulsePhase = 0;
   function simulationStep() {
     const W = canvas.width;
     const H = canvas.height;
@@ -417,6 +689,26 @@ function renderGraphCanvas(data) {
       ctx.fillStyle = nodeColor(n);
       if (isDimmed) ctx.globalAlpha = 0.2;
       ctx.fill();
+
+      // Propagation glow (#802): nodes matching search results pulse
+      const propCheck = document.getElementById('graph-propagation');
+      const propMode = propCheck && propCheck.checked;
+      if (propMode && state.litNodes && state.litNodes.has(n.label || n.id)) {
+        pulsePhase = (pulsePhase + 0.05) % (Math.PI * 2);
+        const pulse = 0.3 + Math.sin(pulsePhase) * 0.2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, nodeRadius + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(88, 166, 255, ${pulse})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Secondary larger pulse
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, nodeRadius + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(88, 166, 255, ${pulse * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
       if (isHovered) {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
@@ -571,8 +863,506 @@ function renderGraphCanvas(data) {
   `;
 }
 
+// ── Review Queue (promoted from dashboard.html) ──────────────────────────────
+async function loadReview() {
+  const container = document.getElementById('review-list');
+  const statsContainer = document.getElementById('review-stats');
+  renderLoading(container, 'Loading review queue…');
+  renderLoading(statsContainer, '');
+
+  try {
+    const [stats, entries] = await Promise.all([
+      apiJSON('/v1/review/stats'),
+      apiJSON('/v1/review'),
+    ]);
+    state.reviewStats = stats;
+    state.reviewEntries = entries.entries || [];
+
+    renderReviewStats(stats);
+    renderReviewList(state.reviewEntries);
+  } catch (err) {
+    renderError(container, `Review queue failed: ${err.message}`, loadReview);
+    if (statsContainer) statsContainer.innerHTML = '';
+  }
+}
+
+function renderReviewStats(stats) {
+  const container = document.getElementById('review-stats');
+  if (!stats || !stats.total_needs_review) {
+    renderEmpty(container, 'No items pending review', 'All facts are confirmed or resolved.');
+    return;
+  }
+  let html = '<div class="card-grid" style="margin-bottom:1rem">';
+  html += `<div class="card"><h3>Pending</h3><div class="value">${stats.total_needs_review}</div></div>`;
+  if (stats.by_reason) {
+    for (const [reason, count] of Object.entries(stats.by_reason)) {
+      html += `<div class="card"><h3>${reason}</h3><div class="value">${count}</div></div>`;
+    }
+  }
+  if (stats.avg_pending_days) {
+    html += `<div class="card"><h3>Avg Age</h3><div class="value">${stats.avg_pending_days.toFixed(1)}d</div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderReviewList(entries) {
+  const container = document.getElementById('review-list');
+  if (!entries.length) {
+    renderEmpty(container, 'No review items', 'All facts are in good standing.');
+    return;
+  }
+  let html = '';
+  entries.forEach(e => {
+    const reasons = (e.review_reasons || []).map(r => r.type || r).join(', ');
+    html += `<div class="card result-item">
+      <div class="source">${escapeHtml(e.key)}</div>
+      <div class="score">Confidence: ${(e.confidence * 100).toFixed(0)}%</div>
+      <div class="preview">${escapeHtml(e.value || '').slice(0, 200)}</div>
+      ${reasons ? `<div class="links">Flagged: ${escapeHtml(reasons)}</div>` : ''}
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+// ── Facts Manager ────────────────────────────────────────────────────────────
+async function loadFacts() {
+  const container = document.getElementById('facts-list');
+  renderLoading(container, 'Loading facts…');
+
+  try {
+    const vault = document.getElementById('facts-vault').value;
+    const url = vault ? `/vault/${vault}/v1/facts?limit=50` : '/v1/facts?limit=50';
+    const data = await apiJSON(url);
+    const entries = data.entries || [];
+    if (!entries.length) {
+      renderEmpty(container, 'No facts found', 'Create a fact via POST /v1/facts or from an agent session.');
+      return;
+    }
+    let html = '';
+    entries.forEach(e => {
+      html += `<div class="card result-item" style="cursor:pointer" onclick="showFactDetail('${escapeHtml(e.key)}')">
+        <div class="source">${escapeHtml(e.key)}</div>
+        <div class="score">${(e.confidence * 100).toFixed(0)}% · ${e.status || 'active'}</div>
+        <div class="preview">${escapeHtml(e.value || '').slice(0, 300)}</div>
+        ${e.source ? `<div class="links">Source: ${escapeHtml(e.source)}</div>` : ''}
+      </div>`;
+    });
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Facts failed: ${err.message}`, loadFacts);
+  }
+}
+
+async function showFactDetail(key) {
+  const container = document.getElementById('fact-detail');
+  renderLoading(container, 'Loading fact detail…');
+  try {
+    const [detail, provenance] = await Promise.all([
+      apiJSON(`/v1/facts?key=${encodeURIComponent(key)}`),
+      apiJSON(`/v1/facts/${encodeURIComponent(key)}/provenance`).catch(() => null),
+    ]);
+    const entry = detail.entries && detail.entries[0];
+    if (!entry) {
+      renderEmpty(container, 'Fact not found');
+      return;
+    }
+    let html = '<div class="card"><h3 style="color:#58a6ff">' + escapeHtml(entry.key) + '</h3>';
+    html += '<p>' + escapeHtml(entry.value) + '</p>';
+    html += '<p style="color:#8b949e;font-size:0.85rem">Confidence: ' + (entry.confidence * 100).toFixed(0) + '% | Status: ' + (entry.status || 'active') + ' | Version: ' + (entry.version || 0) + '</p>';
+    if (entry.source) html += '<p style="color:#8b949e;font-size:0.85rem">Source: ' + escapeHtml(entry.source) + '</p>';
+    if (entry.created_at) html += '<p style="color:#8b949e;font-size:0.85rem">Created: ' + escapeHtml(entry.created_at) + '</p>';
+    if (provenance && provenance.source) {
+      html += '<p style="color:#8b949e;font-size:0.85rem">Lineage: ' + escapeHtml(provenance.source) + ' (' + escapeHtml(provenance.source_type || 'manual') + ')</p>';
+    }
+    if (entry.tags && entry.tags.length) {
+      html += '<p style="color:#8b949e;font-size:0.85rem">Tags: ' + entry.tags.map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join(' ') + '</p>';
+    }
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Fact detail failed: ${err.message}`, () => showFactDetail(key));
+  }
+}
+
+// ── Knowledge Debt ───────────────────────────────────────────────────────────
+async function loadDebt() {
+  const container = document.getElementById('debt-content');
+  renderLoading(container, 'Assessing knowledge debt…');
+
+  try {
+    const data = await apiJSON('/v1/debt');
+    if (!data || typeof data.vault_count === 'undefined') {
+      renderEmpty(container, 'No debt data available', 'The server returned incomplete data.');
+      return;
+    }
+    let html = '';
+
+    html += `<div class="card"><h3>Vaults</h3><div class="value">${data.vault_count || 0}</div><div class="sub">configured</div></div>`;
+    html += `<div class="card"><h3>Files</h3><div class="value">${data.total_files || 0}</div><div class="sub">indexed</div></div>`;
+    html += `<div class="card"><h3>Chunks</h3><div class="value">${data.total_chunks || 0}</div><div class="sub">total</div></div>`;
+    html += `<div class="card"><h3>Pending Review</h3><div class="value">${data.review_queue_size || 0}</div><div class="sub">items</div></div>`;
+
+    if (data.review_by_reason) {
+      for (const [reason, count] of Object.entries(data.review_by_reason)) {
+        html += `<div class="card"><h3>${reason}</h3><div class="value">${count}</div><div class="sub">flagged</div></div>`;
+      }
+    }
+
+    if (data.pruner) {
+      html += `<div class="card"><h3>Pruner</h3><div class="value">${data.pruner.enabled ? 'On' : 'Off'}</div><div class="sub">${data.pruner.enabled ? (data.pruner.last_scan || 'active') : 'disabled'}</div></div>`;
+    }
+
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Debt assessment failed: ${err.message}`, loadDebt);
+  }
+}
+
+// ── Knowledge Gaps ───────────────────────────────────────────────────────────
+async function loadGaps() {
+  const container = document.getElementById('gaps-content');
+  renderLoading(container, 'Analyzing coverage…');
+
+  try {
+    const data = await apiJSON('/v1/gaps');
+    const gaps = data.poorly_covered || [];
+    if (!gaps.length) {
+      renderEmpty(container, 'No coverage gaps detected', 'All vaults have adequate coverage.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    gaps.forEach(g => {
+      html += `<div class="card"><h3>${escapeHtml(g.vault)}</h3><div class="value">${g.files}</div><div class="sub">files · ${g.chunks} chunks · severity: ${g.severity}</div></div>`;
+    });
+    html += '</div>';
+    if (data.recommendations && data.recommendations.length) {
+      html += '<div class="card" style="margin-top:1rem"><h3>Recommendations</h3><ul>';
+      data.recommendations.forEach(r => { html += '<li>' + escapeHtml(r) + '</li>'; });
+      html += '</ul></div>';
+    }
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Gap analysis failed: ${err.message}`, loadGaps);
+  }
+}
+
+// ── Agent Heatmap ────────────────────────────────────────────────────────────
+async function loadAgents() {
+  const container = document.getElementById('agents-content');
+  renderLoading(container, 'Loading agent stats…');
+
+  try {
+    const data = await apiJSON('/v1/agents/stats');
+    const agents = data.agents || [];
+    if (!agents.length) {
+      renderEmpty(container, 'No agent data', 'No agents have written facts yet.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    agents.forEach(a => {
+      html += `<div class="card"><h3>${escapeHtml(a.agent)}</h3>
+        <div class="value">${a.facts_written}</div><div class="sub">facts written</div>
+        <div style="color:#8b949e;font-size:0.85rem">Avg confidence: ${(a.avg_confidence * 100).toFixed(0)}%</div>
+        <div style="color:#8b949e;font-size:0.85rem">Flag rate: ${a.flag_rate_pct.toFixed(1)}%</div></div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Agent stats failed: ${err.message}`, loadAgents);
+  }
+}
+
+// ── Ingest Log ───────────────────────────────────────────────────────────────
+async function loadIngest() {
+  const container = document.getElementById('ingest-list');
+  renderLoading(container, 'Loading ingest log…');
+
+  try {
+    const vault = document.getElementById('ingest-vault').value;
+    const url = vault ? `/vault/${vault}/v1/logs?limit=50` : '/v1/logs?limit=50';
+    const data = await apiJSON(url);
+    const entries = data.entries || [];
+    if (!entries.length) {
+      renderEmpty(container, 'No log entries', 'Ingest activity will appear here as agents interact.');
+      return;
+    }
+    let html = '';
+    entries.forEach(e => {
+      html += `<div class="card result-item">
+        <div class="source">${escapeHtml(e.agent || 'system')}</div>
+        <div class="score">${e.type || 'info'}</div>
+        <div class="preview">${escapeHtml(e.body || '').slice(0, 300)}</div>
+        <div class="links">${escapeHtml(e.timestamp || '')}</div>
+      </div>`;
+    });
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Ingest log failed: ${err.message}`, loadIngest);
+  }
+}
+
+// ── Vault Admin ──────────────────────────────────────────────────────────────
+async function loadVaultAdmin() {
+  const container = document.getElementById('vaultadmin-content');
+  renderLoading(container, 'Loading vault info…');
+
+  try {
+    const data = await apiJSON('/vaults');
+    const vaults = data.vaults || [];
+    if (!vaults.length) {
+      renderEmpty(container, 'No vaults configured', 'Create a vault to get started.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    vaults.forEach(v => {
+      html += `<div class="card"><h3>${escapeHtml(v.name)}</h3>
+        <div class="value">${v.indexed_files || 0}</div><div class="sub">files · ${v.total_chunks || 0} chunks</div>
+        <div style="color:#8b949e;font-size:0.85rem">Path: ${escapeHtml(v.path || '')}</div>
+        <div style="color:#8b949e;font-size:0.85rem">${v.last_indexed ? 'Last indexed: ' + escapeHtml(v.last_indexed) : 'Not indexed yet'}</div>
+        ${v.indexing ? '<div style="color:#7ee787">Indexing in progress…</div>' : ''}
+      </div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Vault admin failed: ${err.message}`, loadVaultAdmin);
+  }
+}
+
+// ── Embedding Space Explorer (#809) ──────────────────────────────────────────
+async function loadEmbedProj() {
+  const container = document.getElementById('embed-viz');
+  renderLoading(container, 'Computing 2D projection…');
+  try {
+    const data = await apiJSON('/v1/embedding/project');
+    const points = data.points || [];
+    if (!points.length) {
+      renderEmpty(container, 'No data to project', 'Ingest documents first to see the embedding space.');
+      return;
+    }
+    renderEmbedCanvas(points);
+  } catch (err) {
+    renderError(container, `Projection failed: ${err.message}`, loadEmbedProj);
+  }
+}
+
+let embedSim = null;
+
+function renderEmbedCanvas(points) {
+  const container = document.getElementById('embed-viz');
+  const legend = document.getElementById('embed-legend');
+  container.innerHTML = '';
+
+  const canvas = document.createElement('canvas');
+  canvas.width = container.clientWidth || 800;
+  canvas.height = 500;
+  canvas.style.width = '100%';
+  canvas.style.height = '500px';
+  canvas.style.cursor = 'grab';
+  container.appendChild(canvas);
+
+  const ctx = canvas.getContext('2d');
+
+  // Compute bounds
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  points.forEach(p => {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  });
+  const rangeX = maxX - minX || 1;
+  const rangeY = maxY - minY || 1;
+  const margin = 40;
+  const scale = Math.min((canvas.width - margin * 2) / rangeX, (canvas.height - margin * 2) / rangeY);
+  const ox = (canvas.width - rangeX * scale) / 2 - minX * scale;
+  const oy = (canvas.height - rangeY * scale) / 2 - minY * scale;
+
+  function toScreen(x, y) {
+    return { sx: x * scale + ox, sy: y * scale + oy };
+  }
+
+  // Generate colors by source file
+  const colors = ['#58a6ff','#7ee787','#d2a8ff','#ff7b72','#79c0ff','#ffa657','#a5d6ff','#c9d1d9'];
+  const sourceColors = {};
+  let colorIdx = 0;
+
+  // Viewport state
+  let viewX = 0, viewY = 0, zoom = 1;
+  let isDragging = false, dragStartX, dragStartY, viewStartX, viewStartY;
+  let hoveredIdx = -1;
+  let pickedIdx = -1;
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.scale(zoom, zoom);
+    ctx.translate(-canvas.width / 2 + viewX, -canvas.height / 2 + viewY);
+
+    const colorBySource = document.getElementById('embed-color') && document.getElementById('embed-color').checked;
+
+    points.forEach((p, i) => {
+      let { sx, sy } = toScreen(p.x, p.y);
+      sx += viewX;
+      sy += viewY;
+      const r = 4;
+      if (sx < -50 || sx > canvas.width * 2 || sy < -50 || sy > canvas.height * 2) return;
+
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+
+      let color = '#58a6ff';
+      if (colorBySource && p.source_file) {
+        if (!sourceColors[p.source_file]) {
+          sourceColors[p.source_file] = colors[colorIdx % colors.length];
+          colorIdx++;
+        }
+        color = sourceColors[p.source_file];
+      }
+
+      ctx.fillStyle = color;
+      const isActive = pickedIdx === i || hoveredIdx === i;
+      ctx.globalAlpha = isActive ? 1 : 0.6;
+      ctx.fill();
+
+      if (isActive) {
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+
+      if (isActive && p.label) {
+        ctx.fillStyle = '#c9d1d9';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.label.length > 20 ? p.label.slice(0, 18) + '…' : p.label, sx, sy - r - 4);
+      }
+    });
+
+    ctx.restore();
+  }
+
+  function hitTest(sx, sy) {
+    for (let i = points.length - 1; i >= 0; i--) {
+      const p = points[i];
+      let { sx: psx, sy: psy } = toScreen(p.x, p.y);
+      psx = (psx + viewX) * zoom + canvas.width / 2 - canvas.width / 2 * zoom;
+      psy = (psy + viewY) * zoom + canvas.height / 2 - canvas.height / 2 * zoom;
+      const dx = sx - (canvas.width / 2 + (psx - canvas.width / 2) * zoom);
+      const dy = sy - (canvas.height / 2 + (psy - canvas.height / 2) * zoom);
+      if (dx * dx + dy * dy < 400) return i;
+    }
+    return -1;
+  }
+
+  // Mouse events
+  canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const hit = hitTest(sx, sy);
+    if (hit >= 0) {
+      pickedIdx = pickedIdx === hit ? -1 : hit;
+      draw();
+    } else {
+      isDragging = true;
+      dragStartX = sx;
+      dragStartY = sy;
+      viewStartX = viewX;
+      viewStartY = viewY;
+    }
+  });
+  canvas.addEventListener('mousemove', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const hit = hitTest(sx, sy);
+    hoveredIdx = hit;
+    if (isDragging) {
+      viewX = viewStartX + (sx - dragStartX) / zoom;
+      viewY = viewStartY + (sy - dragStartY) / zoom;
+      draw();
+    } else {
+      draw();
+    }
+  });
+  canvas.addEventListener('mouseup', () => { isDragging = false; });
+  canvas.addEventListener('mouseleave', () => { isDragging = false; hoveredIdx = -1; draw(); });
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    zoom = Math.max(0.1, Math.min(20, zoom * delta));
+    draw();
+  }, { passive: false });
+
+  // Legend
+  const colorBySource = document.getElementById('embed-color') && document.getElementById('embed-color').checked;
+  if (colorBySource && Object.keys(sourceColors).length > 0) {
+    let legHtml = '';
+    for (const [src, color] of Object.entries(sourceColors)) {
+      legHtml += `<span style="display:inline-flex;align-items:center;gap:4px;margin-right:12px"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color}"></span> ${escapeHtml(src)}</span>`;
+    }
+    legend.innerHTML = legHtml;
+  } else {
+    legend.innerHTML = `<span style="color:#8b949e">${points.length} points</span>`;
+  }
+
+  draw();
+}
+
+// ── Pruner Config ────────────────────────────────────────────────────────────
+async function loadPruner() {
+  const container = document.getElementById('pruner-content');
+  renderLoading(container, 'Loading pruner config…');
+  try {
+    const data = await apiJSON('/v1/pruner/config');
+    if (!data || typeof data.enabled === 'undefined') {
+      renderEmpty(container, 'No pruner config available', 'The pruner may not be enabled.');
+      return;
+    }
+    let html = '';
+    html += `<div class="card"><h3>Enabled</h3><div class="value">${data.enabled ? 'On' : 'Off'}</div></div>`;
+    html += `<div class="card"><h3>Stale Days</h3><div class="value">${data.stale_days}</div><div class="sub">threshold</div></div>`;
+    html += `<div class="card"><h3>Conflict Sample</h3><div class="value">${data.conflict_sample_size}</div><div class="sub">pairs per scan</div></div>`;
+    html += `<div class="card"><h3>Conflict Threshold</h3><div class="value">${data.conflict_threshold}</div><div class="sub">cosine similarity</div></div>`;
+    html += `<div class="card"><h3>Low Confidence</h3><div class="value">${data.low_confidence_threshold}</div><div class="sub">below this = flag</div></div>`;
+    html += `<div class="card"><h3>Importance</h3><div class="value">${data.importance_threshold}</div><div class="sub">above this = skip stale</div></div>`;
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Pruner config failed: ${err.message}`, loadPruner);
+  }
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const container = document.getElementById('settings-content');
+  renderLoading(container, 'Loading settings…');
+  try {
+    const [config, version] = await Promise.all([
+      apiJSON('/v1/config'),
+      apiJSON('/version'),
+    ]);
+    if (!config || typeof config.vault_count === 'undefined') {
+      renderEmpty(container, 'No settings available', 'The server returned incomplete configuration data.');
+      return;
+    }
+    let html = '';
+    html += `<div class="card"><h3>Version</h3><div class="value">${version.version || '?'}</div><div class="sub">${version.go_version || ''}</div></div>`;
+    html += `<div class="card"><h3>Vaults</h3><div class="value">${config.vault_count || 0}</div><div class="sub">${(config.vaults || []).join(', ') || 'default'}</div></div>`;
+    html += `<div class="card"><h3>Embedding</h3><div class="value">${config.embedding_provider || 'none'}</div><div class="sub">${config.embedding_model || ''}</div></div>`;
+    html += `<div class="card"><h3>LLM</h3><div class="value">${config.llm_provider || 'none'}</div><div class="sub">${config.llm_model || ''}</div></div>`;
+    html += `<div class="card"><h3>Auth</h3><div class="value">${config.auth_mode || 'none'}</div><div class="sub">${config.multi_tenant ? 'multi-tenant' : 'single-tenant'}</div></div>`;
+    html += `<div class="card"><h3>Rate Limiting</h3><div class="value">${config.rate_limiting ? 'On' : 'Off'}</div></div>`;
+    html += `<div class="card"><h3>Chunk Strategy</h3><div class="value">${config.chunk_strategy || 'auto'}</div><div class="sub">max ${config.chunk_max_tokens || 2000} tokens</div></div>`;
+    html += `<div class="card"><h3>Watcher</h3><div class="value">${config.watcher_mode || 'poll'}</div></div>`;
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Settings failed: ${err.message}`, loadSettings);
+  }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function escapeHtml(s) {
-  if (!s) return '';
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}

@@ -113,10 +113,20 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/reindex", cfg.RateLimitReindex)
 	rl.SetLimit("/v1/ingest", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/documents", cfg.RateLimitIngest)
-	rl.SetLimit("/v1/chunks", cfg.RateLimitIngest)
 	rl.SetLimit("/v1/pruner/auto-tune", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/review", cfg.RateLimitReview)
+	rl.SetLimit("/v1/verify", 30)
+	rl.SetLimit("/v1/debt", 10)
+	rl.SetLimit("/v1/gaps", 10)
+	rl.SetLimit("/v1/agents/stats", 10)
+	rl.SetLimit("/v1/chunks", 30)
+	rl.SetLimit("/v1/embedding/project", 5)
+	rl.SetLimit("/v1/vaults/delete", 10)
+	rl.SetLimit("/v1/vaults/export", 5)
+	rl.SetLimit("/v1/vaults/import", 5)
+	rl.SetLimit("/v1/vaults/merge", 1)
+	rl.SetLimit("/v1/vaults/archive", 5)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -185,6 +195,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/hybrid", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/hybrid", s.handleHybrid))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
+		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.handleVaultVerify))))
+		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.handleChunksList))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleProvenance))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactHistory))))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -211,6 +225,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.requireVaultName(vaultName, s.handleBriefing)))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
+		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.requireVaultName(vaultName, s.handleVaultVerify)))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleProvenance)))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleFactHistory)))))
+		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.requireVaultName(vaultName, s.handleChunksList)))))
 
 	}
 
@@ -246,6 +264,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
 		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
 	}
+	// Facts provenance and history (#803, #805) — always bare, always readable
+	mux.HandleFunc("/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleProvenance))))
+	mux.HandleFunc("/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactHistory))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Link index — always registered (bare endpoints)
@@ -253,8 +274,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/links/backlinks", s.withRequestID(s.withRateLimit("/v1/links", s.handleBacklinks)))
 	mux.HandleFunc("/v1/links/graph", s.withRequestID(s.withRateLimit("/v1/links", s.handleLinkGraph)))
 
-	// Chunk retrieval
+	// Chunk retrieval + list (#790)
 	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunkGet))))
+	mux.HandleFunc("/v1/chunks", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunksList))))
 
 	// Review queue (stats MUST be registered before the prefix match)
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
@@ -262,11 +284,33 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Vault operations — clear, create, list
 	mux.HandleFunc("/v1/vaults/", s.withRequestID(s.handleVaultClear))
+	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/delete", s.handleVaultDelete))))
+	mux.HandleFunc("/v1/vaults/{name}/export", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/export", s.handleExport))))
+	mux.HandleFunc("/v1/vaults/{name}/import", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/import", s.handleImport))))
+	mux.HandleFunc("POST /v1/vaults/{from}/merge/{into}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/vaults/merge", s.handleVaultMerge))))
+	mux.HandleFunc("POST /v1/vaults/{name}/archive", s.withRequestID(s.withRateLimit("/v1/vaults/archive", s.handleVaultArchive)))
 
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 	mux.HandleFunc("/v1/ingest/conversation", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngestConversation)))
 	mux.HandleFunc("/v1/documents", s.withRequestID(s.withRateLimit("/v1/documents", s.handleDocuments)))
+
+	// Verify — fact validation (#810)
+	mux.HandleFunc("/v1/verify", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/verify", s.handleVerify))))
+
+	// Knowledge debt + gaps — aggregated health (#806, #807)
+	mux.HandleFunc("/v1/debt", s.withRequestID(s.withRateLimit("/v1/debt", s.handleDebt)))
+	mux.HandleFunc("/v1/gaps", s.withRequestID(s.withRateLimit("/v1/gaps", s.handleGaps)))
+
+	// Agent contribution statistics (#808)
+	mux.HandleFunc("/v1/agents/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
+	mux.HandleFunc("/v1/agents/{name}/stats", s.withRequestID(s.withRateLimit("/v1/agents/stats", s.handleAgentStats)))
+
+	// Embedding projection — 2D embedding explorer (#809)
+	mux.HandleFunc("/v1/embedding/project", s.withRequestID(s.withRateLimit("/v1/embedding/project", s.handleEmbedProject)))
+
+	// Config viewer — non-sensitive runtime settings (#811)
+	mux.HandleFunc("/v1/config", s.withRequestID(s.handleConfig))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))
@@ -782,6 +826,10 @@ func (s *Server) handleVaultSnapshot(w http.ResponseWriter, r *http.Request) {
 	s.handleSnapshot(w, r)
 }
 
+func (s *Server) handleVaultVerify(w http.ResponseWriter, r *http.Request) {
+	s.handleVerify(w, r)
+}
+
 // ── /vaults ─────────────────────────────────────────────────────────────────────
 
 func (s *Server) handleVaults(w http.ResponseWriter, r *http.Request) {
@@ -1035,6 +1083,219 @@ func (s *Server) handleVaultClear(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ── DELETE /v1/vaults/{name} — vault deletion (#789) ──────────────────────────
+
+func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only DELETE is accepted")
+		return
+	}
+
+	vaultName := r.PathValue("name")
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	// Prevent deleting the last vault or the default single-tenant vault
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "cannot delete vault in single-tenant mode")
+		return
+	}
+
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 500, "INTERNAL", "vault has no database connection")
+		return
+	}
+
+	// 1. Delete all chunks from the Qdrant collection
+	chunksBefore, _ := qc.Count(r.Context())
+	chunkCollection := qc.Collection()
+	if err := qc.DeleteFiltered(r.Context(), chunkCollection, &pb.Filter{}); err != nil {
+		s.logger.Warn("failed to delete vault chunks", "vault", vaultName, "error", err)
+	}
+
+	// 2. Delete all facts for this vault
+	factsQc := s.indexers.GetFactClient(vaultName)
+	if factsQc != nil {
+		factsCollection := factsQc.Collection()
+		if err := factsQc.DeleteFiltered(r.Context(), factsCollection, &pb.Filter{}); err != nil {
+			s.logger.Warn("failed to delete vault facts", "vault", vaultName, "error", err)
+		}
+	}
+
+	// 3. Delete all sessions for this vault from logstore
+	if s.logStore != nil {
+		if _, err := s.logStore.DeleteSessionsByVault(r.Context(), vaultName); err != nil {
+			s.logger.Warn("failed to delete vault sessions", "vault", vaultName, "error", err)
+		}
+	}
+
+	// 4. Remove from config and indexers under lock
+	s.mu.Lock()
+	delete(s.cfg.Vaults, vaultName)
+	s.mu.Unlock()
+	s.indexers.Remove(vaultName)
+
+	s.logger.Info("vault deleted", "name", vaultName, "chunks_deleted", chunksBefore)
+
+	writeJSON(w, 200, map[string]any{
+		"status": "deleted",
+		"vault":  vaultName,
+	})
+}
+
+// ── POST /vault/{from}/merge/{into} — vault merge (#789) ────────────────────
+
+func (s *Server) handleVaultMerge(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "merge is only available in multi-tenant mode")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	fromVault := r.PathValue("from")
+	intoVault := r.PathValue("into")
+	if fromVault == "" || intoVault == "" {
+		writeError(w, 400, "INVALID_REQUEST", "from and into vault names are required")
+		return
+	}
+	if fromVault == intoVault {
+		writeError(w, 400, "INVALID_REQUEST", "cannot merge a vault into itself")
+		return
+	}
+
+	fromQc := s.indexers.GetClient(fromVault)
+	intoQc := s.indexers.GetClient(intoVault)
+	if fromQc == nil || intoQc == nil {
+		writeError(w, 404, "NOT_FOUND", "source or destination vault not found")
+		return
+	}
+
+	ctx := r.Context()
+	moved := 0
+	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
+
+	for {
+		points, nextOffset, err := fromQc.Scroll(ctx, pageSize, scrollOffset)
+		if err != nil {
+			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			return
+		}
+		if len(points) == 0 {
+			break
+		}
+		pts := make([]*pb.PointStruct, 0, len(points))
+		for _, p := range points {
+			pt := &pb.PointStruct{
+				Id:      p.Id,
+				Payload: p.Payload,
+			}
+			// Copy vector data if present
+			if vecOut := p.GetVectors(); vecOut != nil {
+				if vec := vecOut.GetVector(); vec != nil && len(vec.GetData()) > 0 {
+					pt.Vectors = &pb.Vectors{
+						VectorsOptions: &pb.Vectors_Vector{
+							Vector: &pb.Vector{Data: vec.GetData()},
+						},
+					}
+				}
+			}
+			pts = append(pts, pt)
+		}
+		if err := intoQc.Upsert(ctx, pts); err != nil {
+			writeError(w, 502, "UPSERT_FAILED", fmt.Sprintf("batch upsert failed: %v", err))
+			return
+		}
+		moved += len(points)
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
+	}
+
+	// Delete source vault after successful merge
+	if err := fromQc.DeleteFiltered(ctx, fromQc.Collection(), &pb.Filter{}); err != nil {
+		s.logger.Warn("merge: failed to clear source vault", "from", fromVault, "error", err)
+	}
+	s.indexers.Remove(fromVault)
+	delete(s.cfg.Vaults, fromVault)
+
+	s.logger.Info("vaults merged", "from", fromVault, "into", intoVault, "points", moved)
+	writeJSON(w, 200, map[string]any{
+		"status":       "merged",
+		"from":         fromVault,
+		"into":         intoVault,
+		"points_moved": moved,
+	})
+}
+
+// ── POST /vault/{name}/archive — vault archive (#789) ───────────────────────
+
+func (s *Server) handleVaultArchive(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "archive is only available in multi-tenant mode")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	vaultName := r.PathValue("name")
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	// Remove from config and indexers (soft-delete — Qdrant data preserved)
+	s.mu.Lock()
+	delete(s.cfg.Vaults, vaultName)
+	s.mu.Unlock()
+	s.indexers.Remove(vaultName)
+
+	s.logger.Info("vault archived", "name", vaultName)
+	writeJSON(w, 200, map[string]any{
+		"status": "archived",
+		"vault":  vaultName,
+	})
+}
+
 // ── Rate limit middleware ──────────────────────────────────────────────────────
 
 // withRateLimit wraps a handler with per-endpoint rate limiting.
@@ -1069,6 +1330,49 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"commit":     Commit,
 		"build_date": BuildDate,
 		"go_version": GoVersion,
+	})
+}
+
+// ── /v1/config — non-sensitive runtime config (#811) ─────────────────────────
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	embedProvider := ""
+	if s.cfg.EmbeddingProvider != "" {
+		embedProvider = s.cfg.EmbeddingProvider
+	}
+	llmProvider := ""
+	if s.cfg.LLMProvider != "" {
+		llmProvider = s.cfg.LLMProvider
+	}
+	authMode := s.cfg.AuthMode
+	if authMode == "" {
+		authMode = "none"
+	}
+
+	vaultNames := s.indexers.VaultNames()
+	if vaultNames == nil {
+		vaultNames = []string{}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"version":            Version,
+		"vault_count":        len(vaultNames),
+		"vaults":             vaultNames,
+		"embedding_provider": embedProvider,
+		"embedding_model":    s.cfg.EmbeddingModel,
+		"llm_provider":       llmProvider,
+		"llm_model":          s.cfg.LLMModel,
+		"auth_mode":          authMode,
+		"rate_limiting":      s.cfg.RateLimitEnabled,
+		"chunk_strategy":     s.cfg.ChunkStrategy,
+		"chunk_max_tokens":   s.cfg.ChunkMaxTokens,
+		"watcher_mode":       s.cfg.WatcherMode,
+		"multi_tenant":       s.cfg.IsMultiTenant(),
 	})
 }
 

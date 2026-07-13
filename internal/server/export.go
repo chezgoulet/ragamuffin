@@ -1,0 +1,228 @@
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+
+	"github.com/google/uuid"
+	pb "github.com/qdrant/go-client/qdrant"
+
+	"github.com/chezgoulet/ragamuffin/internal/auth"
+)
+
+// exportChunk is a single chunk in the export format (#788).
+type exportChunk struct {
+	ChunkID         string    `json:"chunk_id"`
+	SourceFile      string    `json:"source_file"`
+	Text            string    `json:"text"`
+	FirstParagraph  string    `json:"first_paragraph"`
+	Header          string    `json:"header"`
+	ChunkIndex      int       `json:"chunk_index"`
+	FileLastUpdated string    `json:"file_last_updated"`
+	Vector          []float32 `json:"vector,omitempty"`
+}
+
+// safeVal builds a *pb.Value from v, skipping on type errors.
+func safeVal(v any) *pb.Value {
+	val, err := pb.NewValue(v)
+	if err != nil {
+		return nil
+	}
+	return val
+}
+
+// handleExport streams all chunks from a vault as JSON (#788).
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	// Stream export as JSON array — no in-memory buffering
+	ctx := r.Context()
+	const pageSize uint32 = 200
+	var scrollOffset *pb.PointId
+	var first bool = true
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	// Write opening JSON
+	if _, err := fmt.Fprintf(w, `{"vault":"%s","chunks":[`, vaultName); err != nil {
+		return
+	}
+
+	flusher, canFlush := w.(http.Flusher)
+
+	for {
+		points, nextOffset, err := qc.Scroll(ctx, pageSize, scrollOffset)
+		if err != nil {
+			s.log(ctx).Error("export scroll failed", "error", err)
+			return
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+
+			// Write comma separator between elements
+			if !first {
+				if _, err := fmt.Fprintf(w, ","); err != nil {
+					return
+				}
+			}
+			first = false
+
+			c := exportChunk{
+				ChunkID: p.Id.GetUuid(),
+			}
+			if v, ok := payload["source_file"]; ok {
+				c.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["text"]; ok {
+				c.Text = v.GetStringValue()
+			}
+			if v, ok := payload["first_paragraph"]; ok {
+				c.FirstParagraph = v.GetStringValue()
+			}
+			if v, ok := payload["header"]; ok {
+				c.Header = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				c.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["file_last_updated"]; ok {
+				c.FileLastUpdated = v.GetStringValue()
+			}
+
+			if err := json.NewEncoder(w).Encode(c); err != nil {
+				return
+			}
+		}
+
+		if canFlush {
+			flusher.Flush()
+		}
+
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
+	}
+
+	// Close JSON array and object
+	fmt.Fprintf(w, "]}\n")
+}
+
+// handleImport restores chunks into a vault from JSON (#788).
+func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	var req struct {
+		Chunks []exportChunk `json:"chunks"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 100*1024*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		return
+	}
+	if len(req.Chunks) == 0 {
+		writeError(w, 400, "INVALID_REQUEST", "chunks array is required")
+		return
+	}
+	if len(req.Chunks) > 100000 {
+		writeError(w, 400, "INVALID_REQUEST", "maximum 100000 chunks per import")
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	ctx := r.Context()
+	points := make([]*pb.PointStruct, 0, len(req.Chunks))
+	for _, c := range req.Chunks {
+		payload := make(map[string]*pb.Value)
+		if c.Text != "" {
+			payload["text"] = safeVal(c.Text)
+		}
+		if c.SourceFile != "" {
+			payload["source_file"] = safeVal(c.SourceFile)
+		}
+		if c.FirstParagraph != "" {
+			payload["first_paragraph"] = safeVal(c.FirstParagraph)
+		}
+		if c.Header != "" {
+			payload["header"] = safeVal(c.Header)
+		}
+		payload["chunk_index"] = safeVal(float64(c.ChunkIndex))
+		if c.FileLastUpdated != "" {
+			payload["file_last_updated"] = safeVal(c.FileLastUpdated)
+		}
+
+		id := &pb.PointId{
+			PointIdOptions: &pb.PointId_Uuid{Uuid: uuid.New().String()},
+		}
+
+		pt := &pb.PointStruct{
+			Id:      id,
+			Payload: payload,
+		}
+		if c.Vector != nil {
+			pt.Vectors = &pb.Vectors{
+				VectorsOptions: &pb.Vectors_Vector{
+					Vector: &pb.Vector{Data: c.Vector},
+				},
+			}
+		}
+		points = append(points, pt)
+	}
+
+	batchSize := 100
+	for i := 0; i < len(points); i += batchSize {
+		end := i + batchSize
+		if end > len(points) {
+			end = len(points)
+		}
+		if err := qc.Upsert(ctx, points[i:end]); err != nil {
+			writeError(w, 502, "UPSERT_FAILED", fmt.Sprintf("batch %d: %v", i/batchSize, err))
+			return
+		}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"vault":    vaultName,
+		"imported": len(points),
+	})
+}

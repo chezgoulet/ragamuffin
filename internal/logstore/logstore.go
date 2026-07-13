@@ -692,6 +692,30 @@ func (s *Store) ThresholdRecommendations(ctx context.Context, dryRun bool) ([]Th
 	return recs, rows.Err()
 }
 
+// QueryResolutions calls fn for each review resolution matching the given fact key.
+// fn is called with (action, created_at). Returns the first query error, if any.
+func (s *Store) QueryResolutions(ctx context.Context, factKey string, fn func(action, createdAt string)) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT action, created_at
+		FROM review_resolutions
+		WHERE fact_key = ?
+		ORDER BY created_at ASC
+		LIMIT 100
+	`, factKey)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var action, createdAt string
+		if err := rows.Scan(&action, &createdAt); err != nil {
+			return err
+		}
+		fn(action, createdAt)
+	}
+	return rows.Err()
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }

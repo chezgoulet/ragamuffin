@@ -398,6 +398,20 @@ REVIEW_RESOLVE_SCHEMA = {
     },
 }
 
+# ragamuffin_status — health introspection (#784)
+STATUS_SCHEMA = {
+    "name": "ragamuffin_status",
+    "description": (
+        "Check Ragamuffin provider health and connectivity. "
+        "Returns server status, tool injection state, vault info, "
+        "and last context refresh turn. Lightweight — no side effects."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+    },
+}
+
 ALL_TOOL_SCHEMAS = [
     RECALL_SCHEMA,
     SEARCH_SCHEMA,
@@ -410,6 +424,7 @@ ALL_TOOL_SCHEMAS = [
     FACT_GRAPH_SCHEMA,
     REVIEW_LIST_SCHEMA,
     REVIEW_RESOLVE_SCHEMA,
+    STATUS_SCHEMA,
 ]
 
 
@@ -510,9 +525,34 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
     # -- Availability check -------------------------------------------------
 
+    @staticmethod
+    def _config_file_path() -> str:
+        """Resolve the path to the optional Ragamuffin JSON config file.
+
+        Honors ``RAGAMUFFIN_CONFIG`` first, then falls back to
+        ``$HERMES_HOME/ragamuffin.json``. Returns ``""`` when none is set or
+        the file does not exist.
+        """
+        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        if not config_path:
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                config_path = os.path.join(hermes_home, "ragamuffin.json")
+        if config_path and os.path.exists(config_path):
+            return config_path
+        return ""
+
     def is_available(self) -> bool:
-        """Return True if Ragamuffin endpoint is configured."""
-        return bool(os.environ.get("RAGAMUFFIN_ENDPOINT"))
+        """Return True if Ragamuffin is configured.
+
+        Configured means either ``RAGAMUFFIN_ENDPOINT`` is set, or a valid
+        config file exists at ``RAGAMUFFIN_CONFIG`` / ``$HERMES_HOME/ragamuffin.json``.
+        Previously only the env var was checked, so config-file-only setups
+        silently never registered (#781).
+        """
+        if os.environ.get("RAGAMUFFIN_ENDPOINT"):
+            return True
+        return bool(self._config_file_path())
 
     # -- Config schema (for `hermes memory setup`) --------------------------
 
@@ -667,13 +707,8 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         Environment variables take precedence over file values.
         """
-        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        config_path = self._config_file_path()
         if not config_path:
-            hermes_home = os.environ.get("HERMES_HOME", "")
-            if hermes_home:
-                config_path = os.path.join(hermes_home, "ragamuffin.json")
-
-        if not config_path or not os.path.exists(config_path):
             return
 
         self._config_path = config_path
@@ -831,6 +866,24 @@ class RagamuffinMemoryProvider(MemoryProvider):
         # Honor pre-set _requests (e.g. from tests); otherwise lazy-import
         if self._requests is None:
             self._requests = _get_requests()
+
+        # Issue #786 — warn loudly when the provider is configured but the
+        # endpoint is missing and no config file resolves. Without this the
+        # plugin silently falls back to the built-in backend with zero signal.
+        if not self._endpoint:
+            cfg_file = self._config_file_path()
+            if cfg_file:
+                logger.warning(
+                    "[Ragamuffin] provider=ragamuffin but endpoint not set; "
+                    "will load from config file %s",
+                    cfg_file,
+                )
+            else:
+                logger.warning(
+                    "[Ragamuffin] provider=ragamuffin but tools cannot load: "
+                    "missing RAGAMUFFIN_ENDPOINT and no config file at "
+                    "RAGAMUFFIN_CONFIG or $HERMES_HOME/ragamuffin.json"
+                )
 
         if self._requests is None:
             logger.warning(
@@ -1293,10 +1346,17 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         Returns empty string if context is empty or if recall_mode
         is 'tools' (no auto-injection).
+
+        Includes a refresh marker (#785) so the agent can determine
+        the staleness of the injected context.
         """
         if not context_str or self._recall_mode == "tools":
             return ""
-        return f"<memory-context>\n{context_str}\n</memory-context>"
+        marker = (
+            f"<!-- memory-context refreshed at turn {self._turn_counter} "
+            f"({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}) -->\n"
+        )
+        return marker + f"<memory-context>\n{context_str}\n</memory-context>"
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return cached layered context from _wrap_context().
@@ -1761,7 +1821,21 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return False
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas this provider exposes."""
+        """Return tool schemas this provider exposes.
+
+        Emits a diagnostic warning (#782) when the endpoint is unset,
+        so the agent has a signal that tools are expected but unavailable.
+        """
+        if not self._endpoint:
+            logger.warning(
+                "[Ragamuffin] get_tool_schemas() called but endpoint not set — "
+                "provider=ragamuffin requires RAGAMUFFIN_ENDPOINT or a config file"
+            )
+        elif not self._available:
+            logger.warning(
+                "[Ragamuffin] get_tool_schemas() called but provider not available — "
+                "check server health and vault provisioning"
+            )
         return ALL_TOOL_SCHEMAS
 
     # -- Peer cards --------------------------------------------------------
@@ -1846,9 +1920,47 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return self._handle_review_list(args)
         elif tool_name == "ragamuffin_review_resolve":
             return self._handle_review_resolve(args)
+        elif tool_name == "ragamuffin_status":
+            return self._handle_status(args)
         raise NotImplementedError(
             f"Ragamuffin provider does not handle tool '{tool_name}'"
         )
+
+    # ragamuffin_status — health introspection (#784)
+    def _handle_status(self, args: Dict[str, Any]) -> str:
+        """Return provider and server health status."""
+        status = {
+            "provider": "ragamuffin",
+            "available": self._available,
+            "endpoint": self._endpoint,
+            "vault": getattr(self, "_agent_vault", ""),
+            "recall_mode": getattr(self, "_recall_mode", "hybrid"),
+            "tools_injected": [s["name"] for s in ALL_TOOL_SCHEMAS],
+            "last_sync_turn": getattr(self, "_turn_counter", 0),
+            "context_cache_turn": getattr(self, "_context_cache_turn", 0),
+        }
+        # Probe server health
+        if self._requests and self._endpoint:
+            try:
+                url = _build_endpoint(self._endpoint, "/health")
+                headers = _build_headers(self._auth_token)
+                resp = self._requests.get(
+                    url, headers=headers, timeout=_REQUEST_TIMEOUT
+                )
+                if resp.status_code == 200:
+                    status["server_health"] = resp.json()
+                else:
+                    status["server_health"] = {
+                        "status": "error",
+                        "code": resp.status_code,
+                    }
+            except Exception as e:
+                status["server_health"] = {"status": "unreachable", "error": str(e)}
+        else:
+            status["server_health"] = {"status": "not_configured"}
+        return json.dumps(status, indent=2)
+
+    # -- Tool call dispatch --
 
     # -- Tool handlers -----------------------------------------------------
 

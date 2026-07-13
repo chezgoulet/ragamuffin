@@ -84,6 +84,11 @@ func (m *conversationMockStore) Upsert(_ context.Context, points []*qdrant.Point
 func (m *conversationMockStore) Scroll(_ context.Context, limit uint32, offset *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
 	return nil, nil, nil
 }
+
+func (m *conversationMockStore) ScrollWithVectors(_ context.Context, _ uint32, _ *qdrant.PointId) ([]*qdrant.RetrievedPoint, *qdrant.PointId, error) {
+	return nil, nil, nil
+}
+
 func (m *conversationMockStore) ScrollFiltered(_ context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
 	return nil, nil
 }
