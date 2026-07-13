@@ -328,6 +328,12 @@ func (s *Store) Scroll(ctx context.Context, limit uint32, offset *pb.PointId) ([
 	return s.scrollCollection(ctx, s.collection, limit, offset)
 }
 
+// ScrollWithVectors returns the same data as Scroll — the embedded store
+// always returns vectors with every point (no opt-out).
+func (s *Store) ScrollWithVectors(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	return s.Scroll(ctx, limit, offset)
+}
+
 func (s *Store) scrollCollection(ctx context.Context, collection string, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
 	tbl := tableName(collection)
 	var after string
