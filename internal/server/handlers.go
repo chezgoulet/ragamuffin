@@ -950,22 +950,33 @@ func (s *Server) handleChunksListGET(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	chunks := make([]chunkSummary, 0)
+	var scrollOffset *pb.PointId
 
-	points, _, err := qc.Scroll(ctx, limit, nil)
-	if err != nil {
-		writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
-		return
-	}
-	for _, p := range points {
-		payload := p.GetPayload()
-		c := chunkSummary{
-			ChunkID: p.Id.GetUuid(),
+	for uint32(len(chunks)) < limit {
+		need := limit - uint32(len(chunks))
+		if need > 200 {
+			need = 200
 		}
-		if v, ok := payload["source_file"]; ok { c.SourceFile = v.GetStringValue() }
-		if v, ok := payload["header"]; ok { c.Header = v.GetStringValue() }
-		if v, ok := payload["chunk_index"]; ok { c.ChunkIndex = int(v.GetIntegerValue()) }
-		if v, ok := payload["file_last_updated"]; ok { c.FileLastUpdated = v.GetStringValue() }
-		chunks = append(chunks, c)
+		points, nextOffset, err := qc.Scroll(ctx, need, scrollOffset)
+		if err != nil {
+			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+			return
+		}
+		for _, p := range points {
+			payload := p.GetPayload()
+			c := chunkSummary{
+				ChunkID: p.Id.GetUuid(),
+			}
+			if v, ok := payload["source_file"]; ok { c.SourceFile = v.GetStringValue() }
+			if v, ok := payload["header"]; ok { c.Header = v.GetStringValue() }
+			if v, ok := payload["chunk_index"]; ok { c.ChunkIndex = int(v.GetIntegerValue()) }
+			if v, ok := payload["file_last_updated"]; ok { c.FileLastUpdated = v.GetStringValue() }
+			chunks = append(chunks, c)
+		}
+		if nextOffset == nil {
+			break
+		}
+		scrollOffset = nextOffset
 	}
 
 	if chunks == nil {
@@ -1855,11 +1866,15 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 // ── /v1/embedding/project — 2D Embedding Explorer (#809) ──────────────────────
 
+type vaultProjection struct {
+	proj *embedding.Projection2D
+	ts   time.Time
+}
+
 var (
-	projectCache     *embedding.Projection2D
-	projectCacheTime time.Time
-	projectCacheMu   sync.RWMutex
-	projectCacheTTL  = 24 * time.Hour
+	projectCache   = make(map[string]*vaultProjection)
+	projectCacheMu sync.RWMutex
+	projectCacheTTL = 24 * time.Hour
 )
 
 func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
@@ -1868,20 +1883,20 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return cached if fresh
-	projectCacheMu.RLock()
-	if projectCache != nil && time.Since(projectCacheTime) < projectCacheTTL {
-		cached := projectCache
-		projectCacheMu.RUnlock()
-		writeJSON(w, 200, cached)
-		return
-	}
-	projectCacheMu.RUnlock()
-
 	vaultName := vaultNameFromRequest(r)
 	if vaultName == "" {
 		vaultName = "default"
 	}
+
+	// Return cached if fresh for this vault
+	projectCacheMu.RLock()
+	if cached, ok := projectCache[vaultName]; ok && time.Since(cached.ts) < projectCacheTTL {
+		proj := cached.proj
+		projectCacheMu.RUnlock()
+		writeJSON(w, 200, proj)
+		return
+	}
+	projectCacheMu.RUnlock()
 
 	qc := s.indexers.GetClient(vaultName)
 	if qc == nil {
@@ -1949,8 +1964,7 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 
 	// Cache and return
 	projectCacheMu.Lock()
-	projectCache = projection
-	projectCacheTime = time.Now()
+	projectCache[vaultName] = &vaultProjection{proj: projection, ts: time.Now()}
 	projectCacheMu.Unlock()
 
 	writeJSON(w, 200, projection)

@@ -973,6 +973,10 @@ async function loadDebt() {
 
   try {
     const data = await apiJSON('/v1/debt');
+    if (!data || typeof data.vault_count === 'undefined') {
+      renderEmpty(container, 'No debt data available', 'The server returned incomplete data.');
+      return;
+    }
     let html = '';
 
     html += `<div class="card"><h3>Vaults</h3><div class="value">${data.vault_count || 0}</div><div class="sub">configured</div></div>`;
@@ -1296,6 +1300,10 @@ async function loadPruner() {
   renderLoading(container, 'Loading pruner config…');
   try {
     const data = await apiJSON('/v1/pruner/config');
+    if (!data || typeof data.enabled === 'undefined') {
+      renderEmpty(container, 'No pruner config available', 'The pruner may not be enabled.');
+      return;
+    }
     let html = '';
     html += `<div class="card"><h3>Enabled</h3><div class="value">${data.enabled ? 'On' : 'Off'}</div></div>`;
     html += `<div class="card"><h3>Stale Days</h3><div class="value">${data.stale_days}</div><div class="sub">threshold</div></div>`;
@@ -1318,6 +1326,10 @@ async function loadSettings() {
       apiJSON('/v1/config'),
       apiJSON('/version'),
     ]);
+    if (!config || typeof config.vault_count === 'undefined') {
+      renderEmpty(container, 'No settings available', 'The server returned incomplete configuration data.');
+      return;
+    }
     let html = '';
     html += `<div class="card"><h3>Version</h3><div class="value">${version.version || '?'}</div><div class="sub">${version.go_version || ''}</div></div>`;
     html += `<div class="card"><h3>Vaults</h3><div class="value">${config.vault_count || 0}</div><div class="sub">${(config.vaults || []).join(', ') || 'default'}</div></div>`;

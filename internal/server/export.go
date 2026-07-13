@@ -23,12 +23,11 @@ type exportChunk struct {
 	Vector          []float32 `json:"vector,omitempty"`
 }
 
-// mustVal builds a *pb.Value from v, panicking on type errors.
-// Safe for the known types we pass (string, float64).
-func mustVal(v any) *pb.Value {
+// safeVal builds a *pb.Value from v, skipping on type errors.
+func safeVal(v any) *pb.Value {
 	val, err := pb.NewValue(v)
 	if err != nil {
-		panic("mustVal: " + err.Error())
+		return nil
 	}
 	return val
 }
@@ -57,8 +56,11 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enforce a chunk limit to prevent OOM — message for v1 above that to use streaming
+	const maxChunks = 50000
+
 	ctx := r.Context()
-	chunks := make([]exportChunk, 0)
+	chunks := make([]exportChunk, 0, 1000)
 	const pageSize uint32 = 200
 	var scrollOffset *pb.PointId
 
@@ -69,6 +71,10 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, p := range points {
+			if len(chunks) >= maxChunks {
+				writeError(w, 413, "EXPORT_TOO_LARGE", fmt.Sprintf("export limited to %d chunks; use vault snapshot for larger exports", maxChunks))
+				return
+			}
 			payload := p.GetPayload()
 			c := exportChunk{
 				ChunkID: p.Id.GetUuid(),
@@ -141,20 +147,20 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 	for _, c := range req.Chunks {
 		payload := make(map[string]*pb.Value)
 		if c.Text != "" {
-			payload["text"] = mustVal(c.Text)
+			payload["text"] = safeVal(c.Text)
 		}
 		if c.SourceFile != "" {
-			payload["source_file"] = mustVal(c.SourceFile)
+			payload["source_file"] = safeVal(c.SourceFile)
 		}
 		if c.FirstParagraph != "" {
-			payload["first_paragraph"] = mustVal(c.FirstParagraph)
+			payload["first_paragraph"] = safeVal(c.FirstParagraph)
 		}
 		if c.Header != "" {
-			payload["header"] = mustVal(c.Header)
+			payload["header"] = safeVal(c.Header)
 		}
-		payload["chunk_index"] = mustVal(float64(c.ChunkIndex))
+		payload["chunk_index"] = safeVal(float64(c.ChunkIndex))
 		if c.FileLastUpdated != "" {
-			payload["file_last_updated"] = mustVal(c.FileLastUpdated)
+			payload["file_last_updated"] = safeVal(c.FileLastUpdated)
 		}
 
 		id := &pb.PointId{
