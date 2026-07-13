@@ -185,6 +185,10 @@ type Config struct {
 
 	// Optional — Logging
 	LogLevel string
+
+	// Optional — Error tracking (#814)
+	ErrorTrackingTelegramBotToken string
+	ErrorTrackingTelegramChatID   string
 }
 
 // IsMultiTenant returns true when multi-tenancy is active.
@@ -503,9 +507,11 @@ func Load() (*Config, error) {
 		AutoProvisionVaults: envBool("RAGAMUFFIN_AUTO_PROVISION_VAULTS"),
 		AuthOIDCClientID:    os.Getenv("RAGAMUFFIN_AUTH_OIDC_CLIENT_ID"),
 
-		AuditSampleSize: envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
-		AutoThreshold:   envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
-		LogLevel:        envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
+		AuditSampleSize:               envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
+		AutoThreshold:                 envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
+		LogLevel:                      envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
+		ErrorTrackingTelegramBotToken: os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_BOT_TOKEN"),
+		ErrorTrackingTelegramChatID:   os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID"),
 	}
 
 	// Parse vaults root for multi-tenant path validation

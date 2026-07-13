@@ -20,6 +20,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
@@ -78,11 +79,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"status":    status,
-		"qdrant":    qdrantStatus,
-		"embedding": embeddingStatus,
-		"llm":       llmStatus,
-		"indexing":  indexing,
+		"status":         status,
+		"qdrant":         qdrantStatus,
+		"embedding":      embeddingStatus,
+		"llm":            llmStatus,
+		"indexing":       indexing,
+		"uptime_seconds": int(time.Since(s.started).Seconds()),
 	}
 	if indexing {
 		resp["status"] = "indexing"
@@ -2018,6 +2020,193 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 	projectCacheMu.Unlock()
 
 	writeJSON(w, 200, projection)
+}
+
+// ── /v1/digest — Daily Knowledge Change Digest (#824) ────────────────────────
+
+type digestVaultEntry struct {
+	Vault   string `json:"vault"`
+	Created int    `json:"created"`
+	Updated int    `json:"updated"`
+	Deleted int    `json:"deleted"`
+}
+
+func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+	if s.logStore == nil {
+		writeError(w, 503, "NO_LOGSTORE", "log store is not configured")
+		return
+	}
+	since := time.Now().Add(-24 * time.Hour)
+
+	entries, _, err := s.logStore.List(ctx, logstore.Filter{
+		Since: since.Format(time.RFC3339),
+		Limit: 1000,
+	})
+	if err != nil {
+		writeError(w, 502, "LOG_QUERY_FAILED", fmt.Sprintf("log query failed: %v", err))
+		return
+	}
+
+	byVault := map[string]*digestVaultEntry{}
+	for _, e := range entries {
+		agent := e.Agent
+		if agent == "" {
+			agent = "system"
+		}
+		if byVault[agent] == nil {
+			byVault[agent] = &digestVaultEntry{Vault: agent}
+		}
+		switch e.Type {
+		case "fact_created", "created", "ingest":
+			byVault[agent].Created++
+		case "fact_updated", "updated":
+			byVault[agent].Updated++
+		case "deleted", "fact_deleted":
+			byVault[agent].Deleted++
+		}
+	}
+
+	vaults := make([]digestVaultEntry, 0, len(byVault))
+	for _, v := range byVault {
+		vaults = append(vaults, *v)
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"period_hours": 24,
+		"total_events": len(entries),
+		"vaults":       vaults,
+	})
+}
+
+// ── /v1/contradictions — Cross-Vault Fact Conflicts (#823) ────────────────────
+
+type contradictionEntry struct {
+	Key        string `json:"key"`
+	VaultA     string `json:"vault_a"`
+	ValueA     string `json:"value_a"`
+	VaultB     string `json:"vault_b"`
+	ValueB     string `json:"value_b"`
+	UpdatedAtA string `json:"updated_at_a,omitempty"`
+	UpdatedAtB string `json:"updated_at_b,omitempty"`
+}
+
+func (s *Server) handleContradictions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	ctx := r.Context()
+	vaultNames := s.indexers.VaultNames()
+	if len(vaultNames) < 2 {
+		writeJSON(w, 200, map[string]any{
+			"contradictions": []contradictionEntry{},
+			"note":           "need at least 2 vaults for cross-vault contradiction detection",
+		})
+		return
+	}
+
+	// Collect all fact keys per vault by scrolling facts
+	type vaultFact struct {
+		Value     string
+		UpdatedAt string
+	}
+	vaultFacts := make(map[string]map[string]vaultFact)
+	truncated := false
+
+	for _, vn := range vaultNames {
+		qc := s.indexers.GetFactClient(vn)
+		if qc == nil {
+			continue
+		}
+		facts := map[string]vaultFact{}
+		collection := qc.Collection()
+		var offset string
+		const pageSize uint32 = 200
+		const maxFactsPerVault = 10000
+
+		for {
+			points, err := qc.ScrollFiltered(ctx, collection, nil, pageSize, offset)
+			if err != nil {
+				break
+			}
+			if len(points) == 0 {
+				break
+			}
+			for _, p := range points {
+				payload := p.GetPayload()
+				if payload == nil {
+					continue
+				}
+				key := payload["fact_key"].GetStringValue()
+				if key == "" {
+					continue
+				}
+				facts[key] = vaultFact{
+					Value:     payload["fact_value"].GetStringValue(),
+					UpdatedAt: payload["updated_at"].GetStringValue(),
+				}
+				if len(facts) >= maxFactsPerVault {
+					truncated = true
+					break
+				}
+			}
+			if truncated {
+				break
+			}
+			if len(points) > 0 {
+				offset = points[len(points)-1].GetId().GetUuid()
+			}
+		}
+		if len(facts) > 0 {
+			vaultFacts[vn] = facts
+		}
+	}
+
+	// Compare: for each fact key present in multiple vaults, check value
+	var contradictions []contradictionEntry
+	vaultNamesList := make([]string, 0, len(vaultFacts))
+	for vn := range vaultFacts {
+		vaultNamesList = append(vaultNamesList, vn)
+	}
+
+	for i := 0; i < len(vaultNamesList); i++ {
+		for j := i + 1; j < len(vaultNamesList); j++ {
+			va := vaultNamesList[i]
+			vb := vaultNamesList[j]
+			for key, fva := range vaultFacts[va] {
+				if fvb, ok := vaultFacts[vb][key]; ok {
+					if fva.Value != fvb.Value {
+						contradictions = append(contradictions, contradictionEntry{
+							Key:        key,
+							VaultA:     va,
+							ValueA:     truncate(fva.Value, 200),
+							VaultB:     vb,
+							ValueB:     truncate(fvb.Value, 200),
+							UpdatedAtA: fva.UpdatedAt,
+							UpdatedAtB: fvb.UpdatedAt,
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if contradictions == nil {
+		contradictions = []contradictionEntry{}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"contradictions": contradictions,
+		"count":          len(contradictions),
+		"truncated":      truncated,
+	})
 }
 
 // ── Temporal recall helpers ────────────────────────────────────────────────
