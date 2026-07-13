@@ -173,6 +173,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Graph
   document.getElementById('graph-load').addEventListener('click', loadGraph);
 
+  // Review queue refresh
+  const reviewRefresh = document.getElementById('review-refresh');
+  if (reviewRefresh) reviewRefresh.addEventListener('click', loadReview);
+  const reviewReason = document.getElementById('review-reason');
+  if (reviewReason) reviewReason.addEventListener('change', loadReview);
+
+  // Facts search
+  const factSearchBtn = document.getElementById('fact-search-btn');
+  if (factSearchBtn) factSearchBtn.addEventListener('click', loadFacts);
+  const factSearch = document.getElementById('fact-search');
+  if (factSearch) factSearch.addEventListener('keydown', e => { if (e.key === 'Enter') loadFacts(); });
+
   // Listen for vault selector changes
   document.querySelectorAll('select[id$="-vault"]').forEach(sel => {
     sel.addEventListener('change', () => {
@@ -192,7 +204,7 @@ async function loadVaults() {
 }
 
 function populateVaultSelectors() {
-  const selectors = ['search-vault', 'browse-vault', 'audit-vault', 'graph-vault'];
+  const selectors = ['search-vault', 'browse-vault', 'audit-vault', 'graph-vault', 'facts-vault', 'ingest-vault'];
   selectors.forEach(id => {
     const sel = document.getElementById(id);
     if (!sel) return;
@@ -222,6 +234,13 @@ function switchPage(name) {
   // Lazy load
   if (name === 'browse') loadBrowse();
   if (name === 'audit') loadAudit();
+  if (name === 'review') loadReview();
+  if (name === 'facts') loadFacts();
+  if (name === 'debt') loadDebt();
+  if (name === 'gaps') loadGaps();
+  if (name === 'agents') loadAgents();
+  if (name === 'ingest') loadIngest();
+  if (name === 'vaultadmin') loadVaultAdmin();
   if (name === 'graph') {
     state.activeVault = document.getElementById('graph-vault').value || state.activeVault;
   }
@@ -723,7 +742,268 @@ function renderGraphCanvas(data) {
   `;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
+// ── Review Queue (promoted from dashboard.html) ──────────────────────────────
+async function loadReview() {
+  const container = document.getElementById('review-list');
+  const statsContainer = document.getElementById('review-stats');
+  renderLoading(container, 'Loading review queue…');
+  renderLoading(statsContainer, '');
+
+  try {
+    const [stats, entries] = await Promise.all([
+      apiJSON('/v1/review/stats'),
+      apiJSON('/v1/review'),
+    ]);
+    state.reviewStats = stats;
+    state.reviewEntries = entries.entries || [];
+
+    renderReviewStats(stats);
+    renderReviewList(state.reviewEntries);
+  } catch (err) {
+    renderError(container, `Review queue failed: ${err.message}`, loadReview);
+    if (statsContainer) statsContainer.innerHTML = '';
+  }
+}
+
+function renderReviewStats(stats) {
+  const container = document.getElementById('review-stats');
+  if (!stats || !stats.total_needs_review) {
+    renderEmpty(container, 'No items pending review', 'All facts are confirmed or resolved.');
+    return;
+  }
+  let html = '<div class="card-grid" style="margin-bottom:1rem">';
+  html += `<div class="card"><h3>Pending</h3><div class="value">${stats.total_needs_review}</div></div>`;
+  if (stats.by_reason) {
+    for (const [reason, count] of Object.entries(stats.by_reason)) {
+      html += `<div class="card"><h3>${reason}</h3><div class="value">${count}</div></div>`;
+    }
+  }
+  if (stats.avg_pending_days) {
+    html += `<div class="card"><h3>Avg Age</h3><div class="value">${stats.avg_pending_days.toFixed(1)}d</div></div>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderReviewList(entries) {
+  const container = document.getElementById('review-list');
+  if (!entries.length) {
+    renderEmpty(container, 'No review items', 'All facts are in good standing.');
+    return;
+  }
+  let html = '';
+  entries.forEach(e => {
+    const reasons = (e.review_reasons || []).map(r => r.type || r).join(', ');
+    html += `<div class="card result-item">
+      <div class="source">${escapeHtml(e.key)}</div>
+      <div class="score">Confidence: ${(e.confidence * 100).toFixed(0)}%</div>
+      <div class="preview">${escapeHtml(e.value || '').slice(0, 200)}</div>
+      ${reasons ? `<div class="links">Flagged: ${escapeHtml(reasons)}</div>` : ''}
+    </div>`;
+  });
+  container.innerHTML = html;
+}
+
+// ── Facts Manager ────────────────────────────────────────────────────────────
+async function loadFacts() {
+  const container = document.getElementById('facts-list');
+  renderLoading(container, 'Loading facts…');
+
+  try {
+    const vault = document.getElementById('facts-vault').value;
+    const url = vault ? `/vault/${vault}/v1/facts?limit=50` : '/v1/facts?limit=50';
+    const data = await apiJSON(url);
+    const entries = data.entries || [];
+    if (!entries.length) {
+      renderEmpty(container, 'No facts found', 'Create a fact via POST /v1/facts or from an agent session.');
+      return;
+    }
+    let html = '';
+    entries.forEach(e => {
+      html += `<div class="card result-item" style="cursor:pointer" onclick="showFactDetail('${escapeHtml(e.key)}')">
+        <div class="source">${escapeHtml(e.key)}</div>
+        <div class="score">${(e.confidence * 100).toFixed(0)}% · ${e.status || 'active'}</div>
+        <div class="preview">${escapeHtml(e.value || '').slice(0, 300)}</div>
+        ${e.source ? `<div class="links">Source: ${escapeHtml(e.source)}</div>` : ''}
+      </div>`;
+    });
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Facts failed: ${err.message}`, loadFacts);
+  }
+}
+
+async function showFactDetail(key) {
+  const container = document.getElementById('fact-detail');
+  renderLoading(container, 'Loading fact detail…');
+  try {
+    const [detail, provenance] = await Promise.all([
+      apiJSON(`/v1/facts?key=${encodeURIComponent(key)}`),
+      apiJSON(`/v1/facts/${encodeURIComponent(key)}/provenance`).catch(() => null),
+    ]);
+    const entry = detail.entries && detail.entries[0];
+    if (!entry) {
+      renderEmpty(container, 'Fact not found');
+      return;
+    }
+    let html = '<div class="card"><h3 style="color:#58a6ff">' + escapeHtml(entry.key) + '</h3>';
+    html += '<p>' + escapeHtml(entry.value) + '</p>';
+    html += '<p style="color:#8b949e;font-size:0.85rem">Confidence: ' + (entry.confidence * 100).toFixed(0) + '% | Status: ' + (entry.status || 'active') + ' | Version: ' + (entry.version || 0) + '</p>';
+    if (entry.source) html += '<p style="color:#8b949e;font-size:0.85rem">Source: ' + escapeHtml(entry.source) + '</p>';
+    if (entry.created_at) html += '<p style="color:#8b949e;font-size:0.85rem">Created: ' + escapeHtml(entry.created_at) + '</p>';
+    if (provenance && provenance.source) {
+      html += '<p style="color:#8b949e;font-size:0.85rem">Lineage: ' + escapeHtml(provenance.source) + ' (' + escapeHtml(provenance.source_type || 'manual') + ')</p>';
+    }
+    if (entry.tags && entry.tags.length) {
+      html += '<p style="color:#8b949e;font-size:0.85rem">Tags: ' + entry.tags.map(t => '<span class="mini-tag">' + escapeHtml(t) + '</span>').join(' ') + '</p>';
+    }
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Fact detail failed: ${err.message}`, () => showFactDetail(key));
+  }
+}
+
+// ── Knowledge Debt ───────────────────────────────────────────────────────────
+async function loadDebt() {
+  const container = document.getElementById('debt-content');
+  renderLoading(container, 'Assessing knowledge debt…');
+
+  try {
+    const data = await apiJSON('/v1/debt');
+    let html = '';
+
+    html += `<div class="card"><h3>Vaults</h3><div class="value">${data.vault_count || 0}</div><div class="sub">configured</div></div>`;
+    html += `<div class="card"><h3>Files</h3><div class="value">${data.total_files || 0}</div><div class="sub">indexed</div></div>`;
+    html += `<div class="card"><h3>Chunks</h3><div class="value">${data.total_chunks || 0}</div><div class="sub">total</div></div>`;
+    html += `<div class="card"><h3>Pending Review</h3><div class="value">${data.review_queue_size || 0}</div><div class="sub">items</div></div>`;
+
+    if (data.review_by_reason) {
+      for (const [reason, count] of Object.entries(data.review_by_reason)) {
+        html += `<div class="card"><h3>${reason}</h3><div class="value">${count}</div><div class="sub">flagged</div></div>`;
+      }
+    }
+
+    if (data.pruner) {
+      html += `<div class="card"><h3>Pruner</h3><div class="value">${data.pruner.enabled ? 'On' : 'Off'}</div><div class="sub">${data.pruner.enabled ? (data.pruner.last_scan || 'active') : 'disabled'}</div></div>`;
+    }
+
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Debt assessment failed: ${err.message}`, loadDebt);
+  }
+}
+
+// ── Knowledge Gaps ───────────────────────────────────────────────────────────
+async function loadGaps() {
+  const container = document.getElementById('gaps-content');
+  renderLoading(container, 'Analyzing coverage…');
+
+  try {
+    const data = await apiJSON('/v1/gaps');
+    const gaps = data.poorly_covered || [];
+    if (!gaps.length) {
+      renderEmpty(container, 'No coverage gaps detected', 'All vaults have adequate coverage.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    gaps.forEach(g => {
+      html += `<div class="card"><h3>${escapeHtml(g.vault)}</h3><div class="value">${g.files}</div><div class="sub">files · ${g.chunks} chunks · severity: ${g.severity}</div></div>`;
+    });
+    html += '</div>';
+    if (data.recommendations && data.recommendations.length) {
+      html += '<div class="card" style="margin-top:1rem"><h3>Recommendations</h3><ul>';
+      data.recommendations.forEach(r => { html += '<li>' + escapeHtml(r) + '</li>'; });
+      html += '</ul></div>';
+    }
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Gap analysis failed: ${err.message}`, loadGaps);
+  }
+}
+
+// ── Agent Heatmap ────────────────────────────────────────────────────────────
+async function loadAgents() {
+  const container = document.getElementById('agents-content');
+  renderLoading(container, 'Loading agent stats…');
+
+  try {
+    const data = await apiJSON('/v1/agents/stats');
+    const agents = data.agents || [];
+    if (!agents.length) {
+      renderEmpty(container, 'No agent data', 'No agents have written facts yet.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    agents.forEach(a => {
+      html += `<div class="card"><h3>${escapeHtml(a.agent)}</h3>
+        <div class="value">${a.facts_written}</div><div class="sub">facts written</div>
+        <div style="color:#8b949e;font-size:0.85rem">Avg confidence: ${(a.avg_confidence * 100).toFixed(0)}%</div>
+        <div style="color:#8b949e;font-size:0.85rem">Flag rate: ${a.flag_rate_pct.toFixed(1)}%</div></div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Agent stats failed: ${err.message}`, loadAgents);
+  }
+}
+
+// ── Ingest Log ───────────────────────────────────────────────────────────────
+async function loadIngest() {
+  const container = document.getElementById('ingest-list');
+  renderLoading(container, 'Loading ingest log…');
+
+  try {
+    const vault = document.getElementById('ingest-vault').value;
+    const url = vault ? `/vault/${vault}/v1/logs?limit=50` : '/v1/logs?limit=50';
+    const data = await apiJSON(url);
+    const entries = data.entries || [];
+    if (!entries.length) {
+      renderEmpty(container, 'No log entries', 'Ingest activity will appear here as agents interact.');
+      return;
+    }
+    let html = '';
+    entries.forEach(e => {
+      html += `<div class="card result-item">
+        <div class="source">${escapeHtml(e.agent || 'system')}</div>
+        <div class="score">${e.type || 'info'}</div>
+        <div class="preview">${escapeHtml(e.body || '').slice(0, 300)}</div>
+        <div class="links">${escapeHtml(e.timestamp || '')}</div>
+      </div>`;
+    });
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Ingest log failed: ${err.message}`, loadIngest);
+  }
+}
+
+// ── Vault Admin ──────────────────────────────────────────────────────────────
+async function loadVaultAdmin() {
+  const container = document.getElementById('vaultadmin-content');
+  renderLoading(container, 'Loading vault info…');
+
+  try {
+    const data = await apiJSON('/vaults');
+    const vaults = data.vaults || [];
+    if (!vaults.length) {
+      renderEmpty(container, 'No vaults configured', 'Create a vault to get started.');
+      return;
+    }
+    let html = '<div class="card-grid">';
+    vaults.forEach(v => {
+      html += `<div class="card"><h3>${escapeHtml(v.name)}</h3>
+        <div class="value">${v.indexed_files || 0}</div><div class="sub">files · ${v.total_chunks || 0} chunks</div>
+        <div style="color:#8b949e;font-size:0.85rem">Path: ${escapeHtml(v.path || '')}</div>
+        <div style="color:#8b949e;font-size:0.85rem">${v.last_indexed ? 'Last indexed: ' + escapeHtml(v.last_indexed) : 'Not indexed yet'}</div>
+        ${v.indexing ? '<div style="color:#7ee787">Indexing in progress…</div>' : ''}
+      </div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Vault admin failed: ${err.message}`, loadVaultAdmin);
+  }
+}
 function escapeHtml(s) {
   if (!s) return '';
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
