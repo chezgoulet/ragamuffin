@@ -1308,6 +1308,7 @@ All global endpoints have vault-scoped variants under `/vault/{name}/`:
 | `POST /vault/{name}/inbox` | `/inbox` |
 | `GET,DELETE /vault/{name}/inbox/{id}` | `/inbox/{id}` |
 | `POST /vault/{name}/v1/verify` | `/v1/verify` |
+| `GET,DELETE /vault/{name}/v1/chunks` | `/v1/chunks` |
 | `GET /vault/{name}/v1/facts/{key}/provenance` | `/v1/facts/{key}/provenance` |
 | `GET /vault/{name}/v1/facts/{key}/history` | `/v1/facts/{key}/history` |
 

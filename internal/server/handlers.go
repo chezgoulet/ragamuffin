@@ -906,6 +906,137 @@ func (s *Server) handleChunkGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+// ── /vault/{name}/v1/chunks — Chunk listing and pruning (#790) ───────────────
+
+type chunkSummary struct {
+	ChunkID         string `json:"chunk_id"`
+	SourceFile      string `json:"source_file"`
+	Header          string `json:"header"`
+	ChunkIndex      int    `json:"chunk_index"`
+	FileLastUpdated string `json:"file_last_updated"`
+}
+
+func (s *Server) handleChunksList(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		s.handleChunksListGET(w, r)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		s.handleChunksDelete(w, r)
+		return
+	}
+	writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET and DELETE are accepted")
+}
+
+func (s *Server) handleChunksListGET(w http.ResponseWriter, r *http.Request) {
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	limit := uint32(100)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 && v <= 500 {
+			limit = uint32(v)
+		}
+	}
+
+	ctx := r.Context()
+	chunks := make([]chunkSummary, 0)
+
+	points, _, err := qc.Scroll(ctx, limit, nil)
+	if err != nil {
+		writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
+		return
+	}
+	for _, p := range points {
+		payload := p.GetPayload()
+		c := chunkSummary{
+			ChunkID: p.Id.GetUuid(),
+		}
+		if v, ok := payload["source_file"]; ok { c.SourceFile = v.GetStringValue() }
+		if v, ok := payload["header"]; ok { c.Header = v.GetStringValue() }
+		if v, ok := payload["chunk_index"]; ok { c.ChunkIndex = int(v.GetIntegerValue()) }
+		if v, ok := payload["file_last_updated"]; ok { c.FileLastUpdated = v.GetStringValue() }
+		chunks = append(chunks, c)
+	}
+
+	if chunks == nil {
+		chunks = []chunkSummary{}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"vault":  vaultName,
+		"count":  len(chunks),
+		"chunks": chunks,
+	})
+}
+
+func (s *Server) handleChunksDelete(w http.ResponseWriter, r *http.Request) {
+	vaultName := vaultNameFromRequest(r)
+	if vaultName == "" {
+		vaultName = "default"
+	}
+
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	ctx := r.Context()
+
+	// Build filter from query params
+	source := r.URL.Query().Get("source")
+	var filter *pb.Filter
+	if source != "" {
+		filter = &pb.Filter{
+			Must: []*pb.Condition{
+				{
+					ConditionOneOf: &pb.Condition_Field{
+						Field: &pb.FieldCondition{
+							Key: "source_file",
+							Match: &pb.Match{
+								MatchValue: &pb.Match_Keyword{Keyword: source},
+							},
+						},
+					},
+				},
+			},
+		}
+	}
+	// If no source filter, require confirm=true
+	if filter == nil {
+		confirm := r.URL.Query().Get("confirm")
+		if confirm != "true" {
+			writeError(w, 400, "INVALID_REQUEST", "bulk delete without source filter requires confirm=true")
+			return
+		}
+	}
+
+	before := qc.Collection()
+	if err := qc.DeleteFiltered(ctx, before, filter); err != nil {
+		writeError(w, 502, "DELETE_FAILED", fmt.Sprintf("delete failed: %v", err))
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"deleted": true,
+		"vault":   vaultName,
+	})
+}
+
 // ── /ask ───────────────────────────────────────────────────────────────────────
 
 type askRequest struct {

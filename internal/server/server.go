@@ -121,6 +121,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/debt", 10)
 	rl.SetLimit("/v1/gaps", 10)
 	rl.SetLimit("/v1/agents/stats", 10)
+	rl.SetLimit("/v1/chunks", 30)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -190,6 +191,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.handleVaultVerify))))
+		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.handleChunksList))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleProvenance))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactHistory))))
 	} else {
@@ -221,6 +223,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.requireVaultName(vaultName, s.handleVaultVerify)))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleProvenance)))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleFactHistory)))))
+		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.requireVaultName(vaultName, s.handleChunksList)))))
 
 	}
 
@@ -266,8 +269,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/links/backlinks", s.withRequestID(s.withRateLimit("/v1/links", s.handleBacklinks)))
 	mux.HandleFunc("/v1/links/graph", s.withRequestID(s.withRateLimit("/v1/links", s.handleLinkGraph)))
 
-	// Chunk retrieval
+	// Chunk retrieval + list (#790)
 	mux.HandleFunc("/v1/chunks/{chunk_id}", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunkGet))))
+	mux.HandleFunc("/v1/chunks", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/chunks", s.handleChunksList))))
 
 	// Review queue (stats MUST be registered before the prefix match)
 	mux.HandleFunc("/v1/review/stats", s.withRequestID(s.withRateLimit("/v1/review", s.handleReviewStats)))
