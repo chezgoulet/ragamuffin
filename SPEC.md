@@ -787,6 +787,47 @@ Review queue statistics. Returns counts broken down by reason type and source ty
 
 ---
 
+### `/v1/verify` — POST
+
+Knowledge validation endpoint. Accepts a fact statement and returns validation results from the vault — whether it checks out against existing knowledge, conflicts, or needs more context. Optionally uses LLM synthesis for conflict resolution summary.
+
+**Request:**
+```json
+{
+  "fact": "All engineers must use 2FA",
+  "top_k": 10
+}
+```
+
+| Field | Type | Required | Default | Notes |
+|-------|------|----------|---------|-------|
+| `fact` | string | yes | — | The fact statement to validate |
+| `top_k` | integer | no | 10 | Max sources to retrieve (1–50) |
+
+**Response:**
+```json
+{
+  "status": "confirmed",
+  "supporting_sources": [
+    {"source_file": "policies/security.md", "text": "2FA is mandatory for all engineering staff...", "score": 0.87}
+  ],
+  "conflicting_sources": [],
+  "confidence": 1.0,
+  "conflict_summary": "",
+  "llm_used": false
+}
+```
+
+| Status | Meaning |
+|--------|---------|
+| `confirmed` | More supporting than conflicting evidence |
+| `conflicts` | Conflicting or borderline evidence exists; `conflict_summary` populated when LLM is configured |
+| `insufficient_data` | No semantically similar chunks found |
+
+Routes: `POST /v1/verify` (global) and `POST /vault/{name}/v1/verify` (vault-scoped).
+
+---
+
 ### `/v1/ingest` — POST
 
 Ingest a document or observation into the vault. Chunks are created, embedded, and stored in Qdrant. Requires write access.
@@ -1233,6 +1274,7 @@ All global endpoints have vault-scoped variants under `/vault/{name}/`:
 | `GET /vault/{name}/graph` | `/graph` |
 | `POST /vault/{name}/inbox` | `/inbox` |
 | `GET,DELETE /vault/{name}/inbox/{id}` | `/inbox/{id}` |
+| `POST /vault/{name}/v1/verify` | `/v1/verify` |
 
 ---
 

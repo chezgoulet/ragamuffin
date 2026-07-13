@@ -7,16 +7,139 @@ const state = {
   browseTree: {},
   auditData: null,
   graphData: null,
+  online: true,
 };
+
+// ── Engineering Standard: fetch wrapper (#812) ──────────────────────────────────
+// Every API call goes through apiFetch: retry with exponential backoff, per-attempt
+// timeout, circuit breaker per endpoint, and offline detection. See
+// ENGINEERING-STANDARD.md for the contract every view must satisfy.
+const RETRY_ATTEMPTS = 3;
+const RETRY_BACKOFF_MS = [1000, 2000, 4000];
+const ATTEMPT_TIMEOUT_MS = 10000;
+const CIRCUIT_THRESHOLD = 3;
+
+const circuitFailures = {}; // endpoint -> consecutive failure count
+
+function circuitKey(url) {
+  // Collapse dynamic path segments so the breaker tracks logical endpoints.
+  return url.split('?')[0].replace(/\/[0-9a-f-]{8,}/gi, '/{id}');
+}
+
+async function apiFetch(url, options = {}) {
+  const key = circuitKey(url);
+  if ((circuitFailures[key] || 0) >= CIRCUIT_THRESHOLD) {
+    throw new ApiError(`endpoint temporarily unavailable (circuit open): ${key}`, 0, true);
+  }
+
+  let lastErr;
+  for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ATTEMPT_TIMEOUT_MS);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (res.status >= 500) {
+        throw new ApiError(`HTTP ${res.status}`, res.status, false);
+      }
+      circuitFailures[key] = 0;
+      setOnline(true);
+      return res;
+    } catch (err) {
+      clearTimeout(timer);
+      lastErr = err;
+      const isLast = attempt === RETRY_ATTEMPTS - 1;
+      // Client errors (4xx) surface immediately without retry.
+      if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+        throw err;
+      }
+      if (isLast) break;
+      await sleep(RETRY_BACKOFF_MS[attempt] || 4000);
+    }
+  }
+  circuitFailures[key] = (circuitFailures[key] || 0) + 1;
+  if (circuitFailures[key] >= CIRCUIT_THRESHOLD) setOnline(false);
+  throw lastErr instanceof ApiError ? lastErr : new ApiError(String(lastErr && lastErr.message || lastErr), 0, false);
+}
+
+// apiJSON fetches and parses JSON, surfacing structured backend errors.
+async function apiJSON(url, options) {
+  const res = await apiFetch(url, options);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new ApiError(data.message || `HTTP ${res.status}`, res.status, false);
+  }
+  return data;
+}
+
+class ApiError extends Error {
+  constructor(message, status, circuitOpen) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status || 0;
+    this.circuitOpen = !!circuitOpen;
+  }
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ── State rendering helpers (loading / empty / error) ───────────────────────────
+function renderLoading(container, label = 'Loading…') {
+  container.innerHTML = `<div class="state state-loading" role="status" aria-live="polite">
+    <div class="spinner" aria-hidden="true"></div><span>${escapeHtml(label)}</span></div>`;
+}
+
+function renderEmpty(container, message, hint = '') {
+  container.innerHTML = `<div class="state state-empty" role="status">
+    <p class="state-msg">${escapeHtml(message)}</p>
+    ${hint ? `<p class="state-hint">${escapeHtml(hint)}</p>` : ''}</div>`;
+}
+
+function renderError(container, message, onRetry) {
+  container.innerHTML = `<div class="state state-error" role="alert">
+    <p class="state-msg">${escapeHtml(message)}</p>
+    <button class="retry-btn" type="button" aria-label="Retry">Retry</button></div>`;
+  const btn = container.querySelector('.retry-btn');
+  if (btn && onRetry) btn.addEventListener('click', onRetry);
+}
+
+// ── Offline detection ───────────────────────────────────────────────────────────
+function setOnline(online) {
+  if (state.online === online) return;
+  state.online = online;
+  const banner = document.getElementById('offline-banner');
+  if (banner) banner.hidden = online;
+}
+
+function initOfflineDetection() {
+  window.addEventListener('offline', () => setOnline(false));
+  window.addEventListener('online', () => setOnline(true));
+  // Periodic health probe to detect server-side outages navigator.onLine misses.
+  setInterval(async () => {
+    try {
+      const res = await fetch('/health', { signal: AbortSignal.timeout(5000) });
+      setOnline(res.ok);
+    } catch { setOnline(false); }
+  }, 30000);
+}
 
 // ── Init ───────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  initOfflineDetection();
+
   // Load vaults
   await loadVaults();
 
-  // Tab switching
-  document.querySelectorAll('.tabs button').forEach(btn => {
+  // Tab switching + keyboard navigation (arrow keys move focus, Enter/Space activate)
+  const tabButtons = Array.from(document.querySelectorAll('.tabs button'));
+  tabButtons.forEach((btn, i) => {
     btn.addEventListener('click', () => switchPage(btn.dataset.page));
+    btn.addEventListener('keydown', e => {
+      let target = null;
+      if (e.key === 'ArrowRight') target = tabButtons[(i + 1) % tabButtons.length];
+      else if (e.key === 'ArrowLeft') target = tabButtons[(i - 1 + tabButtons.length) % tabButtons.length];
+      if (target) { e.preventDefault(); target.focus(); switchPage(target.dataset.page); }
+    });
   });
 
   // Search
@@ -38,8 +161,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadVaults() {
   try {
-    const res = await fetch('/vaults');
-    const data = await res.json();
+    const data = await apiJSON('/vaults');
     state.vaults = data.vaults || [];
     populateVaultSelectors();
   } catch (err) {
@@ -69,8 +191,11 @@ function switchPage(name) {
   state.page = name;
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   document.getElementById(`page-${name}`).classList.add('active');
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
-  document.querySelector(`.tabs button[data-page="${name}"]`).classList.add('active');
+  document.querySelectorAll('.tabs button').forEach(b => {
+    const active = b.dataset.page === name;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
 
   // Lazy load
   if (name === 'browse') loadBrowse();
@@ -86,16 +211,14 @@ async function doSearch() {
   if (!query) return;
   const vault = document.getElementById('search-vault').value;
   const container = document.getElementById('search-results');
-  container.innerHTML = '<div class="loading">Searching...</div>';
+  renderLoading(container, 'Searching…');
 
   try {
     const url = vault ? `/vault/${vault}/recall?query=${encodeURIComponent(query)}` : `/recall?query=${encodeURIComponent(query)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiJSON(url);
     renderSearchResults(data);
   } catch (err) {
-    container.innerHTML = `<div class="error">Search failed: ${err.message}</div>`;
+    renderError(container, `Search failed: ${err.message}`, doSearch);
   }
 }
 
@@ -103,7 +226,7 @@ function renderSearchResults(data) {
   const container = document.getElementById('search-results');
   const results = data.results || [];
   if (results.length === 0) {
-    container.innerHTML = '<div class="card">No results found.</div>';
+    renderEmpty(container, 'No results found', 'Try a different query or select another vault.');
     return;
   }
   let html = `<div class="card"><div class="value">${results.length}</div><div class="sub">results</div></div>`;
@@ -123,20 +246,20 @@ function renderSearchResults(data) {
 async function loadBrowse() {
   const vault = document.getElementById('browse-vault').value;
   const container = document.getElementById('browse-tree');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  renderLoading(container, 'Loading files…');
 
   try {
     const url = vault ? `/vault/${vault}/graph?limit=100` : '/graph?limit=100';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    if (!data.nodes) { container.innerHTML = '<div class="card">No files indexed.</div>'; return; }
-
-    const files = data.nodes.filter(n => n.type === 'file').map(n => n.label);
+    const data = await apiJSON(url);
+    const files = (data.nodes || []).filter(n => n.type === 'file').map(n => n.label);
+    if (files.length === 0) {
+      renderEmpty(container, 'No files indexed', 'Add files to this vault or trigger a re-index.');
+      return;
+    }
     const dirs = buildDirTree(files);
     container.innerHTML = renderDirTree(dirs);
   } catch (err) {
-    container.innerHTML = `<div class="error">Browse failed: ${err.message}</div>`;
+    renderError(container, `Browse failed: ${err.message}`, loadBrowse);
   }
 }
 
@@ -171,17 +294,22 @@ function renderDirTree(tree, depth = 0) {
 async function loadAudit() {
   const vault = document.getElementById('audit-vault').value;
   const container = document.getElementById('audit-summary');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  const detail = document.getElementById('audit-detail');
+  renderLoading(container, 'Running audit…');
+  if (detail) detail.innerHTML = '';
 
   try {
     const url = vault ? `/vault/${vault}/audit` : '/audit';
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiJSON(url);
     state.auditData = data;
+    const total = (data.staleness || []).length + (data.contradictions || []).length + (data.gaps || []).length;
+    if (total === 0) {
+      renderEmpty(container, 'No issues found', 'This vault is healthy — no stale files, contradictions, or gaps detected.');
+      return;
+    }
     renderAudit(data);
   } catch (err) {
-    container.innerHTML = `<div class="error">Audit failed: ${err.message}</div>`;
+    renderError(container, `Audit failed: ${err.message}`, loadAudit);
   }
 }
 
@@ -222,7 +350,7 @@ async function loadGraph() {
   const entity = document.getElementById('graph-entity').value.trim();
   const depth = document.getElementById('graph-depth').value;
   const container = document.getElementById('graph-viz');
-  container.innerHTML = '<div class="loading">Loading...</div>';
+  renderLoading(container, 'Building graph…');
 
   // Kill any running sim
   if (graphSim) { clearInterval(graphSim); graphSim = null; }
@@ -233,13 +361,15 @@ async function loadGraph() {
     if (entity) params.push(`entity=${encodeURIComponent(entity)}`);
     url += params.join('&');
 
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await apiJSON(url);
     state.graphData = data;
+    if (!(data.nodes || []).length) {
+      renderEmpty(container, 'No graph data', 'This vault has no linked entities yet.');
+      return;
+    }
     renderGraphCanvas(data);
   } catch (err) {
-    container.innerHTML = `<div class="error">Graph failed: ${err.message}</div>`;
+    renderError(container, `Graph failed: ${err.message}`, loadGraph);
   }
 }
 

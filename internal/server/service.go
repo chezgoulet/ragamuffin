@@ -110,6 +110,90 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 	return out, topScore, nil
 }
 
+// doVerify validates a fact statement against the vault (#810).
+// Searches for semantically similar chunks, groups them into supporting vs
+// conflicting, and optionally produces an LLM conflict summary.
+func (s *Server) doVerify(ctx context.Context, req verifyRequest) (verifyResponse, error) {
+	empty := verifyResponse{
+		Status:      "insufficient_data",
+		Confidence:  0,
+		Supporting:  []verifySource{},
+		Conflicting: []verifySource{},
+	}
+
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Fact)
+	if err != nil {
+		return empty, fmt.Errorf("embedding failed: %w", err)
+	}
+
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), 0, "", nil)
+	if err != nil {
+		return empty, fmt.Errorf("search failed: %w", err)
+	}
+
+	if len(results) == 0 {
+		return empty, nil
+	}
+
+	var supporting, conflicting []verifySource
+	scoreThreshold := float32(0.65)
+
+	for _, r := range results {
+		src := verifySource{
+			SourceFile: r.Payload["source_file"].GetStringValue(),
+			Text:       r.Payload["text"].GetStringValue(),
+			Score:      r.Score,
+		}
+		if r.Score >= scoreThreshold {
+			supporting = append(supporting, src)
+		} else {
+			conflicting = append(conflicting, src)
+		}
+	}
+
+	resp := verifyResponse{
+		Supporting:  supporting,
+		Conflicting: conflicting,
+		Confidence:  float64(float32(len(supporting)) / float32(len(results))),
+	}
+
+	switch {
+	case len(supporting) > len(conflicting):
+		resp.Status = "confirmed"
+	case len(conflicting) > 0:
+		resp.Status = "conflicts"
+	default:
+		resp.Status = "insufficient_data"
+	}
+
+	// LLM conflict summary (optional — graceful degradation)
+	if resp.Status == "conflicts" && s.cfg.HasLLM() {
+		synthesizer := s.llmFor(ctx)
+		if synthesizer != nil {
+			var b strings.Builder
+			b.WriteString("Fact to validate: ")
+			b.WriteString(req.Fact)
+			b.WriteString("\n\nConflicting sources:\n")
+			for _, c := range conflicting {
+				fmt.Fprintf(&b, "- %s (score %.2f): %s\n", c.SourceFile, c.Score, c.Text)
+			}
+			b.WriteString("\nSupporting sources:\n")
+			for _, c := range supporting {
+				fmt.Fprintf(&b, "- %s (score %.2f): %s\n", c.SourceFile, c.Score, c.Text)
+			}
+			summary, err := synthesizer.Synthesize(ctx, "Summarize whether this fact is valid given the supporting and conflicting evidence", b.String())
+			if err == nil {
+				resp.ConflictSummary = summary
+				resp.LLMUsed = true
+			} else {
+				s.logger.Warn("verify: LLM conflict summary failed", "error", err)
+			}
+		}
+	}
+
+	return resp, nil
+}
+
 // ── Ask / Synthesis ────────────────────────────────────────────────────────────
 
 // doAsk handles the full ask pipeline: retrieval + LLM synthesis.

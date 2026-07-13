@@ -510,9 +510,34 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
     # -- Availability check -------------------------------------------------
 
+    @staticmethod
+    def _config_file_path() -> str:
+        """Resolve the path to the optional Ragamuffin JSON config file.
+
+        Honors ``RAGAMUFFIN_CONFIG`` first, then falls back to
+        ``$HERMES_HOME/ragamuffin.json``. Returns ``""`` when none is set or
+        the file does not exist.
+        """
+        config_path = os.environ.get("RAGAMUFFIN_CONFIG", "")
+        if not config_path:
+            hermes_home = os.environ.get("HERMES_HOME", "")
+            if hermes_home:
+                config_path = os.path.join(hermes_home, "ragamuffin.json")
+        if config_path and os.path.exists(config_path):
+            return config_path
+        return ""
+
     def is_available(self) -> bool:
-        """Return True if Ragamuffin endpoint is configured."""
-        return bool(os.environ.get("RAGAMUFFIN_ENDPOINT"))
+        """Return True if Ragamuffin is configured.
+
+        Configured means either ``RAGAMUFFIN_ENDPOINT`` is set, or a valid
+        config file exists at ``RAGAMUFFIN_CONFIG`` / ``$HERMES_HOME/ragamuffin.json``.
+        Previously only the env var was checked, so config-file-only setups
+        silently never registered (#781).
+        """
+        if os.environ.get("RAGAMUFFIN_ENDPOINT"):
+            return True
+        return bool(self._config_file_path())
 
     # -- Config schema (for `hermes memory setup`) --------------------------
 
@@ -831,6 +856,24 @@ class RagamuffinMemoryProvider(MemoryProvider):
         # Honor pre-set _requests (e.g. from tests); otherwise lazy-import
         if self._requests is None:
             self._requests = _get_requests()
+
+        # Issue #786 — warn loudly when the provider is configured but the
+        # endpoint is missing and no config file resolves. Without this the
+        # plugin silently falls back to the built-in backend with zero signal.
+        if not self._endpoint:
+            cfg_file = self._config_file_path()
+            if cfg_file:
+                logger.warning(
+                    "[Ragamuffin] provider=ragamuffin but endpoint not set; "
+                    "will load from config file %s",
+                    cfg_file,
+                )
+            else:
+                logger.warning(
+                    "[Ragamuffin] provider=ragamuffin but tools cannot load: "
+                    "missing RAGAMUFFIN_ENDPOINT and no config file at "
+                    "RAGAMUFFIN_CONFIG or $HERMES_HOME/ragamuffin.json"
+                )
 
         if self._requests is None:
             logger.warning(

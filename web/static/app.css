@@ -62,3 +62,37 @@ form { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
 pre { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; }
 .error { color: #f85149; }
 .loading { color: #8b949e; font-style: italic; }
+
+/* ── Engineering Standard: state views (#812) ─────────────────────────────────── */
+.state { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.75rem; padding: 2.5rem 1rem; text-align: center; color: #8b949e; }
+.state-msg { font-size: 1rem; color: #e1e4e8; }
+.state-hint { font-size: 0.85rem; color: #8b949e; max-width: 32rem; }
+.state-error .state-msg { color: #f85149; }
+.state-loading { flex-direction: row; }
+.spinner { width: 1.1rem; height: 1.1rem; border: 2px solid #30363d; border-top-color: #58a6ff;
+  border-radius: 50%; animation: spin 0.7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.retry-btn { background: #1f6feb; border-color: #388bfd; }
+.retry-btn:hover { background: #388bfd; }
+
+/* Offline banner */
+#offline-banner {
+  background: #7d1a1a; color: #ffdcd7; text-align: center; padding: 0.5rem 1rem;
+  font-size: 0.9rem; border-bottom: 1px solid #f85149;
+}
+
+/* Accessibility: visible focus ring meeting WCAG AA contrast */
+a:focus-visible, button:focus-visible, input:focus-visible,
+select:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid #58a6ff; outline-offset: 2px;
+}
+.tabs button:focus-visible { outline-offset: -2px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+@media (prefers-contrast: more) {
+  body { background: #000; color: #fff; }
+  .card, .result-item, #graph-viz, pre { border-color: #fff; }
+}

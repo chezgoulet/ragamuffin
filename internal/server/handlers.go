@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1015,20 +1016,38 @@ type auditRequest struct {
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, 405, "INVALID_REQUEST", "method not allowed")
+	if r.Method != http.MethodGet && r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
 	var req auditRequest
-	r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		if err.Error() == "http: request body too large" {
-			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
-		} else {
-			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+	// GET requests (used by the web UI) run the default check set with no body.
+	// Optional query parameters allow tuning without a JSON payload.
+	if r.Method == http.MethodGet {
+		if v := r.URL.Query().Get("stale_days"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				req.StaleDays = n
+			}
 		}
-		return
+		if v := r.URL.Query().Get("checks"); v != "" {
+			req.Checks = strings.Split(v, ",")
+		}
+		if v := r.URL.Query().Get("sample_size"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				req.SampleSize = n
+			}
+		}
+	} else {
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024) // 64 KB
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+			if err.Error() == "http: request body too large" {
+				writeError(w, 413, "INVALID_REQUEST", "request body exceeds 64 KB limit")
+			} else {
+				writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+			}
+			return
+		}
 	}
 	if req.StaleDays <= 0 {
 		req.StaleDays = 90
@@ -1126,6 +1145,16 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// UI-friendly aliases: the web UI reads staleness/contradictions/gaps.
+	if v, ok := resp["stale_files"]; ok {
+		resp["staleness"] = v
+	}
+	if v, ok := resp["semantic_conflicts"]; ok {
+		resp["contradictions"] = v
+	} else if v, ok := resp["fact_conflicts"]; ok {
+		resp["contradictions"] = v
+	}
+
 	writeJSON(w, 200, resp)
 }
 
@@ -1211,6 +1240,67 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		"vault":   vaultName,
 		"message": "Re-index started. Monitor progress via /health.",
 	})
+}
+
+// ── /v1/verify — Knowledge Validation (#810) ──────────────────────────────────
+
+type verifyRequest struct {
+	Fact string `json:"fact"`
+	TopK int    `json:"top_k"`
+}
+
+type verifySource struct {
+	SourceFile string  `json:"source_file"`
+	Text       string  `json:"text"`
+	Score      float32 `json:"score"`
+}
+
+type verifyResponse struct {
+	Status          string         `json:"status"`
+	Supporting      []verifySource `json:"supporting_sources"`
+	Conflicting     []verifySource `json:"conflicting_sources"`
+	Confidence      float64        `json:"confidence"`
+	ConflictSummary string         `json:"conflict_summary,omitempty"`
+	LLMUsed         bool           `json:"llm_used"`
+}
+
+func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only POST is accepted")
+		return
+	}
+
+	var req verifyRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 256*1024)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err.Error() == "http: request body too large" {
+			writeError(w, 413, "INVALID_REQUEST", "request body exceeds 256 KB limit")
+		} else {
+			writeError(w, 400, "INVALID_REQUEST", "invalid JSON body")
+		}
+		return
+	}
+	if req.Fact == "" {
+		writeError(w, 400, "INVALID_REQUEST", "fact is required")
+		return
+	}
+	if req.TopK <= 0 {
+		req.TopK = 10
+	}
+	if req.TopK > 50 {
+		req.TopK = 50
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	resp, err := s.doVerify(ctx, req)
+	if err != nil {
+		writeError(w, 502, "VERIFY_ERROR", err.Error())
+		return
+	}
+
+	writeJSON(w, 200, resp)
 }
 
 // ── Temporal recall helpers ────────────────────────────────────────────────

@@ -117,6 +117,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 	rl.SetLimit("/v1/pruner/auto-tune", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/pruner/config", cfg.RateLimitAudit)
 	rl.SetLimit("/v1/review", cfg.RateLimitReview)
+	rl.SetLimit("/v1/verify", 30)
 
 	// Ensure payload indexes for facts lifecycle queries
 	s.ensureFactIndexes()
@@ -185,6 +186,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/hybrid", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/hybrid", s.handleHybrid))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
+		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.handleVaultVerify))))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -211,6 +213,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/briefing", s.withRequestID(s.withVault(s.withRateLimit("/v1/briefing", s.requireVaultName(vaultName, s.handleBriefing)))))
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
+		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.requireVaultName(vaultName, s.handleVaultVerify)))))
 
 	}
 
@@ -267,6 +270,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
 	mux.HandleFunc("/v1/ingest/conversation", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngestConversation)))
 	mux.HandleFunc("/v1/documents", s.withRequestID(s.withRateLimit("/v1/documents", s.handleDocuments)))
+
+	// Verify — fact validation (#810)
+	mux.HandleFunc("/v1/verify", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/verify", s.handleVerify))))
 
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))
@@ -780,6 +786,10 @@ func (s *Server) handleVaultLogs(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleVaultSnapshot(w http.ResponseWriter, r *http.Request) {
 	s.handleSnapshot(w, r)
+}
+
+func (s *Server) handleVaultVerify(w http.ResponseWriter, r *http.Request) {
+	s.handleVerify(w, r)
 }
 
 // ── /vaults ─────────────────────────────────────────────────────────────────────

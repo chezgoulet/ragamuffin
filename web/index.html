@@ -7,16 +7,19 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
-<nav id="topnav">
+<div id="offline-banner" role="alert" hidden>You are offline — showing cached data where available.</div>
+<a class="sr-only" href="#main-content">Skip to content</a>
+<nav id="topnav" aria-label="Primary">
   <span class="logo">ragamuffin</span>
-  <div class="tabs">
-    <button data-page="search" class="active">Search</button>
-    <button data-page="browse">Browse</button>
-    <button data-page="audit">Audit</button>
-    <button data-page="graph">Graph</button>
+  <div class="tabs" role="tablist" aria-label="Sections">
+    <button data-page="search" class="active" role="tab" aria-selected="true" aria-controls="page-search">Search</button>
+    <button data-page="browse" role="tab" aria-selected="false" aria-controls="page-browse">Browse</button>
+    <button data-page="audit" role="tab" aria-selected="false" aria-controls="page-audit">Audit</button>
+    <button data-page="graph" role="tab" aria-selected="false" aria-controls="page-graph">Graph</button>
   </div>
   <span id="vault-select"></span>
 </nav>
+<span id="main-content"></span>
 
 <main id="page-search" class="page active">
   <h2>Search</h2>
