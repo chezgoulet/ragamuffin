@@ -1366,3 +1366,8 @@ async function loadSettings() {
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function escapeHtml(s) {
+  if (s == null) return '';
+  return String(s).replace(/[&<>"']/g, function(ch) {
+    return '&' + {'&':'amp','<':'lt','>':'gt','"':'quot',"'":"#39"}[ch] + ';';
+  });
+}
