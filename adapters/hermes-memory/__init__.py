@@ -398,6 +398,20 @@ REVIEW_RESOLVE_SCHEMA = {
     },
 }
 
+# ragamuffin_status — health introspection (#784)
+STATUS_SCHEMA = {
+    "name": "ragamuffin_status",
+    "description": (
+        "Check Ragamuffin provider health and connectivity. "
+        "Returns server status, tool injection state, vault info, "
+        "and last context refresh turn. Lightweight — no side effects."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+    },
+}
+
 ALL_TOOL_SCHEMAS = [
     RECALL_SCHEMA,
     SEARCH_SCHEMA,
@@ -410,6 +424,7 @@ ALL_TOOL_SCHEMAS = [
     FACT_GRAPH_SCHEMA,
     REVIEW_LIST_SCHEMA,
     REVIEW_RESOLVE_SCHEMA,
+    STATUS_SCHEMA,
 ]
 
 
@@ -1331,10 +1346,17 @@ class RagamuffinMemoryProvider(MemoryProvider):
 
         Returns empty string if context is empty or if recall_mode
         is 'tools' (no auto-injection).
+
+        Includes a refresh marker (#785) so the agent can determine
+        the staleness of the injected context.
         """
         if not context_str or self._recall_mode == "tools":
             return ""
-        return f"<memory-context>\n{context_str}\n</memory-context>"
+        marker = (
+            f"<!-- memory-context refreshed at turn {self._turn_counter} "
+            f"({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}) -->\n"
+        )
+        return marker + f"<memory-context>\n{context_str}\n</memory-context>"
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Return cached layered context from _wrap_context().
@@ -1884,9 +1906,47 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return self._handle_review_list(args)
         elif tool_name == "ragamuffin_review_resolve":
             return self._handle_review_resolve(args)
+        elif tool_name == "ragamuffin_status":
+            return self._handle_status(args)
         raise NotImplementedError(
             f"Ragamuffin provider does not handle tool '{tool_name}'"
         )
+
+    # ragamuffin_status — health introspection (#784)
+    def _handle_status(self, args: Dict[str, Any]) -> str:
+        """Return provider and server health status."""
+        status = {
+            "provider": "ragamuffin",
+            "available": self._available,
+            "endpoint": self._endpoint,
+            "vault": getattr(self, "_agent_vault", ""),
+            "recall_mode": getattr(self, "_recall_mode", "hybrid"),
+            "tools_injected": [s["name"] for s in ALL_TOOL_SCHEMAS],
+            "last_sync_turn": getattr(self, "_turn_counter", 0),
+            "context_cache_turn": getattr(self, "_context_cache_turn", 0),
+        }
+        # Probe server health
+        if self._requests and self._endpoint:
+            try:
+                url = _build_endpoint(self._endpoint, "/health")
+                headers = _build_headers(self._auth_token)
+                resp = self._requests.get(
+                    url, headers=headers, timeout=_REQUEST_TIMEOUT
+                )
+                if resp.status_code == 200:
+                    status["server_health"] = resp.json()
+                else:
+                    status["server_health"] = {
+                        "status": "error",
+                        "code": resp.status_code,
+                    }
+            except Exception as e:
+                status["server_health"] = {"status": "unreachable", "error": str(e)}
+        else:
+            status["server_health"] = {"status": "not_configured"}
+        return json.dumps(status, indent=2)
+
+    # -- Tool call dispatch --
 
     # -- Tool handlers -----------------------------------------------------
 
