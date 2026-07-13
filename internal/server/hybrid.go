@@ -27,6 +27,11 @@ type hybridResult struct {
 // GET /v1/hybrid?query=...&key=...&prefix=...&tag=...&limit=...&top_k=...
 // GET /vault/{name}/v1/hybrid?query=...&key=...&prefix=...&tag=...&limit=...&top_k=...
 func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
 	query := r.URL.Query().Get("query")
 	key := r.URL.Query().Get("key")
 	prefix := r.URL.Query().Get("prefix")
