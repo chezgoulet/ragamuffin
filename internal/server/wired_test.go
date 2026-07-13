@@ -280,6 +280,152 @@ func TestWired_VaultDelete_RemovesVault(t *testing.T) {
 // TestWired_Provenance_ReturnsSourceChain is in facts_test.go since it tests fact domain code.
 // TestWired_FactHistory_ReturnsTimeline is in facts_test.go.
 
+func TestWired_LogsPost_AppendsEntry(t *testing.T) {
+	srv := wiredServer(t, "default")
+	body := jsonBytes(`{"agent":"test","type":"scan","body":"hello"}`)
+	req := httptest.NewRequest("POST", "/v1/logs", body)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWired_LogsGet_ReturnsEntries(t *testing.T) {
+	srv := wiredServer(t, "default")
+	logBody := jsonBytes(`{"agent":"test","type":"scan","body":"hello"}`)
+	srv.handleLogs(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/logs", logBody))
+
+	req := httptest.NewRequest("GET", "/v1/logs?limit=10", nil)
+	w := httptest.NewRecorder()
+	srv.handleLogs(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	entries, _ := resp["entries"].([]interface{})
+	if len(entries) < 1 {
+		t.Errorf("expected at least 1 entry, got %d", len(entries))
+	}
+}
+
+func TestWired_PrunerConfig_ReturnsShape(t *testing.T) {
+	srv := wiredServer(t, "default")
+	req := httptest.NewRequest("GET", "/v1/pruner/config", nil)
+	w := httptest.NewRecorder()
+	srv.handlePrunerConfig(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["enabled"]; !ok {
+		t.Error("expected enabled in response")
+	}
+}
+
+func TestWired_ExtractionStats_Returns503WhenDisabled(t *testing.T) {
+	srv := wiredServer(t, "default")
+	req := httptest.NewRequest("GET", "/v1/extraction/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleExtractionStats(w, req)
+	if w.Code != 503 {
+		t.Fatalf("expected 503 (extractor disabled), got %d", w.Code)
+	}
+}
+
+func TestWired_VaultClear_RequiresConfirm(t *testing.T) {
+	srv := wiredServer(t, "default")
+	body := jsonBytes(`{"confirm":true}`)
+	req := httptest.NewRequest("POST", "/v1/vaults/default/clear", body)
+	w := httptest.NewRecorder()
+	srv.handleVaultClear(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWired_Provenance_ReturnsSourceChain(t *testing.T) {
+	srv := wiredServer(t, "default")
+	factsStore := srv.indexers.GetFactClient("default").(*embeddedstore.Store)
+	preloadFact(t, factsStore, "org/test", "value", "bot", "active", 0.9)
+
+	// Need to set path value for provenance handler
+	req := httptest.NewRequest("GET", "/v1/facts/org/test/provenance", nil)
+	req.SetPathValue("key", "org/test")
+	w := httptest.NewRecorder()
+	srv.handleProvenance(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if key, _ := resp["key"].(string); key != "org/test" {
+		t.Errorf("expected key 'org/test', got %q", key)
+	}
+}
+
+func TestWired_FactHistory_ReturnsTimeline(t *testing.T) {
+	srv := wiredServer(t, "default")
+	factsStore := srv.indexers.GetFactClient("default").(*embeddedstore.Store)
+	preloadFact(t, factsStore, "org/hist", "historic", "bot", "active", 0.9)
+
+	req := httptest.NewRequest("GET", "/v1/facts/org/hist/history", nil)
+	req.SetPathValue("key", "org/hist")
+	w := httptest.NewRecorder()
+	srv.handleFactHistory(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp []interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if len(resp) < 1 {
+		t.Error("expected at least 1 history entry")
+	}
+}
+
+func TestWired_VaultMerge_RejectsSelfMerge(t *testing.T) {
+	srv := wiredServer(t, "default")
+	req := httptest.NewRequest("POST", "/v1/vaults/default/merge/default", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaultMerge(w, req)
+	if w.Code != 400 {
+		t.Fatalf("expected 400 (self-merge), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWired_VaultArchive_ArchivesVault(t *testing.T) {
+	srv := wiredServer(t, "archive-vault")
+	req := httptest.NewRequest("POST", "/v1/vaults/archive-vault/archive", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaultArchive(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if idx := srv.indexers.Get("archive-vault"); idx != nil {
+		t.Error("expected vault to be removed from indexers after archive")
+	}
+}
+
+func TestWired_EmbedProject_ReturnsProjection(t *testing.T) {
+	srv := wiredServer(t, "default")
+	store := srv.indexers.GetClient("default").(*embeddedstore.Store)
+	preloadChunk(t, store, wiredChunkID(t), "docs/test.md", "content for embedding")
+
+	req := httptest.NewRequest("GET", "/v1/embedding/project", nil)
+	w := httptest.NewRecorder()
+	srv.handleEmbedProject(w, req)
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["points"]; !ok {
+		t.Error("expected points in response")
+	}
+}
+
 func jsonBytes(s string) *jsonBytesReader {
 	return &jsonBytesReader{s: s}
 }
