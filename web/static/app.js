@@ -279,6 +279,13 @@ async function doSearch() {
 function renderSearchResults(data) {
   const container = document.getElementById('search-results');
   const results = data.results || [];
+
+  // Track matching source files for graph propagation (#802)
+  state.litNodes = new Set();
+  results.forEach(r => {
+    if (r.source_file) state.litNodes.add(r.source_file);
+  });
+
   if (results.length === 0) {
     renderEmpty(container, 'No results found', 'Try a different query or select another vault.');
     return;
@@ -534,6 +541,7 @@ function renderGraphCanvas(data) {
   }
 
   // Force-directed simulation step
+  let pulsePhase = 0;
   function simulationStep() {
     const W = canvas.width;
     const H = canvas.height;
@@ -650,6 +658,26 @@ function renderGraphCanvas(data) {
       ctx.fillStyle = nodeColor(n);
       if (isDimmed) ctx.globalAlpha = 0.2;
       ctx.fill();
+
+      // Propagation glow (#802): nodes matching search results pulse
+      const propCheck = document.getElementById('graph-propagation');
+      const propMode = propCheck && propCheck.checked;
+      if (propMode && state.litNodes && state.litNodes.has(n.label || n.id)) {
+        pulsePhase = (pulsePhase + 0.05) % (Math.PI * 2);
+        const pulse = 0.3 + Math.sin(pulsePhase) * 0.2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, nodeRadius + 4, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(88, 166, 255, ${pulse})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        // Secondary larger pulse
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, nodeRadius + 8, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(88, 166, 255, ${pulse * 0.5})`;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+
       if (isHovered) {
         ctx.strokeStyle = '#fff';
         ctx.lineWidth = 2;
