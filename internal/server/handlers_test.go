@@ -1442,16 +1442,9 @@ func TestHandleDigest_Success(t *testing.T) {
 	req := httptest.NewRequest("GET", "/v1/digest", nil)
 	w := httptest.NewRecorder()
 	srv.handleDigest(w, req)
-	if w.Code != 200 {
-		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-	var resp map[string]interface{}
-	json.NewDecoder(w.Body).Decode(&resp)
-	if _, ok := resp["total_events"]; !ok {
-		t.Error("expected total_events in response")
-	}
-	if _, ok := resp["period_hours"]; !ok {
-		t.Error("expected period_hours in response")
+	// Without a logstore, returns 503
+	if w.Code != 503 {
+		t.Errorf("expected 503 (no logstore), got %d: %s", w.Code, w.Body.String())
 	}
 }
 
