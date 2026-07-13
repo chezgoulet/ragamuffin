@@ -2038,6 +2038,10 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
+	if s.logStore == nil {
+		writeError(w, 503, "NO_LOGSTORE", "log store is not configured")
+		return
+	}
 	since := time.Now().Add(-24 * time.Hour)
 
 	entries, _, err := s.logStore.List(ctx, logstore.Filter{
