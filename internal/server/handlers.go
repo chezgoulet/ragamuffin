@@ -18,6 +18,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
@@ -631,6 +632,16 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 		} else {
 			s.log(ctx).Warn("links: enrichment failed", "error", err)
 		}
+	}
+
+	// Emit query processed event (#802)
+	if s.emitter != nil {
+		vault := vaultFromContext(r.Context())
+		s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+			Query:   req.Query,
+			Results: len(out),
+			Vault:   vault,
+		})
 	}
 
 	writeJSON(w, 200, resp)

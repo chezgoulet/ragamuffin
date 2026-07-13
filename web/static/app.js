@@ -174,6 +174,20 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Graph
   document.getElementById('graph-load').addEventListener('click', loadGraph);
 
+  // SSE — listen for query processed events (#802) on the existing /events stream
+  try {
+    const es = new EventSource('/events');
+    es.addEventListener('query.processed', function(e) {
+      try {
+        const data = JSON.parse(e.data);
+        if (data && data.subject) {
+          if (!state.litNodes) state.litNodes = new Set();
+          state.litNodes.add(data.subject);
+        }
+      } catch (_) {}
+    });
+  } catch (_) {} // SSE may not be available (file://, old browser)
+
   // Review queue refresh
   const reviewRefresh = document.getElementById('review-refresh');
   if (reviewRefresh) reviewRefresh.addEventListener('click', loadReview);
