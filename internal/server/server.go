@@ -265,6 +265,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// Vault operations — clear, create, list
 	mux.HandleFunc("/v1/vaults/", s.withRequestID(s.handleVaultClear))
+	mux.HandleFunc("DELETE /v1/vaults/{name}", s.withRequestID(s.withQdrant(s.handleVaultDelete)))
 
 	// Ingest — content and conversation ingestion
 	mux.HandleFunc("/v1/ingest", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleIngest)))
@@ -1042,6 +1043,81 @@ func (s *Server) handleVaultClear(w http.ResponseWriter, r *http.Request) {
 		ChunksDeleted:   chunksDeleted,
 		FactsDeleted:    factsDeleted,
 		SessionsDeleted: sessionsDeleted,
+	})
+}
+
+// ── DELETE /v1/vaults/{name} — vault deletion (#789) ──────────────────────────
+
+func (s *Server) handleVaultDelete(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only DELETE is accepted")
+		return
+	}
+
+	vaultName := r.PathValue("name")
+	if vaultName == "" {
+		writeError(w, 400, "INVALID_REQUEST", "vault name is required")
+		return
+	}
+
+	// Prevent deleting the last vault or the default single-tenant vault
+	if !s.cfg.IsMultiTenant() {
+		writeError(w, 403, "FORBIDDEN", "cannot delete vault in single-tenant mode")
+		return
+	}
+
+	// Require write access
+	if claims := auth.ClaimsFromContext(r.Context()); claims != nil && !claims.HasAccess("write") {
+		writeError(w, 403, "FORBIDDEN", "write access required")
+		return
+	}
+
+	idx := s.indexers.Get(vaultName)
+	if idx == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("vault %q not found", vaultName))
+		return
+	}
+
+	qc := s.indexers.GetClient(vaultName)
+	if qc == nil {
+		writeError(w, 500, "INTERNAL", "vault has no database connection")
+		return
+	}
+
+	// 1. Delete all chunks from the Qdrant collection
+	chunksBefore, _ := qc.Count(r.Context())
+	chunkCollection := qc.Collection()
+	if err := qc.DeleteFiltered(r.Context(), chunkCollection, &pb.Filter{}); err != nil {
+		s.logger.Warn("failed to delete vault chunks", "vault", vaultName, "error", err)
+	}
+
+	// 2. Delete all facts for this vault
+	factsQc := s.indexers.GetFactClient(vaultName)
+	if factsQc != nil {
+		factsCollection := factsQc.Collection()
+		if err := factsQc.DeleteFiltered(r.Context(), factsCollection, &pb.Filter{}); err != nil {
+			s.logger.Warn("failed to delete vault facts", "vault", vaultName, "error", err)
+		}
+	}
+
+	// 3. Delete all sessions for this vault from logstore
+	if s.logStore != nil {
+		if _, err := s.logStore.DeleteSessionsByVault(r.Context(), vaultName); err != nil {
+			s.logger.Warn("failed to delete vault sessions", "vault", vaultName, "error", err)
+		}
+	}
+
+	// 4. Remove from config and indexers under lock
+	s.mu.Lock()
+	delete(s.cfg.Vaults, vaultName)
+	s.mu.Unlock()
+	s.indexers.Remove(vaultName)
+
+	s.logger.Info("vault deleted", "name", vaultName, "chunks_deleted", chunksBefore)
+
+	writeJSON(w, 200, map[string]any{
+		"status": "deleted",
+		"vault":  vaultName,
 	})
 }
 
