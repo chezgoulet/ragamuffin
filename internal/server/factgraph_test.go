@@ -60,6 +60,11 @@ func (s *factGraphTestStore) Count(_ context.Context) (uint64, error) {
 func (s *factGraphTestStore) Scroll(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
 	return nil, nil, nil
 }
+
+func (s *factGraphTestStore) ScrollWithVectors(_ context.Context, _ uint32, _ *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error) {
+	return nil, nil, nil
+}
+
 func (s *factGraphTestStore) Search(_ context.Context, _ []float32, _ uint64, _ float32, _ string, _ *pb.Filter) ([]*pb.ScoredPoint, error) {
 	return nil, nil
 }
