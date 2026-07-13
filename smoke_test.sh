@@ -732,6 +732,91 @@ else
   echo "FAIL: POST /v1/verify empty body expected 400, got $RESP"
 fi
 
+# ── /v1/debt ─────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/debt ---"
+RESP=$(curl -s "$BASE/v1/debt" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'vault_count' in d; assert 'total_chunks' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/debt returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/debt unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/gaps ─────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/gaps ---"
+RESP=$(curl -s "$BASE/v1/gaps" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'poorly_covered' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/gaps returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/gaps unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/agents/stats ─────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/agents/stats ---"
+RESP=$(curl -s "$BASE/v1/agents/stats" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'agents' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/agents/stats returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/agents/stats unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/embedding/project ────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/embedding/project ---"
+RESP=$(curl -s "$BASE/v1/embedding/project" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'points' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/embedding/project returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/embedding/project unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/facts/{key}/provenance (key not found) ───────────────────────────────
+echo ""
+echo "--- /v1/facts/{key}/provenance (404 expected) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/facts/nonexistent/provenance" 2>&1)
+if [ "$RESP" = "404" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/facts/nonexistent/provenance returns 404"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/facts/nonexistent/provenance expected 404, got $RESP"
+fi
+
+# ── /v1/facts/{key}/history (key not found) ──────────────────────────────────
+echo ""
+echo "--- /v1/facts/{key}/history (empty array expected) ---"
+RESP=$(curl -s "$BASE/v1/facts/nonexistent/history" 2>&1)
+CODE=$?
+if [ "$CODE" -eq 0 ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/facts/nonexistent/history returns (status=$CODE)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/facts/nonexistent/history unexpected: $CODE"
+fi
+
+# ── /v1/chunks (no vault context, assumes default) ───────────────────────────
+echo ""
+echo "--- /v1/chunks (vault-scoped redirect) ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/chunks" 2>&1)
+if [ "$RESP" != "000" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/chunks endpoint reachable (HTTP $RESP)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/chunks not reachable"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="

@@ -1821,7 +1821,21 @@ class RagamuffinMemoryProvider(MemoryProvider):
             return False
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Return tool schemas this provider exposes."""
+        """Return tool schemas this provider exposes.
+
+        Emits a diagnostic warning (#782) when the endpoint is unset,
+        so the agent has a signal that tools are expected but unavailable.
+        """
+        if not self._endpoint:
+            logger.warning(
+                "[Ragamuffin] get_tool_schemas() called but endpoint not set — "
+                "provider=ragamuffin requires RAGAMUFFIN_ENDPOINT or a config file"
+            )
+        elif not self._available:
+            logger.warning(
+                "[Ragamuffin] get_tool_schemas() called but provider not available — "
+                "check server health and vault provisioning"
+            )
         return ALL_TOOL_SCHEMAS
 
     # -- Peer cards --------------------------------------------------------

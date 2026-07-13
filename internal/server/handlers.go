@@ -1891,14 +1891,14 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
-	// Scroll all chunks with vectors
+	// Scroll all chunks with vectors using ScrollWithVectors
 	var vectors [][]float32
 	var labels []string
 	var sources []string
 	const pageSize uint32 = 200
 
 	for {
-		points, nextOffset, err := qc.Scroll(ctx, pageSize, nil)
+		points, nextOffset, err := qc.ScrollWithVectors(ctx, pageSize, nil)
 		if err != nil {
 			writeError(w, 502, "SCROLL_FAILED", fmt.Sprintf("scroll failed: %v", err))
 			return
@@ -1916,6 +1916,16 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 			if sf, ok := payload["source_file"]; ok {
 				src = sf.GetStringValue()
 			}
+			// Extract the actual embedding vector
+			vec := p.GetVectors()
+			if vec == nil {
+				continue
+			}
+			v := vec.GetVector()
+			if v == nil || len(v.GetData()) == 0 {
+				continue
+			}
+			vectors = append(vectors, v.GetData())
 			labels = append(labels, label)
 			sources = append(sources, src)
 		}
@@ -1924,23 +1934,9 @@ func (s *Server) handleEmbedProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate projection from source labels (no vectors available without ScrollWithVectors)
-	// Use label embeddings as a proxy: we project the chunk labels, not raw vectors.
-	// For a full embedding projection, use ScrollWithVectors which returns vectors.
-	// This simplified version maps chunk labels into 2D space.
-	if len(labels) == 0 {
+	if len(vectors) == 0 {
 		writeJSON(w, 200, &embedding.Projection2D{Points: []embedding.ProjectionPoint{}})
 		return
-	}
-
-	// Create synthetic vectors from label hash for visualization
-	vectors = make([][]float32, len(labels))
-	for i, label := range labels {
-		vec := make([]float32, 16)
-		for j := 0; j < 16 && j < len(label); j++ {
-			vec[j] = float32(label[j]) / 256.0
-		}
-		vectors[i] = vec
 	}
 
 	projection, err := embedding.ProjectPCA(vectors, labels, sources)

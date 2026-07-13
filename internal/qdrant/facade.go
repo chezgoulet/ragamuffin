@@ -69,6 +69,10 @@ type FactStore interface {
 
 	// Collection returns the primary collection name this client targets.
 	Collection() string
+
+	// ScrollWithVectors returns a page of points INCLUDING their vectors.
+	// Use for export/backup or embedding projection. (#788, #809)
+	ScrollWithVectors(ctx context.Context, limit uint32, offset *pb.PointId) ([]*pb.RetrievedPoint, *pb.PointId, error)
 }
 
 // Compile-time check: *Client satisfies FactStore.

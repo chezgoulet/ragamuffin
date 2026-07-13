@@ -832,6 +832,137 @@ Routes: `POST /v1/verify` (global) and `POST /vault/{name}/v1/verify` (vault-sco
 
 ---
 
+### `/v1/facts/{key}/provenance` — GET
+
+Fact lineage/provenance chain. Returns the source, source_type, timestamps, and related chunks for a given fact key.
+
+**Path parameter:** `key` — Fact key (e.g. `org/prefer-rust-cli`).
+
+**Response:**
+```json
+{
+  "key": "org/prefer-rust-cli",
+  "value": "All new CLI tools should use Rust",
+  "source": "engineering-review-2026-05",
+  "source_type": "pr_discussion",
+  "created_at": "2026-05-09T10:21:13Z",
+  "updated_at": "2026-05-10T14:30:00Z",
+  "related_chunks": ["uuid1", "uuid2"]
+}
+```
+
+Routes: `GET /v1/facts/{key}/provenance` (global) and `GET /vault/{name}/v1/facts/{key}/provenance` (vault-scoped).
+
+---
+
+### `/v1/facts/{key}/history` — GET
+
+Fact lifecycle event timeline. Returns events in chronological order: creation, updates, review resolutions (confirm, supersede, reject).
+
+**Path parameter:** `key` — Fact key.
+
+**Response:**
+```json
+[
+  {"event": "created", "timestamp": "2026-05-09T10:21:13Z"},
+  {"event": "updated", "timestamp": "2026-05-10T14:30:00Z"},
+  {"event": "confirm", "timestamp": "2026-05-11T09:00:00Z"}
+]
+```
+
+Routes: `GET /v1/facts/{key}/history` (global) and `GET /vault/{name}/v1/facts/{key}/history` (vault-scoped).
+
+---
+
+### `/v1/debt` — GET
+
+Knowledge debt dashboard. Aggregates review queue stats, vault counts, and pruner health into a single response for the web UI.
+
+**Response:**
+```json
+{
+  "vault_count": 3,
+  "total_files": 247,
+  "total_chunks": 1893,
+  "review_queue_size": 12,
+  "review_by_reason": {"stale": 5, "contradiction": 3, "low_confidence": 4},
+  "pruner": {"enabled": true, "stale_days": 90}
+}
+```
+
+---
+
+### `/v1/gaps` — GET
+
+Knowledge coverage gap analysis. Identifies vaults with low file counts and returns recommendations.
+
+**Response:**
+```json
+{
+  "poorly_covered": [
+    {"vault": "docs", "files": 3, "chunks": 12, "severity": "low_coverage"}
+  ],
+  "recommendations": ["Add documentation to vaults with fewer than 10 files"]
+}
+```
+
+---
+
+### `/v1/agents/stats` — GET
+
+Per-agent contribution statistics. Aggregates facts by source field, returning confidence and flag-rate metrics.
+
+**Response:**
+```json
+{
+  "agents": [
+    {"agent": "review-bot", "facts_written": 1200, "avg_confidence": 0.88, "flag_count": 12, "flag_rate_pct": 1.0}
+  ]
+}
+```
+
+Also: `GET /v1/agents/{name}/stats` for per-agent detail.
+
+---
+
+### `/v1/chunks` — GET, DELETE
+
+Chunk listing and pruning for a vault. List chunks with metadata, or bulk-delete by source filter.
+
+**Query parameters (GET):** `limit` (1–500, default 100)
+
+**Query parameters (DELETE):** `source` — delete all chunks from a specific source file. Use `confirm=true` to bulk-delete without a source filter.
+
+**Response (GET):**
+```json
+{
+  "vault": "docs",
+  "count": 100,
+  "chunks": [
+    {"chunk_id": "uuid", "source_file": "docs/policy.md", "header": "## Section", "chunk_index": 3, "file_last_updated": "2026-05-09T10:21:13Z"}
+  ]
+}
+```
+
+Vault-scoped: `GET|DELETE /vault/{name}/v1/chunks`.
+
+---
+
+### `/v1/embedding/project` — GET
+
+2D PCA projection of all chunks in the vault for the Embedding Space Explorer. Uses power iteration for eigenvalue decomposition (pure Go, zero external deps). Computed on first request, cached for 24 hours.
+
+**Response:**
+```json
+{
+  "points": [
+    {"x": 0.45, "y": -0.12, "source_file": "docs/policy.md", "label": "## Review Cycle"}
+  ]
+}
+```
+
+---
+
 ### `/v1/ingest` — POST
 
 Ingest a document or observation into the vault. Chunks are created, embedded, and stored in Qdrant. Requires write access.
