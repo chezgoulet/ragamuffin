@@ -549,10 +549,20 @@ class RagamuffinMemoryProvider(MemoryProvider):
         config file exists at ``RAGAMUFFIN_CONFIG`` / ``$HERMES_HOME/ragamuffin.json``.
         Previously only the env var was checked, so config-file-only setups
         silently never registered (#781).
+
+        When returning False, logs a warning so the agent has a signal that
+        Ragamuffin tools are expected but unavailable (#782).
         """
         if os.environ.get("RAGAMUFFIN_ENDPOINT"):
             return True
-        return bool(self._config_file_path())
+        if self._config_file_path():
+            return True
+        logger.warning(
+            "[Ragamuffin] provider=ragamuffin but is_available()=False — "
+            "tools will not be injected. Set RAGAMUFFIN_ENDPOINT or "
+            "place $HERMES_HOME/ragamuffin.json"
+        )
+        return False
 
     # -- Config schema (for `hermes memory setup`) --------------------------
 
