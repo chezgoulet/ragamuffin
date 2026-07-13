@@ -1424,3 +1424,63 @@ func TestHandleChunksDelete_NoQdrant(t *testing.T) {
 		t.Errorf("expected 404 (no qdrant client), got %d", w.Code)
 	}
 }
+
+// ── /v1/digest (#824) ────────────────────────────────────────────────────────
+
+func TestHandleDigest_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/digest", nil)
+	w := httptest.NewRecorder()
+	srv.handleDigest(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleDigest_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/digest", nil)
+	w := httptest.NewRecorder()
+	srv.handleDigest(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["total_events"]; !ok {
+		t.Error("expected total_events in response")
+	}
+	if _, ok := resp["period_hours"]; !ok {
+		t.Error("expected period_hours in response")
+	}
+}
+
+// ── /v1/contradictions (#823) ────────────────────────────────────────────────
+
+func TestHandleContradictions_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/contradictions", nil)
+	w := httptest.NewRecorder()
+	srv.handleContradictions(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleContradictions_SingleVault(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/contradictions", nil)
+	w := httptest.NewRecorder()
+	srv.handleContradictions(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["contradictions"]; !ok {
+		t.Error("expected contradictions in response")
+	}
+	if _, ok := resp["note"]; !ok {
+		t.Error("expected note about single vault in response")
+	}
+}

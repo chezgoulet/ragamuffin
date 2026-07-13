@@ -2114,6 +2114,7 @@ func (s *Server) handleContradictions(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt string
 	}
 	vaultFacts := make(map[string]map[string]vaultFact)
+	truncated := false
 
 	for _, vn := range vaultNames {
 		qc := s.indexers.GetFactClient(vn)
@@ -2124,6 +2125,7 @@ func (s *Server) handleContradictions(w http.ResponseWriter, r *http.Request) {
 		collection := qc.Collection()
 		var offset string
 		const pageSize uint32 = 200
+		const maxFactsPerVault = 10000
 
 		for {
 			points, err := qc.ScrollFiltered(ctx, collection, nil, pageSize, offset)
@@ -2146,6 +2148,13 @@ func (s *Server) handleContradictions(w http.ResponseWriter, r *http.Request) {
 					Value:     payload["fact_value"].GetStringValue(),
 					UpdatedAt: payload["updated_at"].GetStringValue(),
 				}
+				if len(facts) >= maxFactsPerVault {
+					truncated = true
+					break
+				}
+			}
+			if truncated {
+				break
 			}
 			if len(points) > 0 {
 				offset = points[len(points)-1].GetId().GetUuid()
@@ -2192,6 +2201,7 @@ func (s *Server) handleContradictions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"contradictions": contradictions,
 		"count":          len(contradictions),
+		"truncated":      truncated,
 	})
 }
 

@@ -1242,6 +1242,48 @@ Response is `Content-Type: application/gzip` with `Content-Disposition: attachme
 
 ---
 
+### `/v1/digest` — GET
+
+24-hour knowledge change digest. Queries the log store for all mutations in the last 24 hours and groups by agent and change type.
+
+**Response:**
+```json
+{
+  "period_hours": 24,
+  "total_events": 42,
+  "vaults": [
+    {"vault": "review-bot", "created": 30, "updated": 10, "deleted": 2}
+  ]
+}
+```
+
+---
+
+### `/v1/contradictions` — GET
+
+Cross-vault fact contradiction detection. Compares fact values across all vaults for keys that exist in multiple vaults. Key-based comparison — no LLM needed. Capped at 10,000 facts per vault to prevent OOM.
+
+**Response:**
+```json
+{
+  "contradictions": [
+    {
+      "key": "jellyfin.vaapi_fix",
+      "vault_a": "lore",
+      "value_a": "complete",
+      "vault_b": "data",
+      "value_b": "still_broken",
+      "updated_at_a": "2026-07-12T10:00:00Z",
+      "updated_at_b": "2026-07-13T08:00:00Z"
+    }
+  ],
+  "count": 1,
+  "truncated": false
+}
+```
+
+---
+
 ### `/inbox` — POST
 
 Create an inbox entry in the vault. Inbox entries are JSON files stored under `_inbox/` in the vault directory.
@@ -1676,6 +1718,8 @@ RAGAMUFFIN_PRUNER_IMPORTANCE_THRESHOLD=0.0
 RAGAMUFFIN_PORT=8000
 RAGAMUFFIN_HOST=0.0.0.0
 RAGAMUFFIN_LOG_LEVEL=info
+# RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_BOT_TOKEN=bot123:abc
+# RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID=-12345
 # RAGAMUFFIN_EVENT_WEBHOOK_URL=https://hooks.example.com/ragamuffin
 # RAGAMUFFIN_EVENT_WEBHOOK_EVENTS=fact.created,fact.flagged,fact.reviewed
 # RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD=0.1
