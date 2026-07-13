@@ -8,6 +8,7 @@ const state = {
   auditData: null,
   graphData: null,
   online: true,
+  showExplanation: true,
 };
 
 // ── Engineering Standard: fetch wrapper (#812) ──────────────────────────────────
@@ -251,13 +252,25 @@ async function doSearch() {
   const query = document.getElementById('search-query').value.trim();
   if (!query) return;
   const vault = document.getElementById('search-vault').value;
+  const useAsk = document.getElementById('search-mode-ask').checked;
   const container = document.getElementById('search-results');
-  renderLoading(container, 'Searching…');
+  renderLoading(container, useAsk ? 'Synthesizing…' : 'Searching…');
 
   try {
-    const url = vault ? `/vault/${vault}/recall?query=${encodeURIComponent(query)}` : `/recall?query=${encodeURIComponent(query)}`;
-    const data = await apiJSON(url);
-    renderSearchResults(data);
+    let data;
+    if (useAsk) {
+      const url = vault ? `/vault/${vault}/ask` : '/ask';
+      data = await apiJSON(url, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({query, top_k: 8, mode: 'auto'}),
+      });
+      renderAskResults(data);
+    } else {
+      const url = vault ? `/vault/${vault}/recall?query=${encodeURIComponent(query)}` : `/recall?query=${encodeURIComponent(query)}`;
+      data = await apiJSON(url);
+      renderSearchResults(data);
+    }
   } catch (err) {
     renderError(container, `Search failed: ${err.message}`, doSearch);
   }
@@ -281,6 +294,55 @@ function renderSearchResults(data) {
     </div>`;
   });
   container.innerHTML = html;
+}
+
+function renderAskResults(data) {
+  const container = document.getElementById('search-results');
+  if (!data.answer) {
+    renderEmpty(container, 'No answer generated', 'The LLM could not answer this query.');
+    return;
+  }
+  let html = `<div class="card" style="margin-bottom:1rem">
+    <h3>Answer</h3>
+    <p style="line-height:1.6">${escapeHtml(data.answer)}</p>
+    <div style="color:#8b949e;font-size:0.85rem;margin-top:0.5rem">
+      Mode: ${data.mode_used || 'rag'} | Sources: ${(data.sources || []).length}
+    </div>
+  </div>`;
+
+  // Explanation toggle (#804)
+  if (data.explanation && data.explanation.length) {
+    const showExplain = state.showExplanation !== false;
+    html += `<div class="card" style="margin-bottom:1rem">
+      <button id="explain-toggle" class="retry-btn" style="margin-bottom:0.5rem" onclick="toggleExplanation()">
+        ${showExplain ? 'Hide' : 'Show'} chunk explanation (${data.explanation.length} chunks)
+      </button>
+      <div id="explain-panel" style="${showExplain ? '' : 'display:none'}">`;
+    data.explanation.forEach(e => {
+      html += `<div class="result-item" style="margin-bottom:0.4rem;padding:0.5rem 0.75rem">
+        <div class="source">${escapeHtml(e.source_file || 'unknown')} [${e.chunk_index || 0}]</div>
+        <div class="score">Score: ${(e.score * 100).toFixed(1)}% ${e.included ? '✓ included' : '✗ excluded'}</div>
+        ${e.text ? `<div class="preview" style="font-size:0.8rem">${escapeHtml(e.text).slice(0, 300)}</div>` : ''}
+      </div>`;
+    });
+    html += '</div></div>';
+  }
+
+  if (data.sources && data.sources.length) {
+    html += `<div class="card"><h3>Sources</h3><ul style="color:#58a6ff;font-size:0.85rem">`;
+    data.sources.forEach(s => { html += `<li>${escapeHtml(s)}</li>`; });
+    html += '</ul></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function toggleExplanation() {
+  state.showExplanation = !state.showExplanation;
+  const panel = document.getElementById('explain-panel');
+  const btn = document.getElementById('explain-toggle');
+  if (panel) panel.style.display = state.showExplanation ? '' : 'none';
+  if (btn) btn.textContent = (state.showExplanation ? 'Hide' : 'Show') + ' chunk explanation';
 }
 
 // ── Browse ─────────────────────────────────────────────────────────────────────

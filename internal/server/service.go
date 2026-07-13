@@ -216,6 +216,44 @@ func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (strin
 	return answer, sources, modeUsed, nil
 }
 
+// doAskWithExplanation is like doAsk but also returns chunk-level explanation (#804).
+// Uses doAsk for the core synthesis, then builds explanation from a fresh search.
+// The double search is acceptable because explanation is only generated for the REST
+// handler (not MCP), and the cost is one extra embedding + one extra search.
+func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int) (string, []string, string, []explanationEntry, error) {
+	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK)
+	if err != nil {
+		return "", nil, "", nil, err
+	}
+
+	// Build explanation from chunk search results
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
+	if err != nil {
+		return answer, sources, modeUsed, nil, nil // explanation is optional
+	}
+	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0, "", nil)
+	if err != nil {
+		return answer, sources, modeUsed, nil, nil
+	}
+
+	explanation := make([]explanationEntry, 0, len(results))
+	for _, r := range results {
+		payload := r.GetPayload()
+		entry := explanationEntry{
+			Score:      r.Score,
+			Included:   r.Score >= 0.5,
+		}
+		if payload != nil {
+			if v, ok := payload["source_file"]; ok { entry.SourceFile = v.GetStringValue() }
+			if v, ok := payload["chunk_index"]; ok { entry.ChunkIndex = int(v.GetIntegerValue()) }
+			if v, ok := payload["text"]; ok { entry.Text = v.GetStringValue() }
+		}
+		explanation = append(explanation, entry)
+	}
+
+	return answer, sources, modeUsed, explanation, nil
+}
+
 // ── Chunk Get ──────────────────────────────────────────────────────────────────
 
 // doGetChunk retrieves a single chunk by UUID. Shared by REST and MCP handlers.

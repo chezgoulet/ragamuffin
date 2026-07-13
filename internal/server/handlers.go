@@ -1045,6 +1045,15 @@ type askRequest struct {
 	TopK  int    `json:"top_k"`
 }
 
+// explanationEntry is a single chunk's contribution to an /ask response (#804).
+type explanationEntry struct {
+	SourceFile string  `json:"source_file"`
+	ChunkIndex int     `json:"chunk_index"`
+	Score      float32 `json:"score"`
+	Included   bool    `json:"included"`
+	Text       string  `json:"text,omitempty"`
+}
+
 // queryContext retrieves context text for /ask requests.
 // Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
 func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
@@ -1241,17 +1250,21 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	answer, sources, modeUsed, err := s.doAsk(ctx, req.Query, req.Mode, req.TopK)
+	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK)
 	if err != nil {
 		writeError(w, 502, "ASK_ERROR", err.Error())
 		return
 	}
 
-	writeJSON(w, 200, map[string]any{
+	resp := map[string]any{
 		"answer":    answer,
 		"sources":   sources,
 		"mode_used": modeUsed,
-	})
+	}
+	if len(explanation) > 0 {
+		resp["explanation"] = explanation
+	}
+	writeJSON(w, 200, resp)
 }
 
 // ── /draft ─────────────────────────────────────────────────────────────────────
