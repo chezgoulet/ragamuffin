@@ -240,13 +240,19 @@ func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, t
 	for _, r := range results {
 		payload := r.GetPayload()
 		entry := explanationEntry{
-			Score:      r.Score,
-			Included:   r.Score >= 0.5,
+			Score:    r.Score,
+			Included: r.Score >= 0.5,
 		}
 		if payload != nil {
-			if v, ok := payload["source_file"]; ok { entry.SourceFile = v.GetStringValue() }
-			if v, ok := payload["chunk_index"]; ok { entry.ChunkIndex = int(v.GetIntegerValue()) }
-			if v, ok := payload["text"]; ok { entry.Text = v.GetStringValue() }
+			if v, ok := payload["source_file"]; ok {
+				entry.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				entry.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["text"]; ok {
+				entry.Text = v.GetStringValue()
+			}
 		}
 		explanation = append(explanation, entry)
 	}

@@ -1246,9 +1246,9 @@ func (s *Server) handleVaultMerge(w http.ResponseWriter, r *http.Request) {
 
 	s.logger.Info("vaults merged", "from", fromVault, "into", intoVault, "points", moved)
 	writeJSON(w, 200, map[string]any{
-		"status":    "merged",
-		"from":      fromVault,
-		"into":      intoVault,
+		"status":       "merged",
+		"from":         fromVault,
+		"into":         intoVault,
 		"points_moved": moved,
 	})
 }

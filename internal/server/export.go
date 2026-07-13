@@ -79,12 +79,24 @@ func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
 			c := exportChunk{
 				ChunkID: p.Id.GetUuid(),
 			}
-			if v, ok := payload["source_file"]; ok { c.SourceFile = v.GetStringValue() }
-			if v, ok := payload["text"]; ok { c.Text = v.GetStringValue() }
-			if v, ok := payload["first_paragraph"]; ok { c.FirstParagraph = v.GetStringValue() }
-			if v, ok := payload["header"]; ok { c.Header = v.GetStringValue() }
-			if v, ok := payload["chunk_index"]; ok { c.ChunkIndex = int(v.GetIntegerValue()) }
-			if v, ok := payload["file_last_updated"]; ok { c.FileLastUpdated = v.GetStringValue() }
+			if v, ok := payload["source_file"]; ok {
+				c.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["text"]; ok {
+				c.Text = v.GetStringValue()
+			}
+			if v, ok := payload["first_paragraph"]; ok {
+				c.FirstParagraph = v.GetStringValue()
+			}
+			if v, ok := payload["header"]; ok {
+				c.Header = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				c.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["file_last_updated"]; ok {
+				c.FileLastUpdated = v.GetStringValue()
+			}
 			chunks = append(chunks, c)
 		}
 		if nextOffset == nil {

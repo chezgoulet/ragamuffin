@@ -115,9 +115,9 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"fact":   map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"top_k":  map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
+					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
 				},
 				"required": []string{"fact"},
 			},

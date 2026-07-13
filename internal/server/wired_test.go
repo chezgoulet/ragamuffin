@@ -69,18 +69,18 @@ func wiredServer(t *testing.T, vaultName string) *Server {
 	t.Cleanup(func() { ls.Close() })
 
 	cfg := &config.Config{
-		VaultPath:           filepath.Join(dir, "vault"),
-		FactsMode:           "both",
-		FactsCollection:     "ragamuffin_facts",
-		FactsVectorSize:     4,
-		EmbeddingDims:       4,
-		ChunkVectorSize:     0,
-		AutoThreshold:       0.75,
-		AuthMode:            "none",
-		RateLimitEnabled:    false,
-		ChunkStrategy:       "auto",
-		ChunkMaxTokens:      2000,
-		WatcherMode:         "poll",
+		VaultPath:        filepath.Join(dir, "vault"),
+		FactsMode:        "both",
+		FactsCollection:  "ragamuffin_facts",
+		FactsVectorSize:  4,
+		EmbeddingDims:    4,
+		ChunkVectorSize:  0,
+		AutoThreshold:    0.75,
+		AuthMode:         "none",
+		RateLimitEnabled: false,
+		ChunkStrategy:    "auto",
+		ChunkMaxTokens:   2000,
+		WatcherMode:      "poll",
 	}
 
 	if vaultName == "" {
@@ -112,8 +112,8 @@ func preloadChunk(t *testing.T, store *embeddedstore.Store, id, source, text str
 	pt := &pb.PointStruct{
 		Id: &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: id}},
 		Payload: map[string]*pb.Value{
-			"source_file":      pb.NewValueString(source),
-			"text":             pb.NewValueString(text),
+			"source_file":       pb.NewValueString(source),
+			"text":              pb.NewValueString(text),
 			"file_last_updated": pb.NewValueString(time.Now().UTC().Format(time.RFC3339)),
 		},
 	}

@@ -1762,12 +1762,12 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 // ── /v1/facts/{key}/provenance — Fact Lineage (#803) ──────────────────────────
 
 type provenanceResponse struct {
-	Key         string `json:"key"`
-	Value       string `json:"value"`
-	Source      string `json:"source"`
-	SourceType  string `json:"source_type"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
+	Key           string   `json:"key"`
+	Value         string   `json:"value"`
+	Source        string   `json:"source"`
+	SourceType    string   `json:"source_type"`
+	CreatedAt     string   `json:"created_at"`
+	UpdatedAt     string   `json:"updated_at"`
 	RelatedChunks []string `json:"related_chunks,omitempty"`
 }
 

@@ -978,10 +978,18 @@ func (s *Server) handleChunksListGET(w http.ResponseWriter, r *http.Request) {
 			c := chunkSummary{
 				ChunkID: p.Id.GetUuid(),
 			}
-			if v, ok := payload["source_file"]; ok { c.SourceFile = v.GetStringValue() }
-			if v, ok := payload["header"]; ok { c.Header = v.GetStringValue() }
-			if v, ok := payload["chunk_index"]; ok { c.ChunkIndex = int(v.GetIntegerValue()) }
-			if v, ok := payload["file_last_updated"]; ok { c.FileLastUpdated = v.GetStringValue() }
+			if v, ok := payload["source_file"]; ok {
+				c.SourceFile = v.GetStringValue()
+			}
+			if v, ok := payload["header"]; ok {
+				c.Header = v.GetStringValue()
+			}
+			if v, ok := payload["chunk_index"]; ok {
+				c.ChunkIndex = int(v.GetIntegerValue())
+			}
+			if v, ok := payload["file_last_updated"]; ok {
+				c.FileLastUpdated = v.GetStringValue()
+			}
 			chunks = append(chunks, c)
 		}
 		if nextOffset == nil {
@@ -1635,9 +1643,15 @@ func (s *Server) handleDebt(w http.ResponseWriter, r *http.Request) {
 				payload := p.GetPayload()
 				if reasons, ok := payload["review_reasons"]; ok {
 					reasonStr := reasons.GetStringValue()
-					if strings.Contains(reasonStr, "stale") { staleCount++ }
-					if strings.Contains(reasonStr, "contradiction") { conflictCount++ }
-					if strings.Contains(reasonStr, "low_confidence") { lowConfCount++ }
+					if strings.Contains(reasonStr, "stale") {
+						staleCount++
+					}
+					if strings.Contains(reasonStr, "contradiction") {
+						conflictCount++
+					}
+					if strings.Contains(reasonStr, "low_confidence") {
+						lowConfCount++
+					}
 				}
 				if created, ok := payload["created_at"]; ok {
 					if oldest == "" || created.GetStringValue() < oldest {
@@ -1681,9 +1695,9 @@ func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
 
 	_ = r.Context()
 	resp := map[string]any{
-		"covered_topics":   []string{},
-		"poorly_covered":   []map[string]any{},
-		"recommendations":  []string{},
+		"covered_topics":  []string{},
+		"poorly_covered":  []map[string]any{},
+		"recommendations": []string{},
 	}
 
 	// Identify vaults with few files — potential coverage gaps
@@ -1691,9 +1705,9 @@ func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
 		files, chunks, _, _, _, _ := idx.Stats()
 		if files < 10 {
 			resp["poorly_covered"] = append(resp["poorly_covered"].([]map[string]any), map[string]any{
-				"vault":  name,
-				"files":  files,
-				"chunks": chunks,
+				"vault":    name,
+				"files":    files,
+				"chunks":   chunks,
 				"severity": "low_coverage",
 			})
 		}
@@ -1808,9 +1822,9 @@ func (s *Server) handleSingleAgentStats(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	writeJSON(w, 200, map[string]any{
-		"agent":        agentName,
+		"agent":         agentName,
 		"facts_written": 0,
-		"detail":       "per-agent detail requires fact-source aggregation",
+		"detail":        "per-agent detail requires fact-source aggregation",
 	})
 }
 
@@ -1883,8 +1897,8 @@ type vaultProjection struct {
 }
 
 var (
-	projectCache   = make(map[string]*vaultProjection)
-	projectCacheMu sync.RWMutex
+	projectCache    = make(map[string]*vaultProjection)
+	projectCacheMu  sync.RWMutex
 	projectCacheTTL = 24 * time.Hour
 )
 
