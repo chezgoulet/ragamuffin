@@ -69,8 +69,8 @@ func (r *Reporter) reportError(msg string, attrs map[string]any) {
 
 func (r *Reporter) sendTelegram(msg string) {
 	payload, _ := json.Marshal(map[string]string{
-		"chat_id": r.cfg.TelegramChatID,
-		"text":    fmt.Sprintf("🚨 *Ragamuffin Error*\n```\n%s\n```", msg),
+		"chat_id":    r.cfg.TelegramChatID,
+		"text":       fmt.Sprintf("🚨 *Ragamuffin Error*\n```\n%s\n```", msg),
 		"parse_mode": "markdown",
 	})
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", r.cfg.TelegramBotToken)
