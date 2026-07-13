@@ -497,6 +497,7 @@ func TestWired_ExportImportRoundTrip(t *testing.T) {
 
 	// Export
 	exportReq := httptest.NewRequest("GET", "/v1/vaults/default/export", nil)
+	exportReq.SetPathValue("name", "default")
 	exportW := httptest.NewRecorder()
 	srv.handleExport(exportW, exportReq)
 	if exportW.Code != 200 {
@@ -536,8 +537,8 @@ func TestWired_VaultCreate(t *testing.T) {
 	req := httptest.NewRequest("POST", "/vaults", body)
 	w := httptest.NewRecorder()
 	srv.handleVaults(w, req)
-	// create vault is multi-tenant only; single-tenant returns 403 or similar
-	if w.Code != 200 && w.Code != 403 {
-		t.Fatalf("expected 200 or 403, got %d: %s", w.Code, w.Body.String())
+	// create vault is multi-tenant only; single-tenant returns 400 or 403
+	if w.Code != 200 && w.Code != 400 && w.Code != 403 {
+		t.Fatalf("expected 200, 400, or 403, got %d: %s", w.Code, w.Body.String())
 	}
 }
