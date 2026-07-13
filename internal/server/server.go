@@ -303,6 +303,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Embedding projection — 2D embedding explorer (#809)
 	mux.HandleFunc("/v1/embedding/project", s.withRequestID(s.withRateLimit("/v1/embedding/project", s.handleEmbedProject)))
 
+	// Config viewer — non-sensitive runtime settings (#811)
+	mux.HandleFunc("/v1/config", s.withRequestID(s.handleConfig))
+
 	// Agent session endpoints (v0.5+/#162)
 	mux.HandleFunc("/v1/sessions/batch", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleBatchSessions)))
 	mux.HandleFunc("/v1/sessions", s.withRequestID(s.withRateLimit("/v1/ingest", s.handleSessions)))
@@ -1183,6 +1186,49 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"commit":     Commit,
 		"build_date": BuildDate,
 		"go_version": GoVersion,
+	})
+}
+
+// ── /v1/config — non-sensitive runtime config (#811) ─────────────────────────
+
+func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	embedProvider := ""
+	if s.cfg.EmbeddingProvider != "" {
+		embedProvider = s.cfg.EmbeddingProvider
+	}
+	llmProvider := ""
+	if s.cfg.LLMProvider != "" {
+		llmProvider = s.cfg.LLMProvider
+	}
+	authMode := s.cfg.AuthMode
+	if authMode == "" {
+		authMode = "none"
+	}
+
+	vaultNames := s.indexers.VaultNames()
+	if vaultNames == nil {
+		vaultNames = []string{}
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"version":            Version,
+		"vault_count":        len(vaultNames),
+		"vaults":             vaultNames,
+		"embedding_provider": embedProvider,
+		"embedding_model":    s.cfg.EmbeddingModel,
+		"llm_provider":       llmProvider,
+		"llm_model":          s.cfg.LLMModel,
+		"auth_mode":          authMode,
+		"rate_limiting":      s.cfg.RateLimitEnabled,
+		"chunk_strategy":     s.cfg.ChunkStrategy,
+		"chunk_max_tokens":   s.cfg.ChunkMaxTokens,
+		"watcher_mode":       s.cfg.WatcherMode,
+		"multi_tenant":       s.cfg.IsMultiTenant(),
 	})
 }
 

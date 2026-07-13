@@ -817,6 +817,30 @@ else
   echo "FAIL: /v1/chunks not reachable"
 fi
 
+# ── /v1/config ────────────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/config ---"
+RESP=$(curl -s "$BASE/v1/config" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'version' in d; assert 'vault_count' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/config returns valid structure (vaults=$(echo $RESP | python3 -c "import sys,json;print(json.load(sys.stdin)['vault_count'])" 2>/dev/null))"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/config unexpected: $(echo $RESP | head -c 150)"
+fi
+
+# ── /v1/pruner/config ─────────────────────────────────────────────────────────
+echo ""
+echo "--- /v1/pruner/config ---"
+RESP=$(curl -s "$BASE/v1/pruner/config" 2>&1)
+if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'enabled' in d; assert 'stale_days' in d" 2>/dev/null; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/pruner/config returns valid structure"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/pruner/config unexpected: $(echo $RESP | head -c 150)"
+fi
+
 # ── Procedural Memory: Session Finalize ──────────────────────────────────────
 echo ""
 echo "=== Procedural Memory ==="

@@ -24,6 +24,8 @@
     <button data-page="ingest" role="tab" aria-selected="false" aria-controls="page-ingest">Ingest</button>
     <button data-page="vaultadmin" role="tab" aria-selected="false" aria-controls="page-vaultadmin">Vaults</button>
     <button data-page="embed" role="tab" aria-selected="false" aria-controls="page-embed">Embeddings</button>
+    <button data-page="pruner" role="tab" aria-selected="false" aria-controls="page-pruner">Pruner</button>
+    <button data-page="settings" role="tab" aria-selected="false" aria-controls="page-settings">Settings</button>
   </div>
   <span id="vault-select"></span>
 </nav>
@@ -127,6 +129,18 @@
   <div id="embed-viz" style="position:relative;background:#161b22;border:1px solid #30363d;border-radius:8px;overflow:hidden;min-height:500px"></div>
   <div id="embed-legend" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e"></div>
   <div id="embed-tip" style="margin-top:0.5rem;font-size:0.8rem;color:#8b949e">Pan by dragging · Zoom with scroll wheel · Click a point to inspect</div>
+</main>
+
+<main id="page-pruner" class="page">
+  <h2>Pruner Configuration</h2>
+  <div id="pruner-content" class="card-grid"></div>
+  <div id="pruner-config-detail"></div>
+</main>
+
+<main id="page-settings" class="page">
+  <h2>Settings</h2>
+  <div id="settings-content" class="card-grid"></div>
+  <div id="settings-detail"></div>
 </main>
 
 <script src="/static/app.js"></script>

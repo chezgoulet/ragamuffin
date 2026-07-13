@@ -252,6 +252,8 @@ function switchPage(name) {
   if (name === 'ingest') loadIngest();
   if (name === 'vaultadmin') loadVaultAdmin();
   if (name === 'embed') loadEmbedProj();
+  if (name === 'pruner') loadPruner();
+  if (name === 'settings') loadSettings();
   if (name === 'graph') {
     state.activeVault = document.getElementById('graph-vault').value || state.activeVault;
   }
@@ -1288,7 +1290,48 @@ function renderEmbedCanvas(points) {
   draw();
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
-  if (!s) return '';
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+// ── Pruner Config ────────────────────────────────────────────────────────────
+async function loadPruner() {
+  const container = document.getElementById('pruner-content');
+  renderLoading(container, 'Loading pruner config…');
+  try {
+    const data = await apiJSON('/v1/pruner/config');
+    let html = '';
+    html += `<div class="card"><h3>Enabled</h3><div class="value">${data.enabled ? 'On' : 'Off'}</div></div>`;
+    html += `<div class="card"><h3>Stale Days</h3><div class="value">${data.stale_days}</div><div class="sub">threshold</div></div>`;
+    html += `<div class="card"><h3>Conflict Sample</h3><div class="value">${data.conflict_sample_size}</div><div class="sub">pairs per scan</div></div>`;
+    html += `<div class="card"><h3>Conflict Threshold</h3><div class="value">${data.conflict_threshold}</div><div class="sub">cosine similarity</div></div>`;
+    html += `<div class="card"><h3>Low Confidence</h3><div class="value">${data.low_confidence_threshold}</div><div class="sub">below this = flag</div></div>`;
+    html += `<div class="card"><h3>Importance</h3><div class="value">${data.importance_threshold}</div><div class="sub">above this = skip stale</div></div>`;
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Pruner config failed: ${err.message}`, loadPruner);
+  }
 }
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+async function loadSettings() {
+  const container = document.getElementById('settings-content');
+  renderLoading(container, 'Loading settings…');
+  try {
+    const [config, version] = await Promise.all([
+      apiJSON('/v1/config'),
+      apiJSON('/version'),
+    ]);
+    let html = '';
+    html += `<div class="card"><h3>Version</h3><div class="value">${version.version || '?'}</div><div class="sub">${version.go_version || ''}</div></div>`;
+    html += `<div class="card"><h3>Vaults</h3><div class="value">${config.vault_count || 0}</div><div class="sub">${(config.vaults || []).join(', ') || 'default'}</div></div>`;
+    html += `<div class="card"><h3>Embedding</h3><div class="value">${config.embedding_provider || 'none'}</div><div class="sub">${config.embedding_model || ''}</div></div>`;
+    html += `<div class="card"><h3>LLM</h3><div class="value">${config.llm_provider || 'none'}</div><div class="sub">${config.llm_model || ''}</div></div>`;
+    html += `<div class="card"><h3>Auth</h3><div class="value">${config.auth_mode || 'none'}</div><div class="sub">${config.multi_tenant ? 'multi-tenant' : 'single-tenant'}</div></div>`;
+    html += `<div class="card"><h3>Rate Limiting</h3><div class="value">${config.rate_limiting ? 'On' : 'Off'}</div></div>`;
+    html += `<div class="card"><h3>Chunk Strategy</h3><div class="value">${config.chunk_strategy || 'auto'}</div><div class="sub">max ${config.chunk_max_tokens || 2000} tokens</div></div>`;
+    html += `<div class="card"><h3>Watcher</h3><div class="value">${config.watcher_mode || 'poll'}</div></div>`;
+    container.innerHTML = html;
+  } catch (err) {
+    renderError(container, `Settings failed: ${err.message}`, loadSettings);
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function escapeHtml(s) {

@@ -713,3 +713,208 @@ func TestVaultRouting_ContextRoundTrip(t *testing.T) {
 		t.Errorf("expected docs, got %q", got)
 	}
 }
+
+// ── /v1/debt ─────────────────────────────────────────────────────────────────
+
+func TestHandleDebt_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/debt", nil)
+	w := httptest.NewRecorder()
+	srv.handleDebt(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleDebt_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/debt", nil)
+	w := httptest.NewRecorder()
+	srv.handleDebt(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["vault_count"]; !ok {
+		t.Error("expected vault_count in response")
+	}
+}
+
+// ── /v1/gaps ─────────────────────────────────────────────────────────────────
+
+func TestHandleGaps_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/gaps", nil)
+	w := httptest.NewRecorder()
+	srv.handleGaps(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleGaps_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/gaps", nil)
+	w := httptest.NewRecorder()
+	srv.handleGaps(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["poorly_covered"]; !ok {
+		t.Error("expected poorly_covered in response")
+	}
+}
+
+// ── /v1/agents/stats ─────────────────────────────────────────────────────────
+
+func TestHandleAgentStats_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/agents/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleAgentStats(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleAgentStats_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/agents/stats", nil)
+	w := httptest.NewRecorder()
+	srv.handleAgentStats(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["agents"]; !ok {
+		t.Error("expected agents in response")
+	}
+}
+
+// ── /v1/chunks (list) ────────────────────────────────────────────────────────
+
+func TestHandleChunksList_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/chunks", nil)
+	w := httptest.NewRecorder()
+	srv.handleChunksList(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/embedding/project ─────────────────────────────────────────────────────
+
+func TestHandleEmbedProject_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("PUT", "/v1/embedding/project", nil)
+	w := httptest.NewRecorder()
+	srv.handleEmbedProject(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleEmbedProject_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/embedding/project", nil)
+	w := httptest.NewRecorder()
+	srv.handleEmbedProject(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── /v1/config ────────────────────────────────────────────────────────────────
+
+func TestHandleConfig_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/config", nil)
+	w := httptest.NewRecorder()
+	srv.handleConfig(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleConfig_Success(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/config", nil)
+	w := httptest.NewRecorder()
+	srv.handleConfig(w, req)
+	if w.Code != 200 {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if _, ok := resp["version"]; !ok {
+		t.Error("expected version in response")
+	}
+}
+
+// ── /v1/facts/{key}/provenance ───────────────────────────────────────────────
+
+func TestHandleProvenance_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/facts/nonexistent/provenance", nil)
+	w := httptest.NewRecorder()
+	srv.handleProvenance(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── /v1/facts/{key}/history ──────────────────────────────────────────────────
+
+func TestHandleFactHistory_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/facts/nonexistent/history", nil)
+	w := httptest.NewRecorder()
+	srv.handleFactHistory(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── DELETE /v1/vaults/{name} ─────────────────────────────────────────────────
+
+func TestHandleVaultDelete_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/vaults/test", nil)
+	w := httptest.NewRecorder()
+	srv.handleVaultDelete(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── Export ───────────────────────────────────────────────────────────────────
+
+func TestHandleExport_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("POST", "/v1/vaults/test/export", nil)
+	w := httptest.NewRecorder()
+	// Set path value to simulate route
+	req.SetPathValue("name", "test")
+	srv.handleExport(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+// ── Import ───────────────────────────────────────────────────────────────────
+
+func TestHandleImport_MethodNotAllowed(t *testing.T) {
+	srv := newTestServer()
+	req := httptest.NewRequest("GET", "/v1/vaults/test/import", nil)
+	w := httptest.NewRecorder()
+	req.SetPathValue("name", "test")
+	srv.handleImport(w, req)
+	if w.Code != 405 {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
