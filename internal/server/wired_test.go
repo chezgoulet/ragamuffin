@@ -511,17 +511,18 @@ func TestWired_ExportImportRoundTrip(t *testing.T) {
 		t.Fatal("expected at least 1 chunk in export")
 	}
 
-	// Delete all chunks
-	delReq := httptest.NewRequest("DELETE", "/v1/chunks?confirm=true", nil)
+	// Delete all chunks from that source file
+	delReq := httptest.NewRequest("DELETE", "/v1/chunks?source=docs/roundtrip.md", nil)
 	delW := httptest.NewRecorder()
 	srv.handleChunksDelete(delW, delReq)
 	if delW.Code != 200 {
-		t.Fatalf("delete returned %d", delW.Code)
+		t.Fatalf("delete returned %d: %s", delW.Code, delW.Body.String())
 	}
 
 	// Import back
 	importBody, _ := json.Marshal(exportResp)
 	importReq := httptest.NewRequest("POST", "/v1/vaults/default/import", jsonBytes(string(importBody)))
+	importReq.SetPathValue("name", "default")
 	importW := httptest.NewRecorder()
 	srv.handleImport(importW, importReq)
 	if importW.Code != 200 {
