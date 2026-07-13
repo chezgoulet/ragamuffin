@@ -1758,3 +1758,127 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
 	}
 }
+
+// ── /v1/facts/{key}/provenance — Fact Lineage (#803) ──────────────────────────
+
+type provenanceResponse struct {
+	Key         string `json:"key"`
+	Value       string `json:"value"`
+	Source      string `json:"source"`
+	SourceType  string `json:"source_type"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+	RelatedChunks []string `json:"related_chunks,omitempty"`
+}
+
+func (s *Server) handleProvenance(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	key := r.PathValue("key")
+	if key == "" {
+		writeError(w, 400, "INVALID_REQUEST", "fact key is required")
+		return
+	}
+
+	ctx := r.Context()
+	pointID := &qdrant.PointId{
+		PointIdOptions: &qdrant.PointId_Uuid{Uuid: factKeyHash(key)},
+	}
+
+	points, err := s.facts.GetPoints(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID})
+	if err != nil {
+		writeError(w, 502, "QUERY_FAILED", fmt.Sprintf("failed to query fact: %v", err))
+		return
+	}
+	if len(points) == 0 {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("fact %q not found", key))
+		return
+	}
+
+	payload := points[0].GetPayload()
+	if payload == nil {
+		writeError(w, 404, "NOT_FOUND", fmt.Sprintf("fact %q has no data", key))
+		return
+	}
+
+	var relatedChunks []string
+	if rc, ok := payload["related_chunks"]; ok {
+		for _, v := range rc.GetListValue().GetValues() {
+			relatedChunks = append(relatedChunks, v.GetStringValue())
+		}
+	}
+
+	writeJSON(w, 200, provenanceResponse{
+		Key:           payload["fact_key"].GetStringValue(),
+		Value:         payload["fact_value"].GetStringValue(),
+		Source:        payload["source"].GetStringValue(),
+		SourceType:    payload["source_type"].GetStringValue(),
+		CreatedAt:     payload["created_at"].GetStringValue(),
+		UpdatedAt:     payload["updated_at"].GetStringValue(),
+		RelatedChunks: relatedChunks,
+	})
+}
+
+// ── /v1/facts/{key}/history — Fact Evolution Timeline (#805) ──────────────────
+
+type historyEntry struct {
+	Event     string `json:"event"`
+	Timestamp string `json:"timestamp"`
+	Detail    string `json:"detail,omitempty"`
+}
+
+func (s *Server) handleFactHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, 405, "METHOD_NOT_ALLOWED", "only GET is accepted")
+		return
+	}
+
+	key := r.PathValue("key")
+	if key == "" {
+		writeError(w, 400, "INVALID_REQUEST", "fact key is required")
+		return
+	}
+
+	ctx := r.Context()
+	history := []historyEntry{}
+
+	// Get current fact state to include created/updated in timeline
+	pointID := &qdrant.PointId{
+		PointIdOptions: &qdrant.PointId_Uuid{Uuid: factKeyHash(key)},
+	}
+	points, err := s.facts.GetPoints(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID})
+	if err == nil && len(points) > 0 {
+		payload := points[0].GetPayload()
+		if payload != nil {
+			if created := payload["created_at"].GetStringValue(); created != "" {
+				history = append(history, historyEntry{Event: "created", Timestamp: created})
+			}
+			if updated := payload["updated_at"].GetStringValue(); updated != "" {
+				history = append(history, historyEntry{Event: "updated", Timestamp: updated})
+			}
+		}
+	}
+
+	// Query review_resolution logstore entries for this fact key
+	if s.logStore != nil {
+		err := s.logStore.QueryResolutions(ctx, key, func(action, createdAt string) {
+			history = append(history, historyEntry{
+				Event:     action,
+				Timestamp: createdAt,
+			})
+		})
+		if err != nil {
+			s.log(ctx).Debug("history: resolution query failed", "key", key, "error", err)
+		}
+	}
+
+	if len(history) == 0 {
+		writeJSON(w, 200, []historyEntry{})
+		return
+	}
+
+	writeJSON(w, 200, history)
+}

@@ -190,6 +190,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.handleInbox))))
 		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.handleVaultVerify))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleProvenance))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactHistory))))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -217,6 +219,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/inbox", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/inbox/{id}", s.withRequestID(s.withVault(s.withRateLimit("/inbox", s.requireVaultName(vaultName, s.handleInbox)))))
 		mux.HandleFunc("/vault/{name}/v1/verify", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/verify", s.requireVaultName(vaultName, s.handleVaultVerify)))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleProvenance)))))
+		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleFactHistory)))))
 
 	}
 
@@ -252,6 +256,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/v1/facts", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFacts))))
 		mux.HandleFunc("/v1/facts/{key}/graph", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactGraph))))
 	}
+	// Facts provenance and history (#803, #805) — always bare, always readable
+	mux.HandleFunc("/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleProvenance))))
+	mux.HandleFunc("/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/facts", s.handleFactHistory))))
 	mux.HandleFunc("/v1/auth/check", s.withRequestID(s.handleAuthCheck))
 
 	// Link index — always registered (bare endpoints)
