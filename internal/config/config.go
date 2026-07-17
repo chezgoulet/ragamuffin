@@ -116,6 +116,12 @@ type Config struct {
 	RateLimitIngest   int
 	RateLimitReview   int
 
+	// Retrieval — hybrid dense + lexical (BM25) recall via RRF.
+	// RecallMode: "dense" (default, unchanged behavior), "sparse" (lexical
+	// only), or "hybrid" (fuse both via Reciprocal Rank Fusion).
+	RecallMode    string
+	SparseEnabled bool // when true, lexical BM25 index is built per vault
+
 	// Pruner configuration
 	PrunerEnabled                bool
 	PrunerStaleInterval          time.Duration
@@ -363,6 +369,20 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REVIEW must be non-negative, got %d", c.RateLimitReview))
 	}
 
+	// Recall mode must be a recognized value
+	switch c.RecallMode {
+	case "dense", "sparse", "hybrid":
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RECALL_MODE must be 'dense', 'sparse', or 'hybrid', got %q", c.RecallMode))
+	}
+	// sparse mode requires the lexical index to be enabled
+	if c.RecallMode == "sparse" && !c.SparseEnabled {
+		errs = append(errs, "RAGAMUFFIN_RECALL_MODE=sparse requires RAGAMUFFIN_SPARSE=true")
+	}
+	if c.RecallMode == "hybrid" && !c.SparseEnabled {
+		errs = append(errs, "RAGAMUFFIN_RECALL_MODE=hybrid requires RAGAMUFFIN_SPARSE=true")
+	}
+
 	// Pruner config: StaleDays must be positive if pruner is enabled
 	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
 		errs = append(errs, "RAGAMUFFIN_PRUNER_STALE_DAYS must be positive when pruner is enabled")
@@ -473,6 +493,9 @@ func Load() (*Config, error) {
 		RateLimitReindex:  envInt("RAGAMUFFIN_RATE_LIMIT_REINDEX", 30),
 		RateLimitIngest:   envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
 		RateLimitReview:   envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
+
+		RecallMode:    envOrDefault("RAGAMUFFIN_RECALL_MODE", "dense"),
+		SparseEnabled: envBool("RAGAMUFFIN_SPARSE"),
 
 		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
 		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),
