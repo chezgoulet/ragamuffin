@@ -122,6 +122,15 @@ type Config struct {
 	RecallMode    string
 	SparseEnabled bool // when true, lexical BM25 index is built per vault
 
+	// RetrievalRewrite selects an LLM query-rewriting strategy applied before
+	// embedding: "off" (default), "hyde", "stepback", or "multiquery". No-op
+	// unless an LLM is configured. See internal/retrieval/rewrite.go.
+	RetrievalRewrite string
+	// RerankEnabled turns on listwise LLM reranking (RankGPT) of the fused
+	// top-k when the request opts in. No-op unless an LLM is configured.
+	// This is the server-side allow flag; requests still pass rerank=true.
+	RerankEnabled bool
+
 	// Pruner configuration
 	PrunerEnabled                bool
 	PrunerStaleInterval          time.Duration
@@ -389,6 +398,12 @@ func (c *Config) Validate() []string {
 	if c.RecallMode == "hybrid" && !c.SparseEnabled {
 		errs = append(errs, "RAGAMUFFIN_RECALL_MODE=hybrid requires RAGAMUFFIN_SPARSE=true")
 	}
+	// Query-rewrite strategy must be recognized.
+	switch strings.ToLower(c.RetrievalRewrite) {
+	case "", "off", "hyde", "stepback", "multiquery":
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RETRIEVAL_REWRITE must be 'off', 'hyde', 'stepback', or 'multiquery', got %q", c.RetrievalRewrite))
+	}
 
 	// Pruner config: StaleDays must be positive if pruner is enabled
 	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
@@ -505,8 +520,10 @@ func Load() (*Config, error) {
 		RateLimitIngest:   envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
 		RateLimitReview:   envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
 
-		RecallMode:    envOrDefault("RAGAMUFFIN_RECALL_MODE", "dense"),
-		SparseEnabled: envBool("RAGAMUFFIN_SPARSE"),
+		RecallMode:       envOrDefault("RAGAMUFFIN_RECALL_MODE", "dense"),
+		SparseEnabled:    envBool("RAGAMUFFIN_SPARSE"),
+		RetrievalRewrite: envOrDefault("RAGAMUFFIN_RETRIEVAL_REWRITE", "off"),
+		RerankEnabled:    envBool("RAGAMUFFIN_RERANK"),
 
 		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
 		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),

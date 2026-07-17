@@ -595,6 +595,21 @@ func (s *Server) llmFor(ctx context.Context) llm.Synthesizer {
 	return s.llm
 }
 
+// completerFor returns an llm.Completer for retrieval-side query rewriting and
+// reranking, or nil if no LLM is configured for the request's vault. It reuses
+// the same per-vault LLM resolution as llmFor; the returned Synthesizer is a
+// *llm.Client, which also satisfies llm.Completer.
+func (s *Server) completerFor(ctx context.Context) llm.Completer {
+	syn := s.llmFor(ctx)
+	if syn == nil {
+		return nil
+	}
+	if c, ok := syn.(llm.Completer); ok {
+		return c
+	}
+	return nil
+}
+
 // embeddingFor returns the per-vault embedding client from context,
 // falling back to the server-wide embedder.
 func (s *Server) embeddingFor(ctx context.Context) embedding.Embedder {

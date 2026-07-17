@@ -74,6 +74,20 @@ assert_status "POST /recall returns 200" "0" "$RC" "$RESP"
 assert_field_type "recall has results" "results" "list" "$RESP"
 assert_field_type "recall has top_score" "top_score" "float" "$RESP"
 
+# /recall: query rewrite + rerank are backward-compatible no-ops when no LLM
+# is configured (A2/A3). They must never break the base recall contract.
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test query","top_k":3,"rewrite":"hyde","rerank":true}' 2>&1) && RC=0 || RC=$?
+assert_status "POST /recall with rewrite+rerank returns 200" "0" "$RC" "$RESP"
+assert_field_type "recall (rewrite+rerank) has results" "results" "list" "$RESP"
+
+# /recall: invalid rewrite mode is rejected with 400.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","rewrite":"bogus"}')
+assert_status "POST /recall invalid rewrite returns 400" "400" "$CODE" "rewrite=bogus"
+
 # /recall: verify first_paragraph is returned
 RESP=$(curl -sf -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
