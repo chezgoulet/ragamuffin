@@ -19,6 +19,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
+	"github.com/chezgoulet/ragamuffin/internal/graph"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -160,6 +161,23 @@ func main() {
 	}
 
 	logger.Info("log store ready", "path", logPath)
+
+	// ── Initialize temporal knowledge graph (optional, B2) ────────────────────
+	var graphStore *graph.Store
+	if cfg.GraphEnabled {
+		graphPath := cfg.GraphPath
+		if graphPath == "" {
+			graphPath = filepath.Join(filepath.Dir(logPath), "graph.db")
+		}
+		graphStore, err = graph.Open(graphPath)
+		if err != nil {
+			logger.Error("failed to open temporal graph", "error", err)
+			os.Exit(1)
+		}
+		graphStore.SetLogger(logger.With("component", "graph"))
+		defer graphStore.Close()
+		logger.Info("temporal graph ready", "path", graphPath)
+	}
 
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
@@ -516,6 +534,16 @@ func main() {
 	}()
 
 	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext, apiDriver)
+
+	// Attach the temporal graph. The extractor is nil without an LLM; ingest
+	// then returns 503 while read endpoints keep working.
+	if graphStore != nil {
+		var graphExt *graph.Extractor
+		if lm != nil {
+			graphExt = graph.NewExtractor(graphStore, lm, logger)
+		}
+		srv.SetGraph(graphStore, graphExt)
+	}
 
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)

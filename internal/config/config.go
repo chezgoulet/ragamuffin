@@ -147,6 +147,12 @@ type Config struct {
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
 
+	// Temporal knowledge graph (B2). When enabled, entities/relations are
+	// extracted from chunks and session turns into a bi-temporal SQLite graph
+	// supporting as_of time-travel queries. Requires an LLM.
+	GraphEnabled bool
+	GraphPath    string // explicit path for graph.db; empty = heuristic
+
 	// Optional — LLM
 	LLMProvider        string
 	LLMBaseURL         string
@@ -478,6 +484,9 @@ func Load() (*Config, error) {
 		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:                 os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:              envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+
+		GraphEnabled: envBool("RAGAMUFFIN_GRAPH_ENABLED"),
+		GraphPath:    os.Getenv("RAGAMUFFIN_GRAPH_PATH"),
 
 		LLMProvider:        os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:         envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
