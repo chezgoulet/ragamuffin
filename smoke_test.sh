@@ -990,6 +990,16 @@ else
 fi
 
 echo ""
+echo "--- /v1/consolidation/status ---"
+# Always 200: returns {"enabled":false} when the worker is off, or full stats
+# when enabled.
+RESP=$(curl -s -w "\n%{http_code}" "$BASE/v1/consolidation/status")
+CODE=$(echo "$RESP" | tail -n1)
+BODY=$(echo "$RESP" | sed '$d')
+assert_status "/v1/consolidation/status returns 200" "200" "$CODE" "$BODY"
+assert_field_type "consolidation status" "enabled" "bool" "$BODY"
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
   exit 1
