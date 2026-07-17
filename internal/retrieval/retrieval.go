@@ -27,12 +27,12 @@ type SparseVector struct {
 // DFProvider. Without a provider (e.g. at query time before any docs are
 // seen), it degrades gracefully to raw TF, which still gives lexical recall.
 type LexicalEncoder struct {
-	mu          sync.RWMutex
-	vocab       map[string]uint32
-	invVocab    map[uint32]string
-	docFreq     map[uint32]int // number of chunks containing the term
-	totalDocs   int
-	maxTermID   uint32
+	mu        sync.RWMutex
+	vocab     map[string]uint32
+	invVocab  map[uint32]string
+	docFreq   map[uint32]int // number of chunks containing the term
+	totalDocs int
+	maxTermID uint32
 	// stopwords reduce noise on common tokens
 	stopwords map[string]struct{}
 }
@@ -167,7 +167,9 @@ type RankedID struct {
 }
 
 // Fuse merges multiple ranked lists using Reciprocal Rank Fusion:
-//   score(p) = Σ_{r in rankings} 1 / (k + rank_r(p))
+//
+//	score(p) = Σ_{r in rankings} 1 / (k + rank_r(p))
+//
 // where rank is 1-based and k=60 by default. No score normalization is needed,
 // which is exactly why RRF works across heterogeneous retrievers (dense cosine
 // vs sparse BM25) without calibration. Cormack et al., SIGIR 2009.
@@ -244,7 +246,7 @@ func defaultStopwords() map[string]struct{} {
 type LexicalIndex struct {
 	mu        sync.RWMutex
 	docs      map[string]string // id -> text
-	docFreq   map[string]int     // term -> number of docs containing it
+	docFreq   map[string]int    // term -> number of docs containing it
 	totalDocs int
 	avgLen    float64
 	stopwords map[string]struct{}
@@ -396,4 +398,3 @@ func countTerm(text, term string, stopwords map[string]struct{}) int {
 	}
 	return n
 }
-

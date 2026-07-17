@@ -15,8 +15,8 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
-	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 )
 
 // ── Recall ─────────────────────────────────────────────────────────────────────
