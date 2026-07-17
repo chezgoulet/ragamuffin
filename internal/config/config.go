@@ -159,6 +159,13 @@ type Config struct {
 	ConsolidationTurnLimit       int
 	ConsolidationGistTTLDays     int
 
+	// Continuous accessibility decay (B1). When enabled, the read path stamps
+	// each fact with a soft accessibility score (Ebbinghaus forgetting curve)
+	// and effective_confidence = confidence × accessibility. Off by default;
+	// hard TTL behavior is unchanged.
+	DecayEnabled      bool
+	DecayHalfLifeDays float64 // baseline half-life for an unreinforced fact
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
@@ -387,6 +394,10 @@ func (c *Config) Validate() []string {
 	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
 		errs = append(errs, "RAGAMUFFIN_PRUNER_STALE_DAYS must be positive when pruner is enabled")
 	}
+	// Decay config: half-life must be positive if decay is enabled.
+	if c.DecayEnabled && c.DecayHalfLifeDays <= 0 {
+		errs = append(errs, "RAGAMUFFIN_DECAY_HALF_LIFE_DAYS must be positive when decay is enabled")
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -518,7 +529,6 @@ func Load() (*Config, error) {
 		ProceduralEnabled:            envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
 		ProceduralMinSteps:           envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
 		ProceduralDedupThreshold:     envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
-
 		ConsolidationEnabled:         envBool("RAGAMUFFIN_CONSOLIDATION_ENABLED"),
 		ConsolidationInterval:        envDuration("RAGAMUFFIN_CONSOLIDATION_INTERVAL", 6*time.Hour),
 		ConsolidationIdleWindow:      envDuration("RAGAMUFFIN_CONSOLIDATION_IDLE_WINDOW", 30*time.Minute),
@@ -526,6 +536,9 @@ func Load() (*Config, error) {
 		ConsolidationInterleaveRatio: envFloat("RAGAMUFFIN_CONSOLIDATION_INTERLEAVE_RATIO", 0.3),
 		ConsolidationTurnLimit:       envInt("RAGAMUFFIN_CONSOLIDATION_TURN_LIMIT", 50),
 		ConsolidationGistTTLDays:     envInt("RAGAMUFFIN_CONSOLIDATION_GIST_TTL_DAYS", 365),
+
+		DecayEnabled:      envBool("RAGAMUFFIN_DECAY_ENABLED"),
+		DecayHalfLifeDays: envFloat("RAGAMUFFIN_DECAY_HALF_LIFE_DAYS", 30.0),
 
 		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
