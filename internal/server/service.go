@@ -55,7 +55,11 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 	}
 
 	// Embed query
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, embedQuery)
+	emb := s.embeddingFor(ctx)
+	if emb == nil {
+		return nil, 0, fmt.Errorf("embedding not configured")
+	}
+	vector, err := emb.EmbedSingle(ctx, embedQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("embedding failed: %w", err)
 	}
@@ -153,6 +157,13 @@ func (s *Server) rerankIfRequested(ctx context.Context, req recallRequest, recal
 // lexical component of hybrid/sparse recall is never silently dropped.
 func (s *Server) multiQueryRecall(ctx context.Context, req recallRequest, queries []string) ([]recallResult, float32, error) {
 	emb := s.embeddingFor(ctx)
+	if emb == nil {
+		return nil, 0, fmt.Errorf("embedding not configured")
+	}
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil, 0, fmt.Errorf("vector store not configured")
+	}
 	filter := recallFilter(req)
 	if isTemporalRecall(req.TimeFilter) {
 		if dateTo := temporalRecallDate(req.TimeFilter); dateTo != "" {
@@ -167,7 +178,6 @@ func (s *Server) multiQueryRecall(ctx context.Context, req recallRequest, querie
 		}
 	}
 
-	qc := s.qdrantFor(ctx)
 	var lists [][]string
 	for _, q := range queries {
 		vec, err := emb.EmbedSingle(ctx, q)
@@ -262,6 +272,9 @@ func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []f
 // recallResult, preserving the fused order. Used by sparse and hybrid modes.
 func (s *Server) recallByIDs(ctx context.Context, ranked []retrieval.RankedID, req recallRequest, filter *pb.Filter) ([]recallResult, float32, error) {
 	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil, 0, fmt.Errorf("vector store not configured")
+	}
 	ids := make([]*pb.PointId, 0, len(ranked))
 	for _, r := range ranked {
 		ids = append(ids, pb.NewIDUUID(r.ID))
@@ -616,7 +629,11 @@ func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, t
 	if err != nil {
 		return answer, sources, modeUsed, nil, nil // explanation is optional
 	}
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0, "", nil)
+	ec2 := s.qdrantFor(ctx)
+	if ec2 == nil {
+		return answer, sources, modeUsed, nil, nil // explanation is optional
+	}
+	results, err := ec2.Search(ctx, vector, uint64(topK), 0, "", nil)
 	if err != nil {
 		return answer, sources, modeUsed, nil, nil
 	}

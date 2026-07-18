@@ -297,6 +297,9 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 		if err != nil {
 			return fmt.Errorf("embed batch: %w", err)
 		}
+		if len(vectors) != len(batch) {
+			return fmt.Errorf("embed batch: got %d vectors for %d texts", len(vectors), len(batch))
+		}
 
 		points := make([]*pb.PointStruct, len(batch))
 		for j, c := range batch {
