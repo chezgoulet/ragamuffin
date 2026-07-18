@@ -599,7 +599,12 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if b.Len() > 0 {
-			ans, err := s.llmFor(ctx).Synthesize(ctx, req.Query, b.String())
+			llm := s.llmFor(ctx)
+			if llm == nil {
+				writeError(w, 503, "LLM_UNAVAILABLE", "answer synthesis requested but no LLM is configured")
+				return
+			}
+			ans, err := llm.Synthesize(ctx, req.Query, b.String())
 			if err == nil {
 				answer = ans
 			} else {
