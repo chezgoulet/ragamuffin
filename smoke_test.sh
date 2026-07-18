@@ -1015,6 +1015,28 @@ else
   red "/v1/graph/edges bad as_of" "HTTP $CODE (expected 400 or 503)"
 fi
 
+# Community detection (B4). 200 when graph+community enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/v1/graph/community/detect")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/community/detect reachable (HTTP $CODE)"
+else
+  red "/v1/graph/community/detect" "HTTP $CODE (expected 200 or 503)"
+fi
+# Listing communities: 200 when graph enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/communities")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/communities reachable (HTTP $CODE)"
+else
+  red "/v1/graph/communities" "HTTP $CODE (expected 200 or 503)"
+fi
+# Unknown community id: 404 when graph enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/community/does-not-exist")
+if [ "$CODE" = "404" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/community/{id} handles unknown id (HTTP $CODE)"
+else
+  red "/v1/graph/community/{id}" "HTTP $CODE (expected 404 or 503)"
+fi
+
 echo ""
 echo "--- /v1/consolidation/status ---"
 # Always 200: returns {"enabled":false} when the worker is off, or full stats

@@ -185,6 +185,11 @@ type Config struct {
 	GraphEnabled bool
 	GraphPath    string // explicit path for graph.db; empty = heuristic
 
+	// Community summaries (B4). When enabled, POST /v1/graph/community/detect
+	// runs Louvain community detection over the graph and (with an LLM)
+	// generates per-community summaries. Requires GraphEnabled.
+	GraphCommunityEnabled bool
+
 	// Optional — LLM
 	LLMProvider        string
 	LLMBaseURL         string
@@ -413,6 +418,10 @@ func (c *Config) Validate() []string {
 	if c.DecayEnabled && c.DecayHalfLifeDays <= 0 {
 		errs = append(errs, "RAGAMUFFIN_DECAY_HALF_LIFE_DAYS must be positive when decay is enabled")
 	}
+	// Community detection requires the temporal graph.
+	if c.GraphCommunityEnabled && !c.GraphEnabled {
+		errs = append(errs, "RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED=true requires RAGAMUFFIN_GRAPH_ENABLED=true")
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -561,8 +570,9 @@ func Load() (*Config, error) {
 		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:          envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
 
-		GraphEnabled: envBool("RAGAMUFFIN_GRAPH_ENABLED"),
-		GraphPath:    os.Getenv("RAGAMUFFIN_GRAPH_PATH"),
+		GraphEnabled:          envBool("RAGAMUFFIN_GRAPH_ENABLED"),
+		GraphPath:             os.Getenv("RAGAMUFFIN_GRAPH_PATH"),
+		GraphCommunityEnabled: envBool("RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED"),
 
 		LLMProvider:        os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:         envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
