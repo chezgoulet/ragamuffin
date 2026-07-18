@@ -1168,7 +1168,7 @@ func (s *Server) doFactsList(ctx context.Context, key, prefix, keyContains, tag,
 		if len(points) == 0 {
 			return nil, fmt.Errorf("fact not found: %s", key)
 		}
-		fr := pointToFact(points[0])
+		fr := pointToFact(points[0], s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 		if fr == nil {
 			return nil, fmt.Errorf("corrupt fact data for key: %s", key)
 		}
@@ -1229,7 +1229,7 @@ func (s *Server) doFactsList(ctx context.Context, key, prefix, keyContains, tag,
 
 	facts := make([]interface{}, 0, len(points))
 	for _, p := range points {
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays); fr != nil {
 			if keyContains != "" && !strings.Contains(fr.Key, keyContains) {
 				continue
 			}

@@ -469,7 +469,7 @@ func TestFactsGet_ListAll(t *testing.T) {
 	t.Logf("debug: simulation got %d points from s.facts.ScrollFiltered", len(pts))
 	simResp := make([]factResponse, 0, 100)
 	for _, p := range pts {
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, false, 0); fr != nil {
 			simResp = append(simResp, *fr)
 		}
 	}
