@@ -119,6 +119,11 @@ func louvainOnePass(g *louvainGraph) ([]int, bool) {
 			for v, w := range g.adj[u] {
 				wToComm[label[v]] += w
 			}
+			// Self-loop weight represents intra-community edge mass from the
+			// previous aggregation level. Include it in the stay-candidate
+			// weight so modularity gain correctly accounts for internal edges.
+			// At level 1 selfLoop[u] is always 0, so this is a no-op there.
+			wToComm[cu] += g.selfLoop[u]
 
 			bestC := cu
 			bestGain := 0.0
