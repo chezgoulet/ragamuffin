@@ -1285,6 +1285,9 @@ func factToMap(fr *factResponse) map[string]interface{} {
 	if len(fr.Contradicts) > 0 {
 		m["contradicts"] = fr.Contradicts
 	}
+	if len(fr.Supports) > 0 {
+		m["supports"] = fr.Supports
+	}
 	if fr.LastConfirmedAt != "" {
 		m["last_confirmed_at"] = fr.LastConfirmedAt
 	}
@@ -1401,30 +1404,50 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		created = true
 	}
 
-	// Build the fact payload (mirrors handleFactsPost's logic)
+	// Build the fact payload (mirrors handleFactsPost's lifecycle field preservation)
 	now := time.Now().UTC().Format(time.RFC3339)
-	var createdAt string
-	var confirmationCount int64 = 1
-	var lastConfirmedAt string
+	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
+	var confirmationCount, supersededBy, accessCount float64
+	var conflictResolved bool
+	var existingContradicts, existingSupports []string
 
 	if exists {
 		points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
+		if err != nil {
+			s.log(ctx).Warn("facts upsert: reading existing fields failed", "key", key, "error", err)
+		}
 		if err == nil && len(points) > 0 {
-			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
-			if cc, ok := points[0].GetPayload()["confirmation_count"]; ok {
-				confirmationCount = cc.GetIntegerValue() + 1
-			}
-			lastConfirmedAt = now
+			p := points[0].GetPayload()
+			createdAt, _ = qutil.GetPayloadString(p, "created_at")
+			status, _ = qutil.GetPayloadString(p, "status")
+			supersedes, _ = qutil.GetPayloadString(p, "supersedes")
+			refines, _ = qutil.GetPayloadString(p, "refines")
+			lastConfirmedAt, _ = qutil.GetPayloadString(p, "last_confirmed_at")
+			lastAccessedAt, _ = qutil.GetPayloadString(p, "last_accessed_at")
+			confirmationCount, _ = qutil.GetPayloadFloat(p, "confirmation_count")
+			supersededBy, _ = qutil.GetPayloadFloat(p, "superseded_by")
+			accessCount, _ = qutil.GetPayloadFloat(p, "access_count")
+			conflictResolved = qutil.GetPayloadBoolValue(p, "conflict_resolved")
+			existingContradicts = qutil.GetPayloadStringList(p, "contradicts")
+			existingSupports = qutil.GetPayloadStringList(p, "supports")
 		}
 	}
 	if createdAt == "" {
 		createdAt = now
 	}
+	if status == "" {
+		status = "active"
+	}
+	if lastConfirmedAt == "" {
+		lastConfirmedAt = now
+	}
+	if confirmationCount <= 0 {
+		confirmationCount = 1
+	}
 
 	if confidence < 0 || confidence > 1.0 {
 		confidence = 1.0
 	}
-
 	if ttlDays < 0 {
 		ttlDays = 0
 	}
@@ -1441,22 +1464,23 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		"source":             source,
 		"source_type":        sourceType,
 		"confidence":         confidence,
-		"status":             "active",
-		"supersedes":         "",
-		"conflict_resolved":  true,
+		"status":             status,
+		"supersedes":         supersedes,
+		"superseded_by":      supersededBy,
+		"refines":            refines,
+		"conflict_resolved":  conflictResolved,
 		"confirmation_count": confirmationCount,
 		"last_confirmed_at":  lastConfirmedAt,
+		"access_count":       accessCount,
+		"last_accessed_at":   lastAccessedAt,
 		"created_at":         createdAt,
 		"updated_at":         now,
 		"ttl_days":           int64(ttlDays),
 		"expires_at":         expiresAt,
 		"expires_at_unix":    expiresAtUnix,
 	})
-	payload["contradicts"] = &pb.Value{
-		Kind: &pb.Value_ListValue{
-			ListValue: &pb.ListValue{Values: []*pb.Value{}},
-		},
-	}
+	payload["contradicts"] = qutil.NvList(existingContradicts)
+	payload["supports"] = qutil.NvList(existingSupports)
 
 	if len(tags) > 0 {
 		tagVals := make([]*pb.Value, len(tags))

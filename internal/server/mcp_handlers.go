@@ -1045,8 +1045,10 @@ func (s *Server) mcpFactProvenance(ctx context.Context, args map[string]interfac
 	payload := points[0].GetPayload()
 	var relatedChunks []string
 	if rc, ok := payload["related_chunks"]; ok {
-		for _, v := range rc.GetListValue().GetValues() {
-			relatedChunks = append(relatedChunks, v.GetStringValue())
+		if lv := rc.GetListValue(); lv != nil {
+			for _, v := range lv.GetValues() {
+				relatedChunks = append(relatedChunks, v.GetStringValue())
+			}
 		}
 	}
 
@@ -1081,9 +1083,23 @@ func (s *Server) mcpReview(ctx context.Context, args map[string]interface{}) (in
 		}
 		qc := s.factsQdrantFor(ctx)
 		collection := s.factsCollectionFor(ctx)
-		payload := map[string]*pb.Value{"status": qutil.Nv("active")}
-		if resolution == "reject" {
-			payload["status"] = qutil.Nv("rejected")
+		var payload map[string]*pb.Value
+		switch resolution {
+		case "confirm":
+			payload = map[string]*pb.Value{
+				"status":            qutil.Nv("active"),
+				"conflict_resolved": qutil.Nv(true),
+			}
+		case "reject":
+			payload = map[string]*pb.Value{
+				"status": qutil.Nv("rejected"),
+			}
+		case "supersede":
+			payload = map[string]*pb.Value{
+				"status": qutil.Nv("superseded"),
+			}
+		default:
+			return nil, fmt.Errorf("unknown resolution: %q (expected confirm, supersede, or reject)", resolution)
 		}
 		if err := qc.SetPayload(ctx, collection, []*pb.PointId{{
 			PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
@@ -1263,6 +1279,10 @@ func (s *Server) mcpLinks(ctx context.Context, args map[string]interface{}) (int
 		vault = "default"
 	}
 
+	if s.logStore == nil {
+		return nil, fmt.Errorf("log store not available")
+	}
+
 	switch mode {
 	case "backlinks":
 		backlinks, err := s.logStore.GetInboundLinks(ctx2, source, vault)
@@ -1399,6 +1419,10 @@ func (s *Server) ensureAgentVault(ctx context.Context, vaultName string) {
 
 	qc := s.qdrantFor(ctx)
 	ec := s.embeddingFor(ctx)
+	if qc == nil || ec == nil {
+		s.logger.Warn("mcp: cannot provision agent vault — qdrant or embedder not configured", "vault", vaultName)
+		return
+	}
 
 	idx := indexer.New(vaultPath, vaultName, qc, ec, s.logger)
 	if err := s.indexers.Add(vaultName, idx, qc); err != nil {
