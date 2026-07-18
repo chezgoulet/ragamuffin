@@ -817,6 +817,18 @@ else
   echo "FAIL: /v1/facts/nonexistent/history unexpected: $CODE"
 fi
 
+# ── /v1/review/stats (accessibility decay observable — B1) ───────────────────
+echo ""
+echo "--- /v1/review/stats ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/review/stats" 2>&1)
+if [ "$RESP" = "200" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/review/stats returns 200 (avg_accessibility present when RAGAMUFFIN_DECAY_ENABLED)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/review/stats expected 200, got $RESP"
+fi
+
 # ── /v1/chunks (no vault context, assumes default) ───────────────────────────
 echo ""
 echo "--- /v1/chunks (vault-scoped redirect) ---"

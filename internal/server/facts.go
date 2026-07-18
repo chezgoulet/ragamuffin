@@ -14,6 +14,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
@@ -51,32 +52,34 @@ type factPayload struct {
 
 // factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
-	Key               string           `json:"key"`
-	Value             string           `json:"value"`
-	Tags              []string         `json:"tags,omitempty"`
-	Source            string           `json:"source,omitempty"`
-	SourceType        string           `json:"source_type,omitempty"`
-	Confidence        *float64         `json:"confidence,omitempty"`
-	Status            string           `json:"status"`
-	Version           int              `json:"version,omitempty"`
-	Supersedes        string           `json:"supersedes"`
-	SupersededBy      int              `json:"superseded_by,omitempty"`
-	Contradicts       []string         `json:"contradicts,omitempty"`
-	Refines           string           `json:"refines"`
-	Supports          []string         `json:"supports,omitempty"`
-	ConflictResolved  bool             `json:"conflict_resolved"`
-	ConfirmationCount int              `json:"confirmation_count"`
-	LastConfirmedAt   string           `json:"last_confirmed_at,omitempty"`
-	CreatedAt         string           `json:"created_at,omitempty"`
-	UpdatedAt         string           `json:"updated_at"`
-	ExpiresAt         string           `json:"expires_at,omitempty"`
-	RelatedChunks     []string         `json:"related_chunks,omitempty"`
-	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
-	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
-	Provenance        *provenanceEntry `json:"provenance,omitempty"`
-	Score             float64          `json:"score,omitempty"`
-	ReadCount         int              `json:"read_count,omitempty"`
-	LastReadAt        string           `json:"last_read_at,omitempty"`
+	Key                 string           `json:"key"`
+	Value               string           `json:"value"`
+	Tags                []string         `json:"tags,omitempty"`
+	Source              string           `json:"source,omitempty"`
+	SourceType          string           `json:"source_type,omitempty"`
+	Confidence          *float64         `json:"confidence,omitempty"`
+	Status              string           `json:"status"`
+	Version             int              `json:"version,omitempty"`
+	Supersedes          string           `json:"supersedes"`
+	SupersededBy        int              `json:"superseded_by,omitempty"`
+	Contradicts         []string         `json:"contradicts,omitempty"`
+	Refines             string           `json:"refines"`
+	Supports            []string         `json:"supports,omitempty"`
+	ConflictResolved    bool             `json:"conflict_resolved"`
+	ConfirmationCount   int              `json:"confirmation_count"`
+	LastConfirmedAt     string           `json:"last_confirmed_at,omitempty"`
+	CreatedAt           string           `json:"created_at,omitempty"`
+	UpdatedAt           string           `json:"updated_at"`
+	ExpiresAt           string           `json:"expires_at,omitempty"`
+	RelatedChunks       []string         `json:"related_chunks,omitempty"`
+	ValidFrom           string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil          string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Provenance          *provenanceEntry `json:"provenance,omitempty"`
+	Score               float64          `json:"score,omitempty"`
+	ReadCount           int              `json:"read_count,omitempty"`
+	LastReadAt          string           `json:"last_read_at,omitempty"`
+	Accessibility       *float64         `json:"accessibility,omitempty"`        // B1: soft decay score in (0,1]
+	EffectiveConfidence *float64         `json:"effective_confidence,omitempty"` // B1: confidence × accessibility
 }
 
 // provenanceEntry is a resolved provenance link from a fact to its source.
@@ -1457,6 +1460,12 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
 	fr.ReadCount, _ = qutil.GetPayloadInt(payload, "access_count")
 	fr.LastReadAt, _ = qutil.GetPayloadString(payload, "last_accessed_at")
+	if acc, ok := qutil.GetPayloadFloat(payload, "accessibility"); ok {
+		fr.Accessibility = &acc
+	}
+	if eff, ok := qutil.GetPayloadFloat(payload, "effective_confidence"); ok {
+		fr.EffectiveConfidence = &eff
+	}
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1754,9 +1763,35 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 		"access_count":     qutil.Nv(float64(newCount)),
 		"last_accessed_at": qutil.Nv(nowStr),
 	}
+
+	// Continuous accessibility decay (B1): stamp the soft accessibility score
+	// and effective_confidence so ranking/threshold consumers and review stats
+	// see a current value without recomputing on every read. The updated
+	// access timestamp is applied first so decay reflects this very access.
+	if s.cfg.DecayEnabled {
+		merged := mergePayloadForDecay(pt.GetPayload(), newCount, nowStr)
+		acc := pruner.Accessibility(merged, now, s.cfg.DecayHalfLifeDays)
+		eff := pruner.EffectiveConfidence(merged, now, s.cfg.DecayHalfLifeDays)
+		setPayload["accessibility"] = qutil.Nv(acc)
+		setPayload["effective_confidence"] = qutil.Nv(eff)
+	}
+
 	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
 	}
+}
+
+// mergePayloadForDecay returns a shallow copy of payload with the just-updated
+// access count and last_accessed_at applied, so decay is computed against the
+// current access rather than the stale stored values.
+func mergePayloadForDecay(payload map[string]*qdrant.Value, accessCount int, nowStr string) map[string]*qdrant.Value {
+	merged := make(map[string]*qdrant.Value, len(payload)+2)
+	for k, v := range payload {
+		merged[k] = v
+	}
+	merged["access_count"] = qutil.Nv(float64(accessCount))
+	merged["last_accessed_at"] = qutil.Nv(nowStr)
+	return merged
 }
 
 // ── /v1/facts/{key}/provenance — Fact Lineage (#803) ──────────────────────────

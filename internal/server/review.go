@@ -9,6 +9,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -56,6 +57,10 @@ type reviewStatsResponse struct {
 	BySourceType     map[string]int `json:"by_source_type"`
 	OldestItem       string         `json:"oldest_item,omitempty"`
 	AvgPendingDays   float64        `json:"avg_pending_days,omitempty"`
+	// AvgAccessibility is the mean soft-decay accessibility across the scanned
+	// facts, reported only when decay is enabled (B1). A falling value over
+	// time makes memory fade observable.
+	AvgAccessibility *float64 `json:"avg_accessibility,omitempty"`
 }
 
 // ── GET /v1/review ────────────────────────────────────────────────────────────
@@ -576,6 +581,7 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 	var totalPendingDays float64
 	var oldestTime time.Time
 	var pointCount int
+	var totalAccessibility float64
 
 	for {
 		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, pageSize, scrollOffset)
@@ -630,6 +636,10 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 					totalPendingDays += now.Sub(ct).Hours() / 24
 				}
 			}
+
+			if s.cfg.DecayEnabled {
+				totalAccessibility += pruner.Accessibility(payload, now, s.cfg.DecayHalfLifeDays)
+			}
 		}
 
 		pointCount += len(points)
@@ -647,6 +657,10 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 	}
 	if pointCount > 0 {
 		stats.AvgPendingDays = totalPendingDays / float64(pointCount)
+		if s.cfg.DecayEnabled {
+			avg := totalAccessibility / float64(pointCount)
+			stats.AvgAccessibility = &avg
+		}
 	}
 
 	writeJSON(w, 200, stats)
