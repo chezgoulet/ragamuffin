@@ -1,57 +1,36 @@
 /**
- * Tests for RagamuffinClient — the internal HTTP client for the Ragamuffin API.
- * Uses mocked global fetch via node:test mock to avoid real HTTP calls.
+ * Tests for MCPClient — the MCP JSON-RPC client for the Ragamuffin API.
+ * Uses mocked global fetch via node:test mock.
  */
 
 import { describe, it, mock, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { RagamuffinClient } from "../index.js";
+import { MCPClient } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
-/** Set fetch to return a specific response. */
-function mockRespond(status, body, ok) {
-  const response = {
-    ok: ok !== undefined ? ok : status >= 200 && status < 300,
-    status,
-    json: () => Promise.resolve(body),
-    text: () =>
-      Promise.resolve(typeof body === "string" ? body : JSON.stringify(body)),
-  };
-  mock.method(globalThis, "fetch", () => Promise.resolve(response));
+/** Set fetch to return a specific JSON-RPC response. */
+function mockRespond(result, error) {
+  const body = { jsonrpc: "2.0", id: 1 };
+  if (error) {
+    body.error = typeof error === "string" ? { message: error, code: -32603 } : error;
+  } else {
+    body.result = result;
+  }
+  mock.method(globalThis, "fetch", () =>
+    Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(body),
+      text: () => Promise.resolve(JSON.stringify(body)),
+    }),
+  );
 }
 
-/** Accept a callback that receives (url, opts) and returns a response. */
 function mockFetchHandler(handler) {
   mock.method(globalThis, "fetch", handler);
-}
-
-let callCount = 0;
-
-/** Chain multiple fetch responses in call order. Returns call count fn. */
-function mockFetchSequence(...responses) {
-  callCount = 0;
-  const fetchMock = mock.method(globalThis, "fetch", (url, opts) => {
-    const idx = callCount++;
-    const resp = responses[idx];
-    if (!resp) {
-      return Promise.reject(new Error(`Unexpected fetch call #${idx}: ${url}`));
-    }
-    const handler = resp.handler || ((_url, _opts) => {
-      const ok = resp.ok !== undefined ? resp.ok : (resp.status >= 200 && resp.status < 300);
-      return Promise.resolve({
-        ok,
-        status: resp.status,
-        json: () => Promise.resolve(resp.body),
-        text: () =>
-          Promise.resolve(typeof resp.body === "string" ? resp.body : JSON.stringify(resp.body)),
-      });
-    });
-    return handler(url, opts);
-  });
-  return () => callCount;
 }
 
 function mockFetchReject(error) {
@@ -62,11 +41,11 @@ function mockFetchReject(error) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("RagamuffinClient", () => {
+describe("MCPClient", () => {
   let client;
 
   beforeEach(() => {
-    client = new RagamuffinClient({
+    client = new MCPClient({
       endpoint: "http://ragamuffin:8000",
       authToken: "",
       vaultPrefix: "agent::",
@@ -87,7 +66,7 @@ describe("RagamuffinClient", () => {
     });
 
     it("uses custom prefix", () => {
-      const c = new RagamuffinClient({
+      const c = new MCPClient({
         endpoint: "http://r:8000",
         vaultPrefix: "tenant::",
       });
@@ -95,166 +74,121 @@ describe("RagamuffinClient", () => {
     });
   });
 
-  describe("recall", () => {
-    it("returns results from server", async () => {
-      mockRespond(200, {
-        results: [
-          { text: "User prefers dark mode", score: 0.95 },
-          { text: "Uses Vim for editing", score: 0.72 },
-        ],
-        top_score: 0.95,
-      });
-
-      const results = await client.recall("agent::dev", "user preferences");
-      assert.equal(results.length, 2);
-      assert.equal(results[0].text, "User prefers dark mode");
-      assert.equal(results[0].score, 0.95);
-    });
-
-    it("sends correct request body", async () => {
+  describe("initialize", () => {
+    it("sends MCP initialize request", async () => {
       let capturedBody;
       mockFetchHandler((url, opts) => {
         capturedBody = JSON.parse(opts.body);
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ results: [] }),
-          text: () => Promise.resolve("{}"),
+          json: () => Promise.resolve({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { protocolVersion: "2024-11-05", capabilities: { tools: { listChanged: false } } },
+          }),
+          text: () => Promise.resolve(""),
         });
       });
 
-      await client.recall("agent::alice", "test query", { limit: 3, threshold: 0.5 });
-      assert.deepEqual(capturedBody, {
-        query: "test query",
-        top_k: 3,
-        score_threshold: 0.5,
-      });
+      const result = await client.initialize();
+      assert.equal(capturedBody.method, "initialize");
+      assert.equal(capturedBody.jsonrpc, "2.0");
+      assert.ok(result.protocolVersion);
     });
+  });
 
-    it("uses default limit and threshold", async () => {
+  describe("listTools", () => {
+    it("returns tools from server and caches them", async () => {
+      const toolList = [{ name: "ragamuffin_recall", description: "Search" }];
+      let callCount = 0;
+      mockFetchHandler((url, opts) => {
+        callCount++;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { tools: toolList },
+          }),
+          text: () => Promise.resolve(""),
+        });
+      });
+
+      const t1 = await client.listTools();
+      assert.equal(t1.length, 1);
+      assert.equal(t1[0].name, "ragamuffin_recall");
+      // Second call uses cache
+      const t2 = await client.listTools();
+      assert.equal(callCount, 1); // no extra fetch
+    });
+  });
+
+  describe("call", () => {
+    it("sends MCP tools/call request", async () => {
       let capturedBody;
       mockFetchHandler((url, opts) => {
         capturedBody = JSON.parse(opts.body);
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ results: [] }),
-          text: () => Promise.resolve("{}"),
+          json: () => Promise.resolve({
+            jsonrpc: "2.0",
+            id: 1,
+            result: { content: [{ type: "text", text: "success" }] },
+          }),
+          text: () => Promise.resolve(""),
         });
       });
 
-      await client.recall("agent::default", "query");
-      assert.equal(capturedBody.top_k, 5);
-      assert.equal(capturedBody.score_threshold, 0.3);
+      const result = await client.call("ragamuffin_recall", { query: "test", vault: "agent::dev" });
+      assert.equal(capturedBody.method, "tools/call");
+      assert.equal(capturedBody.params.name, "ragamuffin_recall");
+      assert.equal(capturedBody.params.arguments.query, "test");
+      assert.ok(result.content);
     });
 
-    it("returns empty array on empty results", async () => {
-      mockRespond(200, { results: [], top_score: 0 });
-      const results = await client.recall("agent::dev", "nothing");
-      assert.deepEqual(results, []);
-    });
-
-    it("throws on server error", async () => {
-      mockRespond(502, { error: "EMBEDDING_API_ERROR", message: "embedding failed" }, false);
+    it("throws on MCP error response", async () => {
+      mockRespond(null, { message: "query is required", code: -32602 });
       await assert.rejects(
-        () => client.recall("agent::dev", "test"),
-        /Ragamuffin POST.*502/,
+        () => client.call("ragamuffin_recall", {}),
+        /query is required/,
       );
     });
 
     it("throws on network error", async () => {
       mockFetchReject(new Error("fetch failed"));
       await assert.rejects(
-        () => client.recall("agent::dev", "test"),
+        () => client.call("ragamuffin_recall", { query: "test" }),
         /fetch failed/,
       );
     });
 
-    it("encodes vault name in URL", async () => {
-      let capturedUrl;
-      mockFetchHandler((url) => {
-        capturedUrl = url;
+    it("increments request ids", async () => {
+      let ids = [];
+      mockFetchHandler((url, opts) => {
+        const body = JSON.parse(opts.body);
+        ids.push(body.id);
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ results: [] }),
-          text: () => Promise.resolve("{}"),
-        });
-      });
-
-      await client.recall("agent::my agent", "query");
-      assert.ok(capturedUrl.includes("/vault/agent%3A%3Amy%20agent/recall"));
-    });
-  });
-
-  describe("storeFact", () => {
-    it("sends fact to server", async () => {
-      let capturedBody;
-      mockFetchHandler((url, opts) => {
-        capturedBody = JSON.parse(opts.body);
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ key: "user/prefers-dark", value: "dark mode" }),
-          text: () => Promise.resolve('{"key":"user/prefers-dark","value":"dark mode"}'),
-        });
-      });
-
-      const result = await client.storeFact("agent::dev", "user/prefers-dark", "dark mode");
-      assert.equal(capturedBody.key, "user/prefers-dark");
-      assert.equal(capturedBody.value, "dark mode");
-      assert.equal(result.key, "user/prefers-dark");
-    });
-
-    it("accepts optional tags and source", async () => {
-      let capturedBody;
-      mockFetchHandler((url, opts) => {
-        capturedBody = JSON.parse(opts.body);
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({}),
-          text: () => Promise.resolve("{}"),
-        });
-      });
-
-      await client.storeFact("agent::dev", "k", "v", {
-        tags: ["preference", "ui"],
-        source: "conversation#42",
-        sourceType: "agent_observation",
-      });
-      assert.deepEqual(capturedBody.tags, ["preference", "ui"]);
-      assert.equal(capturedBody.source, "conversation#42");
-      assert.equal(capturedBody.source_type, "agent_observation");
-    });
-  });
-
-  describe("deleteFact", () => {
-    it("sends DELETE request", async () => {
-      let capturedMethod, capturedUrl;
-      mockFetchHandler((url, opts) => {
-        capturedUrl = url;
-        capturedMethod = opts.method;
-        return Promise.resolve({
-          ok: true,
-          status: 204,
-          json: () => Promise.resolve(null),
+          json: () => Promise.resolve({ jsonrpc: "2.0", id: body.id, result: {} }),
           text: () => Promise.resolve(""),
         });
       });
 
-      await client.deleteFact("agent::dev", "user/old-preference");
-      assert.equal(capturedMethod, "DELETE");
-      assert.ok(capturedUrl.includes("key=user%2Fold-preference"));
+      await client.call("tool_a", {});
+      await client.call("tool_b", {});
+      assert.notEqual(ids[0], ids[1]);
     });
   });
 
   describe("auth headers", () => {
     it("includes bearer token when configured", async () => {
-      const authed = new RagamuffinClient({
+      const authed = new MCPClient({
         endpoint: "http://r:8000",
         authToken: "sekret",
-        vaultPrefix: "agent::",
       });
 
       let capturedHeaders;
@@ -263,12 +197,12 @@ describe("RagamuffinClient", () => {
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ results: [] }),
-          text: () => Promise.resolve("{}"),
+          json: () => Promise.resolve({ jsonrpc: "2.0", id: 1, result: {} }),
+          text: () => Promise.resolve(""),
         });
       });
 
-      await authed.recall("agent::dev", "test");
+      await authed.call("ragamuffin_recall", { query: "test" });
       assert.equal(capturedHeaders["Authorization"], "Bearer sekret");
     });
 
@@ -279,13 +213,25 @@ describe("RagamuffinClient", () => {
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve({ results: [] }),
-          text: () => Promise.resolve("{}"),
+          json: () => Promise.resolve({ jsonrpc: "2.0", id: 1, result: {} }),
+          text: () => Promise.resolve(""),
         });
       });
 
-      await client.recall("agent::dev", "test");
+      await client.call("ragamuffin_recall", { query: "test" });
       assert.equal(capturedHeaders["Authorization"], undefined);
+    });
+  });
+
+  describe("tools cache (getter)", () => {
+    it("returns empty before listTools", () => {
+      assert.deepEqual(client.tools, []);
+    });
+
+    it("returns cached tools after listTools", async () => {
+      mockRespond({ tools: [{ name: "t1" }, { name: "t2" }] });
+      await client.listTools();
+      assert.equal(client.tools.length, 2);
     });
   });
 });
