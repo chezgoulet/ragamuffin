@@ -44,7 +44,7 @@ type Indexer struct {
 	indexing    bool
 	progressPct int
 	totalFiles  int
-	knownFiles  map[string]struct{} // set of indexed files for dedup counting
+	knownFiles  map[string]int // path → chunk count for dedup and accurate stats
 
 	reindexCh chan struct{} // buffered channel (cap 1) for re-index requests
 
@@ -64,7 +64,7 @@ func New(vaultPath, vaultName string, qc qdrant.FactStore, ec embedding.Embedder
 		qdrant:     qc,
 		embedder:   ec,
 		logger:     logger,
-		knownFiles: make(map[string]struct{}),
+		knownFiles: make(map[string]int),
 		reindexCh:  make(chan struct{}, 1),
 	}
 }
@@ -173,7 +173,7 @@ func (idx *Indexer) fullReindex(ctx context.Context) {
 	idx.mu.Lock()
 	idx.indexing = true
 	idx.progressPct = 0
-	idx.knownFiles = make(map[string]struct{})
+	idx.knownFiles = make(map[string]int)
 	idx.chunkCount = 0
 	idx.fileCount = 0
 	idx.mu.Unlock()
@@ -240,7 +240,9 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	}
 	modTime := stat.ModTime()
 
-	// Delete old chunks before re-indexing
+	// Delete old chunks before re-indexing. Deleting first means a failed
+	// embed/upsert leaves the file temporarily unsearchable (mitigated by
+	// deterministic point IDs and re-index on the next file event).
 	if err := idx.qdrant.DeleteBySource(ctx, relPath); err != nil {
 		idx.logger.Warn("indexer: failed to delete old chunks", "path", relPath, "error", err)
 	}
@@ -340,11 +342,12 @@ func (idx *Indexer) indexFile(ctx context.Context, absPath, relPath string) erro
 	}
 
 	idx.mu.Lock()
-	if _, seen := idx.knownFiles[relPath]; !seen {
-		idx.knownFiles[relPath] = struct{}{}
+	oldChunks := idx.knownFiles[relPath]
+	if oldChunks == 0 {
 		idx.fileCount++
 	}
-	idx.chunkCount += len(chunks)
+	idx.chunkCount += len(chunks) - oldChunks
+	idx.knownFiles[relPath] = len(chunks)
 	idx.lastIndexed = time.Now()
 	// Update knownPaths on incremental index — non-fatal if stale
 	if idx.linkWriter != nil {
@@ -381,6 +384,11 @@ func (idx *Indexer) Ingest(ctx context.Context, content, source string, tags []s
 		chunker.Options{MaxTokens: idx.chunkMaxTokens})
 	if len(chunks) == 0 {
 		return nil
+	}
+
+	// Delete stale chunks from prior ingestions before upserting new ones.
+	if err := idx.qdrant.DeleteBySource(ctx, source); err != nil {
+		idx.logger.Warn("indexer: failed to delete stale session chunks", "source", source, "error", err)
 	}
 
 	// Generate embeddings in batches
