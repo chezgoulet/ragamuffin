@@ -15,6 +15,7 @@ package graph
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -138,6 +139,18 @@ func migrate(db *sql.DB) error {
 		CREATE INDEX IF NOT EXISTS idx_edge_source  ON graph_edges(source_id);
 		CREATE INDEX IF NOT EXISTS idx_edge_target  ON graph_edges(target_id);
 		CREATE INDEX IF NOT EXISTS idx_edge_type    ON graph_edges(type);
+
+		CREATE TABLE IF NOT EXISTS graph_communities (
+			id         TEXT PRIMARY KEY,
+			vault      TEXT NOT NULL,
+			label      INTEGER NOT NULL,
+			member_ids TEXT NOT NULL DEFAULT '[]',
+			size       INTEGER NOT NULL DEFAULT 0,
+			summary    TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_community_vault ON graph_communities(vault);
 	`)
 	if err != nil {
 		return err
@@ -369,4 +382,118 @@ func (s *Store) Stats(ctx context.Context, vault string) (entities, edges, inval
 		return 0, 0, 0, fmt.Errorf("graph: count invalidated: %w", err)
 	}
 	return entities, edges, invalidated, nil
+}
+
+// ListEntities returns all entities in a vault, ordered by id for determinism.
+func (s *Store) ListEntities(ctx context.Context, vault string) ([]Entity, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, vault, name, kind, summary, created_at, updated_at
+		 FROM graph_entities WHERE vault = ? ORDER BY id`, vault)
+	if err != nil {
+		return nil, fmt.Errorf("graph: list entities: %w", err)
+	}
+	defer rows.Close()
+	var out []Entity
+	for rows.Next() {
+		var e Entity
+		var kind string
+		if err := rows.Scan(&e.ID, &e.Vault, &e.Name, &kind, &e.Summary, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("graph: scan entity: %w", err)
+		}
+		e.Kind = EntityKind(kind)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// Community is a detected cluster of entities with an optional LLM summary.
+type Community struct {
+	ID        string   `json:"id"`
+	Vault     string   `json:"vault"`
+	Label     int      `json:"label"`
+	MemberIDs []string `json:"member_ids"`
+	Size      int      `json:"size"`
+	Summary   string   `json:"summary,omitempty"`
+	CreatedAt string   `json:"created_at"`
+	UpdatedAt string   `json:"updated_at"`
+}
+
+// ReplaceCommunities atomically clears and rewrites the community set for a vault.
+// Community detection is a full recompute, so prior rows are discarded.
+func (s *Store) ReplaceCommunities(ctx context.Context, vault string, comms []Community) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("graph: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM graph_communities WHERE vault = ?`, vault); err != nil {
+		return fmt.Errorf("graph: clear communities: %w", err)
+	}
+	for _, c := range comms {
+		members, _ := json.Marshal(c.MemberIDs)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO graph_communities (id, vault, label, member_ids, size, summary, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.ID, vault, c.Label, string(members), len(c.MemberIDs), c.Summary, now, now); err != nil {
+			return fmt.Errorf("graph: insert community: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("graph: commit communities: %w", err)
+	}
+	return nil
+}
+
+// UpdateCommunitySummary sets the summary text for one community.
+func (s *Store) UpdateCommunitySummary(ctx context.Context, id, summary string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE graph_communities SET summary = ?, updated_at = ? WHERE id = ?`,
+		summary, now, id)
+	if err != nil {
+		return fmt.Errorf("graph: update community summary: %w", err)
+	}
+	return nil
+}
+
+// GetCommunity returns one community by id (nil when not found).
+func (s *Store) GetCommunity(ctx context.Context, id string) (*Community, error) {
+	var c Community
+	var members string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, vault, label, member_ids, size, summary, created_at, updated_at
+		 FROM graph_communities WHERE id = ?`, id).
+		Scan(&c.ID, &c.Vault, &c.Label, &members, &c.Size, &c.Summary, &c.CreatedAt, &c.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("graph: get community: %w", err)
+	}
+	_ = json.Unmarshal([]byte(members), &c.MemberIDs)
+	return &c, nil
+}
+
+// Communities lists all communities in a vault, largest first.
+func (s *Store) Communities(ctx context.Context, vault string) ([]Community, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, vault, label, member_ids, size, summary, created_at, updated_at
+		 FROM graph_communities WHERE vault = ? ORDER BY size DESC, id`, vault)
+	if err != nil {
+		return nil, fmt.Errorf("graph: list communities: %w", err)
+	}
+	defer rows.Close()
+	var out []Community
+	for rows.Next() {
+		var c Community
+		var members string
+		if err := rows.Scan(&c.ID, &c.Vault, &c.Label, &members, &c.Size, &c.Summary, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("graph: scan community: %w", err)
+		}
+		_ = json.Unmarshal([]byte(members), &c.MemberIDs)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }

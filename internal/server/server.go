@@ -80,8 +80,9 @@ type Server struct {
 
 	// Temporal knowledge graph (B2). Optional; nil when RAGAMUFFIN_GRAPH_ENABLED
 	// is off. graphExtractor is nil without an LLM.
-	graph          *graph.Store
-	graphExtractor *graph.Extractor
+	graph                    *graph.Store
+	graphExtractor           *graph.Extractor
+	graphCommunitySummarizer *graph.CommunitySummarizer // B4; nil without an LLM
 
 	// Sleep-time consolidation worker (B3). Optional; nil when disabled.
 	consolidator *consolidation.Consolidator
@@ -96,6 +97,9 @@ type Server struct {
 func (s *Server) SetGraph(store *graph.Store, ext *graph.Extractor) {
 	s.graph = store
 	s.graphExtractor = ext
+	if store != nil && s.llm != nil {
+		s.graphCommunitySummarizer = graph.NewCommunitySummarizer(store, s.llm, s.logger)
+	}
 }
 
 // New creates a new Server.
@@ -199,6 +203,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/graph/entity/{id}", s.withRequestID(s.handleGraphEntity))
 	mux.HandleFunc("/v1/graph/edges", s.withRequestID(s.handleGraphEdges))
 	mux.HandleFunc("/v1/graph/stats", s.withRequestID(s.handleGraphStats))
+	mux.HandleFunc("/v1/graph/community/detect", s.withRequestID(s.handleGraphCommunityDetect))
+	mux.HandleFunc("/v1/graph/community/{id}", s.withRequestID(s.handleGraphCommunity))
+	mux.HandleFunc("/v1/graph/communities", s.withRequestID(s.handleGraphCommunities))
 
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
@@ -233,6 +240,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.handleGraphEntity)))
 		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.handleGraphEdges)))
 		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.handleGraphStats)))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/detect", s.withRequestID(s.withVault(s.handleGraphCommunityDetect)))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/{id}", s.withRequestID(s.withVault(s.handleGraphCommunity)))
+		mux.HandleFunc("/vault/{name}/v1/graph/communities", s.withRequestID(s.withVault(s.handleGraphCommunities)))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -267,6 +277,9 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEntity))))
 		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEdges))))
 		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphStats))))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/detect", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunityDetect))))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/{id}", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunity))))
+		mux.HandleFunc("/vault/{name}/v1/graph/communities", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunities))))
 
 	}
 

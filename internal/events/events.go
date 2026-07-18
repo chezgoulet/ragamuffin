@@ -33,7 +33,16 @@ const (
 	TypeFactReviewed    = "fact.reviewed"
 	TypePrunerComplete  = "pruner.scan.complete"
 	TypeQueryProcessed  = "query.processed"
+
+	TypeGraphCommunityDetected = "graph.community.detected"
 )
+
+// GraphCommunityDetectedData is the payload for graph.community.detected (B4).
+type GraphCommunityDetectedData struct {
+	Vault       string `json:"vault"`
+	Communities int    `json:"communities"`
+	Summarized  int    `json:"summarized"`
+}
 
 // FileChangedData is the payload for vault.file.changed.
 type FileChangedData struct {
