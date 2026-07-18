@@ -383,6 +383,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
+	s.mcpHandler.SetNotificationHandler(context.Background(), func(ctx context.Context, method string, params json.RawMessage) error {
+		switch method {
+		case "notifications/session_end":
+			var p struct {
+				SessionID string `json:"session_id"`
+				Vault     string `json:"vault"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return fmt.Errorf("invalid session_end params: %w", err)
+			}
+			if p.SessionID == "" {
+				return fmt.Errorf("session_id is required")
+			}
+			return s.doFinalizeSession(ctx, p.SessionID, p.Vault)
+		default:
+			s.logger.Warn("mcp: unknown notification", "method", method)
+			return nil
+		}
+	})
 	mux.Handle("/mcp", s.mcpHandler)
 }
 

@@ -45,19 +45,17 @@ type ToolDefinition struct {
 
 // Handler dispatches MCP JSON-RPC requests to tool implementations.
 type Handler struct {
-	tools       []ToolDefinition
-	callHandler ToolCallHandler
-	logger      *slog.Logger
-	version     string
+	tools               []ToolDefinition
+	callHandler         ToolCallHandler
+	notificationHandler func(ctx context.Context, method string, params json.RawMessage) error
+	logger              *slog.Logger
+	version             string
 
 	mu      sync.Mutex
 	clients map[string]chan []byte // sessionID → SSE message channel
 }
 
 // ToolCallHandler is called when a client invokes a tool.
-// ctx is derived from the MCP HTTP request context — cancels when the
-// client disconnects. Returns the tool result as a JSON-serializable
-// value, or an error.
 type ToolCallHandler func(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error)
 
 // New creates an MCP handler.
@@ -69,6 +67,14 @@ func New(tools []ToolDefinition, handler ToolCallHandler, logger *slog.Logger, v
 		version:     version,
 		clients:     make(map[string]chan []byte),
 	}
+}
+
+// SetNotificationHandler registers a handler for MCP notifications
+// (e.g., notifications/session_end). Notifications are fire-and-forget — the
+// handler runs in a background goroutine so the client's HTTP response is not
+// blocked.
+func (h *Handler) SetNotificationHandler(ctx context.Context, fn func(ctx context.Context, method string, params json.RawMessage) error) {
+	h.notificationHandler = fn
 }
 
 // ServeHTTP handles both SSE (GET) and JSON-RPC (POST) on /mcp.
@@ -156,6 +162,9 @@ func (h *Handler) handleRPC(w http.ResponseWriter, r *http.Request) {
 		h.handleInitialize(w, req)
 	case "notifications/initialized":
 		// No response needed — client confirms initialization
+		w.WriteHeader(202)
+	case "notifications/session_end":
+		h.handleNotification(r.Context(), "notifications/session_end", req.Params)
 		w.WriteHeader(202)
 	case "tools/list":
 		h.handleToolsList(w, req, sessionID)
@@ -276,4 +285,18 @@ func sendRPCError(w http.ResponseWriter, id interface{}, code int, message strin
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleNotification dispatches an MCP notification to the registered handler.
+// Runs in a goroutine so the HTTP response (202) is sent immediately.
+func (h *Handler) handleNotification(ctx context.Context, method string, params json.RawMessage) {
+	if h.notificationHandler == nil {
+		h.logger.Warn("mcp: no notification handler registered", "method", method)
+		return
+	}
+	go func() {
+		if err := h.notificationHandler(ctx, method, params); err != nil {
+			h.logger.Warn("mcp: notification handler failed", "method", method, "error", err)
+		}
+	}()
 }

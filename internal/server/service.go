@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1117,6 +1118,100 @@ func (s *Server) doAppendTurn(ctx context.Context, sessionID, content, role stri
 		"role":       turn.Role,
 		"created_at": turn.CreatedAt,
 	}, nil
+}
+
+// doFinalizeSession finalizes a session: builds a summary, indexes it, extracts
+// key decisions as facts, and marks the session as finalized in the logstore.
+// Called by the MCP notifications/session_end handler. Idempotent — safe to
+// call multiple times (FinalizeSession no-ops if already finalized).
+func (s *Server) doFinalizeSession(ctx context.Context, sessionID, vaultName string) error {
+	if s.logStore == nil {
+		return fmt.Errorf("session store not available")
+	}
+
+	sess, turns, err := s.logStore.GetSession(ctx, sessionID, 0)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	vault := vaultName
+	if vault == "" {
+		vault = sess.Vault
+	}
+	if vault == "" {
+		vault = "default"
+	}
+
+	// Build a summary from turn content
+	var userTopics, asstTopics []string
+	seenTopics := map[string]bool{}
+	for _, t := range turns {
+		for _, keyword := range []string{"decision", "conclusion", "config", "prefer", "plan", "bug", "feature", "design"} {
+			if !seenTopics[keyword] && strings.Contains(strings.ToLower(t.Content), keyword) {
+				seenTopics[keyword] = true
+				if t.Role == "user" {
+					userTopics = append(userTopics, keyword)
+				} else {
+					asstTopics = append(asstTopics, keyword)
+				}
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Session Summary\nSession: %s\nAgent: %s\nTurns: %d\n", sessionID, sess.AgentID, len(turns)))
+	if len(userTopics) > 0 {
+		b.WriteString(fmt.Sprintf("User topics: %s\n", strings.Join(userTopics, ", ")))
+	}
+	if len(asstTopics) > 0 {
+		b.WriteString(fmt.Sprintf("Key aspects: %s\n", strings.Join(asstTopics, ", ")))
+	}
+	if len(turns) > 0 {
+		first := turns[0].Content
+		if len(first) > 200 {
+			first = first[:200]
+		}
+		b.WriteString(fmt.Sprintf("First topic: %s\n", first))
+	}
+	summaryText := b.String()
+
+	// Index the summary as a fact
+	summaryKey := fmt.Sprintf("session/%s/summary", sessionID)
+	_, err = s.doFactsUpsert(ctx, summaryKey, summaryText, "session_end", "conversation", []string{sess.AgentID, "session_summary"}, 0.7, 365)
+	if err != nil {
+		s.log(ctx).Warn("session summary fact failed", "session_id", sessionID, "error", err)
+	}
+
+	// Extract decision/conclusion facts from assistant turns
+	for _, t := range turns {
+		if t.Role != "assistant" {
+			continue
+		}
+		for _, keyword := range []string{"decision", "concluded", "we will use", "the approach is", "chose", "agreed"} {
+			if strings.Contains(strings.ToLower(t.Content), keyword) {
+				content := t.Content
+				if len(content) > 500 {
+					content = content[:497] + "..."
+				}
+				digest := sha256.Sum256([]byte(content))
+				slug := strings.NewReplacer(" ", "-", ".", "", ",", "", ":", "", "'", "", "\"", "").Replace(strings.ToLower(content[:min(len(content), 48)]))
+				decisionKey := fmt.Sprintf("house/decision/%s-%x", slug, digest[:4])
+				_, derr := s.doFactsUpsert(ctx, decisionKey, content, "session_end_auto", "conversation", []string{sess.AgentID, "auto_extracted"}, 0.6, 365)
+				if derr != nil {
+					s.log(ctx).Debug("auto fact failed", "key", decisionKey, "error", derr)
+				}
+				break
+			}
+		}
+	}
+
+	// Mark session as finalized
+	if err := s.logStore.FinalizeSession(ctx, sessionID); err != nil {
+		s.log(ctx).Warn("finalize session failed", "session_id", sessionID, "error", err)
+	}
+
+	s.log(ctx).Info("session finalized", "session_id", sessionID, "vault", vault, "turns", len(turns))
+	return nil
 }
 
 // indexSessionTurn asynchronously indexes a turn's content into the vault's
