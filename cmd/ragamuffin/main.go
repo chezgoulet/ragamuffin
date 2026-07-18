@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
@@ -200,6 +201,12 @@ func main() {
 	var prunerEventChs []<-chan watcher.Event
 	var driverCancelFuncs []context.CancelFunc
 	var drivers []ingress.IngressDriver // all IngressDriver instances (for fan-in + lifecycle)
+
+	// Consolidation worker lifecycle. Declared at outer scope so the signal
+	// handler can stop the worker and wait for any in-flight sweep to finish
+	// before dependencies (logStore, factsQc) are closed.
+	cancelCons := func() {}
+	var consWG sync.WaitGroup
 	var initialDoneChs []chan struct{}
 
 	// Shared driver config
@@ -560,9 +567,13 @@ func main() {
 		vaultNames := func() []string { return idxManager.VaultNames() }
 		cons := consolidation.New(consCfg, server.NewLogstoreSessionSource(logStore), lm, ec, factsQc, emitter, vaultNames, logger)
 		srv.SetConsolidator(cons)
-		ctxCons, cancelCons := context.WithCancel(context.Background())
-		defer cancelCons()
-		go cons.Run(ctxCons)
+		var ctxCons context.Context
+		ctxCons, cancelCons = context.WithCancel(context.Background())
+		consWG.Add(1)
+		go func() {
+			defer consWG.Done()
+			cons.Run(ctxCons)
+		}()
 		logger.Info("consolidation worker started", "interval", cfg.ConsolidationInterval.String())
 	}
 
@@ -605,6 +616,11 @@ func main() {
 
 		// 0. Cancel server background goroutines first (#420)
 		srv.Shutdown()
+
+		// 0.5 Stop the consolidation worker and wait for any in-flight sweep to
+		// finish before closing logStore/factsQc it reads and writes.
+		cancelCons()
+		consWG.Wait()
 
 		// 1. Flush SQLite pending writes
 		if logStore != nil {
