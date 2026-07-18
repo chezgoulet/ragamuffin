@@ -6,7 +6,12 @@ import (
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/graph"
+	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	pb "github.com/qdrant/go-client/qdrant"
+
+	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 )
 
 // ── MCP Tools ─────────────────────────────────────────────────────────────
@@ -45,7 +50,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 		},
 		{
 			Name:        "ragamuffin_store",
-			Description: "Ingest structured content into the vault. The canonical Tier 1 write path — agents contribute knowledge, session summaries, observations, and annotations without going through the filesystem.",
+			Description: "Ingest structured content into the vault. The canonical Tier 1 write path — agents contribute knowledge, session summaries, observations, and annotations.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -75,25 +80,232 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
-			Name:        "ragamuffin_facts",
-			Description: "Read or write structured key-value facts. List facts by key/prefix/tag/status, or upsert a fact by key. Facts have lifecycle fields (confidence, source, TTL, status, supersession).",
+			Name:        "ragamuffin_fact_get",
+			Description: "Retrieve a single fact by its exact key. Returns the fact value, confidence, TTL, status, and relationships.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"operation":   map[string]interface{}{"type": "string", "description": "list or upsert"},
-					"key":         map[string]interface{}{"type": "string", "description": "Fact key. Required for both operations. Example: org/prefer-rust-cli"},
-					"value":       map[string]interface{}{"type": "string", "description": "Fact value. Required for upsert."},
-					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"tags":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Tags for filtering (upsert)"},
-					"prefix":      map[string]interface{}{"type": "string", "description": "Key prefix filter (list only)"},
-					"tag":         map[string]interface{}{"type": "string", "description": "Tag filter (list only)"},
-					"status":      map[string]interface{}{"type": "string", "description": "Lifecycle status filter: active, needs_review, superseded, rejected (list only)"},
-					"source":      map[string]interface{}{"type": "string", "description": "Origin reference (upsert)"},
-					"source_type": map[string]interface{}{"type": "string", "description": "manual, pr_discussion, agent_observation, file, conversation, code_review, automated (upsert)"},
-					"confidence":  map[string]interface{}{"type": "number", "description": "How sure? 0.0-1.0 (upsert, default 1.0)"},
-					"ttl_days":    map[string]interface{}{"type": "integer", "description": "Days until auto-expiry. 0 = never. (upsert)"},
+					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to retrieve, e.g. user/prefer-rust-cli"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 				},
-				"required": []string{"operation"},
+				"required": []string{"key"},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_put",
+			Description: "Write or update a fact by key. Facts have lifecycle fields (confidence, TTL, status, supersession). Creating the same key again carries forward lifecycle fields.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":         map[string]interface{}{"type": "string", "description": "Unique fact key, e.g. decision/use-postgres"},
+					"value":       map[string]interface{}{"type": "string", "description": "The fact value / statement to store"},
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"tags":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags for categorization"},
+					"source":      map[string]interface{}{"type": "string", "description": "Origin reference"},
+					"source_type": map[string]interface{}{"type": "string", "description": "manual, agent_observation, conversation, code_review, automated"},
+					"confidence":  map[string]interface{}{"type": "number", "description": "Confidence 0.0-1.0 (default 1.0)"},
+					"ttl_days":    map[string]interface{}{"type": "integer", "description": "Days until auto-expiry. 0 = never (default)."},
+				},
+				"required": []string{"key", "value"},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_list",
+			Description: "List facts filtered by key, prefix, tag, or status. Returns fact keys, values, confidence, TTL, and lifecycle state.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":    map[string]interface{}{"type": "string", "description": "Exact key filter"},
+					"prefix": map[string]interface{}{"type": "string", "description": "Key prefix filter (e.g. decision/)"},
+					"tag":    map[string]interface{}{"type": "string", "description": "Tag filter"},
+					"status": map[string]interface{}{"type": "string", "description": "Lifecycle status: active, needs_review, superseded, rejected"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-1000, default 100)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_delete",
+			Description: "Delete a fact by its exact key. Irreversible — use ragamuffin_fact_put with status=superseded for reversible voids.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to delete"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_graph",
+			Description: "Get the lineage graph of a fact — what it supersedes, contradicts, or refines. Use to understand how a fact evolved over time.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get the lineage graph for"},
+					"depth": map[string]interface{}{"type": "integer", "description": "Traversal depth (0-5, default 1)"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_history",
+			Description: "Get the evolution timeline of a fact across time — events like creation, confidence changes, supersession.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get history for"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			},
+		},
+		{
+			Name:        "ragamuffin_fact_provenance",
+			Description: "Get the provenance of a fact — its source, source type, related chunks, and creation metadata.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get provenance for"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			},
+		},
+		{
+			Name:        "ragamuffin_review",
+			Description: "List flagged facts awaiting review (contradictions, low confidence, near-expiry) or resolve a single flagged fact. The pruner populates the review queue automatically.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":     map[string]interface{}{"type": "string", "description": "Operation: 'list' (default) or 'resolve'"},
+					"reason":     map[string]interface{}{"type": "string", "description": "Filter by review reason (contradiction, low_confidence, expiring)"},
+					"limit":      map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
+					"point_id":   map[string]interface{}{"type": "string", "description": "Qdrant point ID to resolve (required for resolve action)"},
+					"resolution": map[string]interface{}{"type": "string", "description": "Resolution action: confirm, supersede, or reject (required for resolve)"},
+					"correction": map[string]interface{}{"type": "string", "description": "Corrected fact value (required for supersede resolution)"},
+					"vault":      map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_hybrid_search",
+			Description: "Dense + BM25 hybrid search across the vault. Returns both chunks AND facts in a single response, ranked by combined relevance.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":  map[string]interface{}{"type": "string", "description": "Natural-language search query"},
+					"key":    map[string]interface{}{"type": "string", "description": "Exact fact key filter"},
+					"prefix": map[string]interface{}{"type": "string", "description": "Fact key prefix filter"},
+					"tag":    map[string]interface{}{"type": "string", "description": "Fact tag filter"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_verify",
+			Description: "Validate a fact statement against the vault. Returns whether the fact is confirmed, conflicts with existing knowledge, or has insufficient data.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
+				},
+				"required": []string{"fact"},
+			},
+		},
+		{
+			Name:        "ragamuffin_context_bundle",
+			Description: "Composite context bundle: peer card + recent facts + recall in one call. Use this at the start of a turn to quickly orient to an agent's state.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_identity": map[string]interface{}{"type": "string", "description": "Agent name for peer card lookup (default: vault name)"},
+					"query":          map[string]interface{}{"type": "string", "description": "Optional query to focus recall"},
+					"top_k":          map[string]interface{}{"type": "integer", "description": "Recall results to include (1-10, default 3)"},
+					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_peer_list",
+			Description: "Discover other agents by listing peer cards (peer/*/profile facts). Returns each agent's vault name and card content.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_briefing",
+			Description: "Get an activity digest for the vault — recent additions, changes, and event summaries. Use to quickly catch up on vault activity.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '7d', '30d'"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_contradictions",
+			Description: "Find contradictory facts within the vault. Returns pairs of facts with conflicting statements — surfaced by the pruner's automated analysis.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"limit": map[string]interface{}{"type": "integer", "description": "Max pairs to return (1-50, default 20)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_links",
+			Description: "Query the link index: list outbound links, backlinks, or the full link graph for a source file.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"source": map[string]interface{}{"type": "string", "description": "Source file path or prefix"},
+					"mode":   map[string]interface{}{"type": "string", "description": "'outbound' (default), 'backlinks', or 'graph'"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-500, default 100)"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_graph_entity",
+			Description: "Look up a specific entity by ID or name in the knowledge graph. Returns entity metadata and relations.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_id": map[string]interface{}{"type": "string", "description": "Entity UUID or name"},
+					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_graph_edges",
+			Description: "Query edges in the knowledge graph — relationships between entities, optionally filtered by type or entity.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_id": map[string]interface{}{"type": "string", "description": "Filter edges involving this entity"},
+					"rel_type":  map[string]interface{}{"type": "string", "description": "Edge type filter (e.g. works_at, knows)"},
+					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_graph_communities",
+			Description: "List knowledge communities detected by the Louvain community detection algorithm. Each community represents a cluster of related entities.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
 			},
 		},
 		{
@@ -110,35 +322,18 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
-			Name:        "ragamuffin_verify",
-			Description: "Validate a fact statement against the vault. Returns whether the fact is confirmed, conflicts with existing knowledge, or has insufficient data. Supports optional LLM conflict summary.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
-				},
-				"required": []string{"fact"},
-			},
-		},
-		{
-			Name:        "ragamuffin_graph",
-			Description: "Entity and link graph from the vault. Returns node-relationship data showing entity co-occurrence, file cross-references, and knowledge clustering.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"entity":         map[string]interface{}{"type": "string", "description": "Focus on a specific entity (BFS traversal from this entity)"},
-					"depth":          map[string]interface{}{"type": "integer", "description": "BFS traversal depth (1-5, default 1). Ignored if entity is empty."},
-					"limit":          map[string]interface{}{"type": "integer", "description": "Max nodes to return (1-500, default 100)"},
-					"min_confidence": map[string]interface{}{"type": "number", "description": "Minimum entity co-occurrence confidence (0.0-1.0)"},
-				},
-			},
-		},
-		{
 			Name:        "ragamuffin_stats",
 			Description: "Operational metrics for the vault. Returns file counts, chunk counts, fact counts, and vault age.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_status",
+			Description: "Server health and connectivity check. Returns server status, version, uptime, and component health (Qdrant, embedder, LLM).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -187,7 +382,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 		},
 		{
 			Name:        "ragamuffin_get_chunk",
-			Description: "Retrieve a single chunk by its chunk_id. Returns full text, source, and metadata. Use chunk_id from ragamuffin_recall results.",
+			Description: "Retrieve a single chunk by its chunk_id. Returns full text, source, and metadata.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -251,14 +446,48 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpDraft(ctx, args)
 	case "ragamuffin_facts":
 		return s.mcpFacts(ctx, args)
-	case "ragamuffin_audit":
-		return s.mcpAudit(ctx, args)
+	case "ragamuffin_fact_get":
+		return s.mcpFactGet(ctx, args)
+	case "ragamuffin_fact_put":
+		return s.mcpFactPut(ctx, args)
+	case "ragamuffin_fact_list":
+		return s.mcpFactList(ctx, args)
+	case "ragamuffin_fact_delete":
+		return s.mcpFactDelete(ctx, args)
+	case "ragamuffin_fact_graph":
+		return s.mcpFactGraph(ctx, args)
+	case "ragamuffin_fact_history":
+		return s.mcpFactHistory(ctx, args)
+	case "ragamuffin_fact_provenance":
+		return s.mcpFactProvenance(ctx, args)
+	case "ragamuffin_review":
+		return s.mcpReview(ctx, args)
+	case "ragamuffin_hybrid_search":
+		return s.mcpHybridSearch(ctx, args)
 	case "ragamuffin_verify":
 		return s.mcpVerify(ctx, args)
-	case "ragamuffin_graph":
-		return s.mcpGraph(ctx, args)
+	case "ragamuffin_context_bundle":
+		return s.mcpContextBundle(ctx, args)
+	case "ragamuffin_peer_list":
+		return s.mcpPeerList(ctx, args)
+	case "ragamuffin_briefing":
+		return s.mcpBriefing(ctx, args)
+	case "ragamuffin_contradictions":
+		return s.mcpContradictions(ctx, args)
+	case "ragamuffin_links":
+		return s.mcpLinks(ctx, args)
+	case "ragamuffin_graph_entity":
+		return s.mcpGraphEntity(ctx, args)
+	case "ragamuffin_graph_edges":
+		return s.mcpGraphEdges(ctx, args)
+	case "ragamuffin_graph_communities":
+		return s.mcpGraphCommunities(ctx, args)
+	case "ragamuffin_audit":
+		return s.mcpAudit(ctx, args)
 	case "ragamuffin_stats":
 		return s.mcpStats(ctx, args)
+	case "ragamuffin_status":
+		return s.mcpStatus(ctx, args)
 	case "ragamuffin_session_create":
 		return s.mcpSessionCreate(ctx, args)
 	case "ragamuffin_session_get":
@@ -644,4 +873,499 @@ func (s *Server) mcpTurnAppend(ctx context.Context, args map[string]interface{})
 	}
 
 	return s.doAppendTurn(ctx, sessionID, content, role, autoExtract)
+}
+
+// ── Fact handlers ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpFactGet(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+	return s.doFactsList(ctx, key, "", "", "", "", 1)
+}
+
+func (s *Server) mcpFactPut(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	value, _ := args["value"].(string)
+	if key == "" || value == "" {
+		return nil, fmt.Errorf("both key and value are required")
+	}
+
+	source, _ := args["source"].(string)
+	sourceType, _ := args["source_type"].(string)
+
+	var tags []string
+	if raw, ok := args["tags"].([]interface{}); ok {
+		for _, t := range raw {
+			if s, ok := t.(string); ok {
+				tags = append(tags, s)
+			}
+		}
+	}
+
+	confidence := 1.0
+	if v, ok := args["confidence"].(float64); ok && v >= 0 && v <= 1.0 {
+		confidence = v
+	}
+
+	ttlDays := 0
+	if v, ok := args["ttl_days"].(float64); ok && v >= 0 {
+		ttlDays = int(v)
+	}
+
+	return s.doFactsUpsert(ctx, key, value, source, sourceType, tags, confidence, ttlDays)
+}
+
+func (s *Server) mcpFactList(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	prefix, _ := args["prefix"].(string)
+	tag, _ := args["tag"].(string)
+	status, _ := args["status"].(string)
+
+	limit := 100
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 1000 {
+		limit = int(v)
+	}
+
+	return s.doFactsList(ctx, key, prefix, "", tag, status, limit)
+}
+
+func (s *Server) mcpFactDelete(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+
+	ctx2, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	qc := s.factsQdrantFor(ctx2)
+	filter := factKeyFilter(key)
+	if err := qc.DeleteFiltered(ctx2, s.factsCollectionFor(ctx2), filter); err != nil {
+		return nil, fmt.Errorf("delete fact: %w", err)
+	}
+	return map[string]interface{}{"deleted": true, "key": key}, nil
+}
+
+func (s *Server) mcpFactGraph(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+
+	depth := 1
+	if v, ok := args["depth"].(float64); ok && v >= 0 && v <= 5 {
+		depth = int(v)
+	}
+
+	factsStore := s.factsQdrantFor(ctx)
+	collection := s.factsCollectionFor(ctx)
+
+	visited := make(map[string]bool)
+	var nodes []factGraphNode
+	var edges []factGraphEdge
+
+	rootFact := s.fetchFactByPayloadKey(ctx, factsStore, collection, key)
+	if rootFact == nil {
+		return nil, fmt.Errorf("fact %q not found", key)
+	}
+
+	nodes = append(nodes, factGraphNode{Key: key, Value: rootFact.Value, FactType: "current"})
+	visited[key] = true
+	s.traverseFactGraph(ctx, factsStore, collection, key, depth, 0, visited, &nodes, &edges)
+
+	return map[string]interface{}{
+		"key":   key,
+		"nodes": nodes,
+		"edges": edges,
+	}, nil
+}
+
+func (s *Server) mcpFactHistory(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+
+	qrCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	pointID := &pb.PointId{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: factKeyHash(key)},
+	}
+	points, err := s.facts.GetPoints(qrCtx, s.factsCollectionFor(ctx), []*pb.PointId{pointID})
+	if err != nil {
+		return nil, fmt.Errorf("query fact: %w", err)
+	}
+	if len(points) == 0 {
+		return nil, fmt.Errorf("fact %q not found", key)
+	}
+
+	payload := points[0].GetPayload()
+	updates := qutil.GetPayloadStringList(payload, "update_history")
+
+	entries := []map[string]interface{}{
+		{"event": "created", "timestamp": qutil.GetPayloadStringValue(payload, "created_at")},
+	}
+	if ct := qutil.GetPayloadStringValue(payload, "last_confirmed_at"); ct != "" {
+		entries = append(entries, map[string]interface{}{"event": "confirmed", "timestamp": ct})
+	}
+	for _, u := range updates {
+		entries = append(entries, map[string]interface{}{"event": "updated", "timestamp": u})
+	}
+
+	return map[string]interface{}{"key": key, "history": entries}, nil
+}
+
+func (s *Server) mcpFactProvenance(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	key, _ := args["key"].(string)
+	if key == "" {
+		return nil, fmt.Errorf("key is required")
+	}
+
+	qrCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	pointID := &pb.PointId{
+		PointIdOptions: &pb.PointId_Uuid{Uuid: factKeyHash(key)},
+	}
+	points, err := s.facts.GetPoints(qrCtx, s.factsCollectionFor(ctx), []*pb.PointId{pointID})
+	if err != nil {
+		return nil, fmt.Errorf("query fact: %w", err)
+	}
+	if len(points) == 0 {
+		return nil, fmt.Errorf("fact %q not found", key)
+	}
+
+	payload := points[0].GetPayload()
+	var relatedChunks []string
+	if rc, ok := payload["related_chunks"]; ok {
+		for _, v := range rc.GetListValue().GetValues() {
+			relatedChunks = append(relatedChunks, v.GetStringValue())
+		}
+	}
+
+	return map[string]interface{}{
+		"key":            qutil.GetPayloadStringValue(payload, "fact_key"),
+		"value":          qutil.GetPayloadStringValue(payload, "fact_value"),
+		"source":         qutil.GetPayloadStringValue(payload, "source"),
+		"source_type":    qutil.GetPayloadStringValue(payload, "source_type"),
+		"created_at":     qutil.GetPayloadStringValue(payload, "created_at"),
+		"updated_at":     qutil.GetPayloadStringValue(payload, "updated_at"),
+		"related_chunks": relatedChunks,
+	}, nil
+}
+
+// ── Review handler ──────────────────────────────────────────────────────────
+
+func (s *Server) mcpReview(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	action, _ := args["action"].(string)
+	if action == "" || action == "list" {
+		limit := 20
+		if v, ok := args["limit"].(float64); ok && v > 0 && v <= 100 {
+			limit = int(v)
+		}
+		return s.doFactsList(ctx, "", "", "", "", "needs_review", limit)
+	}
+
+	if action == "resolve" {
+		pointID, _ := args["point_id"].(string)
+		resolution, _ := args["resolution"].(string)
+		if pointID == "" || resolution == "" {
+			return nil, fmt.Errorf("point_id and resolution are required for resolve action")
+		}
+		qc := s.factsQdrantFor(ctx)
+		collection := s.factsCollectionFor(ctx)
+		payload := map[string]*pb.Value{"status": qutil.Nv("active")}
+		if resolution == "reject" {
+			payload["status"] = qutil.Nv("rejected")
+		}
+		if err := qc.SetPayload(ctx, collection, []*pb.PointId{{
+			PointIdOptions: &pb.PointId_Uuid{Uuid: pointID},
+		}}, payload); err != nil {
+			return nil, fmt.Errorf("resolve review: %w", err)
+		}
+		return map[string]interface{}{"resolved": true, "point_id": pointID}, nil
+	}
+
+	return nil, fmt.Errorf("unknown action: %q (expected list or resolve)", action)
+}
+
+// ── Hybrid search handler ───────────────────────────────────────────────────
+
+func (s *Server) mcpHybridSearch(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	query, _ := args["query"].(string)
+	key, _ := args["key"].(string)
+	prefix, _ := args["prefix"].(string)
+	tag, _ := args["tag"].(string)
+
+	limit := 20
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 100 {
+		limit = int(v)
+	}
+
+	if query == "" && key == "" && prefix == "" {
+		return nil, fmt.Errorf("query, key, or prefix is required")
+	}
+
+	// Use doRecall for the search portion, then collect facts separately.
+	recallCtx, recallCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer recallCancel()
+
+	results, _, err := s.doRecall(recallCtx, recallRequest{
+		Query:  query,
+		TopK:   limit,
+		Detail: "l1",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("search failed: %w", err)
+	}
+
+	facts, err := s.doFactsList(recallCtx, key, prefix, "", tag, "", limit)
+	if err != nil {
+		facts = nil
+	}
+
+	return map[string]interface{}{
+		"chunks": results,
+		"facts":  facts,
+	}, nil
+}
+
+// ── Context bundle handler ──────────────────────────────────────────────────
+
+func (s *Server) mcpContextBundle(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	agentID, _ := args["agent_identity"].(string)
+	query, _ := args["query"].(string)
+	topK := 3
+	if v, ok := args["top_k"].(float64); ok && v > 0 && v <= 10 {
+		topK = int(v)
+	}
+
+	bundle := map[string]interface{}{
+		"vault": vaultFromContext(ctx),
+	}
+
+	// Peer card
+	if agentID != "" {
+		cardKey := fmt.Sprintf("peer/%s/card/profile", agentID)
+		cardResult, err := s.doFactsList(ctx, cardKey, "", "", "", "", 1)
+		if err == nil && cardResult != nil {
+			bundle["peer_card"] = cardResult
+		}
+	}
+
+	// Recent facts
+	recentFacts, err := s.doFactsList(ctx, "", "", "", "", "", 10)
+	if err == nil {
+		bundle["recent_facts"] = recentFacts
+	}
+
+	// Recall if query provided
+	if query != "" {
+		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer recallCancel()
+		results, _, err := s.doRecall(recallCtx, recallRequest{
+			Query:  query,
+			TopK:   topK,
+			Detail: "l1",
+		})
+		if err == nil {
+			bundle["recall"] = results
+		}
+	}
+
+	return bundle, nil
+}
+
+// ── Peer discovery ──────────────────────────────────────────────────────────
+
+func (s *Server) mcpPeerList(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return s.doFactsList(ctx2, "", "peer/", "", "", "", 100)
+}
+
+// ── Briefing handler ────────────────────────────────────────────────────────
+
+func (s *Server) mcpBriefing(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	period, _ := args["period"].(string)
+	if period == "" {
+		period = "24h"
+	}
+	d, err := time.ParseDuration(period)
+	if err != nil {
+		return nil, fmt.Errorf("invalid period: %q", period)
+	}
+	since := time.Now().Add(-d)
+
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+
+	if s.logStore != nil {
+		entries, _, err := s.logStore.List(ctx, logstore.Filter{
+			Since: since.Format(time.RFC3339),
+			Limit: 100,
+		})
+		if err == nil {
+			eventCounts := map[string]int{}
+			for _, e := range entries {
+				eventCounts[e.Type]++
+			}
+			return map[string]interface{}{
+				"vault":        vault,
+				"period_hours": d.Hours(),
+				"total_events": len(entries),
+				"events":       eventCounts,
+			}, nil
+		}
+	}
+
+	return map[string]interface{}{
+		"vault":        vault,
+		"period_hours": d.Hours(),
+		"total_events": 0,
+	}, nil
+}
+
+// ── Contradictions handler ──────────────────────────────────────────────────
+
+func (s *Server) mcpContradictions(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	limit := 20
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 50 {
+		limit = int(v)
+	}
+
+	return s.doFactsList(ctx, "", "", "", "", "needs_review", limit)
+}
+
+// ── Links handler ───────────────────────────────────────────────────────────
+
+func (s *Server) mcpLinks(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	source, _ := args["source"].(string)
+	mode, _ := args["mode"].(string)
+	if mode == "" {
+		mode = "outbound"
+	}
+
+	ctx2, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+
+	switch mode {
+	case "backlinks":
+		backlinks, err := s.logStore.GetInboundLinks(ctx2, source, vault)
+		if err != nil {
+			return nil, fmt.Errorf("backlinks: %w", err)
+		}
+		return map[string]interface{}{"mode": "backlinks", "results": backlinks}, nil
+	case "graph":
+		graph, err := s.logStore.GetLinkGraph(ctx2, source, "", vault)
+		if err != nil {
+			return nil, fmt.Errorf("link graph: %w", err)
+		}
+		return map[string]interface{}{"mode": "graph", "results": graph}, nil
+	default:
+		links, err := s.logStore.GetOutboundLinks(ctx2, source, vault)
+		if err != nil {
+			return nil, fmt.Errorf("links: %w", err)
+		}
+		return map[string]interface{}{"mode": "outbound", "results": links}, nil
+	}
+}
+
+// ── Graph entity/edges/communities handlers ─────────────────────────────────
+
+func (s *Server) mcpGraphEntity(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	entityID, _ := args["entity_id"].(string)
+	if entityID == "" {
+		return nil, fmt.Errorf("entity_id is required")
+	}
+
+	if s.graph == nil {
+		return nil, fmt.Errorf("graph store not configured")
+	}
+
+	ent, err := s.graph.GetEntity(ctx, entityID)
+	if err != nil {
+		return nil, fmt.Errorf("get entity: %w", err)
+	}
+	if ent == nil {
+		return nil, fmt.Errorf("entity %q not found", entityID)
+	}
+	return ent, nil
+}
+
+func (s *Server) mcpGraphEdges(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	entityID, _ := args["entity_id"].(string)
+	relType, _ := args["rel_type"].(string)
+
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+
+	if s.graph == nil {
+		return nil, fmt.Errorf("graph store not configured")
+	}
+
+	edges, err := s.graph.Edges(ctx, graph.EdgeQuery{
+		Vault:    vault,
+		EntityID: entityID,
+		Type:     relType,
+		Limit:    1000,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("query edges: %w", err)
+	}
+	return map[string]interface{}{"edges": edges, "count": len(edges)}, nil
+}
+
+func (s *Server) mcpGraphCommunities(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+
+	if s.graph == nil {
+		return nil, fmt.Errorf("graph store not configured")
+	}
+
+	comms, err := s.graph.Communities(ctx, vault)
+	if err != nil {
+		return nil, fmt.Errorf("query communities: %w", err)
+	}
+	return map[string]interface{}{"communities": comms, "count": len(comms)}, nil
+}
+
+// ── Status handler ──────────────────────────────────────────────────────────
+
+func (s *Server) mcpStatus(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	status := "ok"
+	var healthErrors []string
+
+	if s.qdrantFor(ctx) == nil {
+		healthErrors = append(healthErrors, "qdrant: not configured")
+	}
+	if s.embeddingFor(ctx) == nil {
+		healthErrors = append(healthErrors, "embedder: not configured")
+	}
+	if len(healthErrors) > 0 {
+		status = "degraded"
+	}
+
+	return map[string]interface{}{
+		"status":  status,
+		"version": Version,
+		"commit":  Commit,
+		"errors":  healthErrors,
+		"uptime":  time.Since(s.started).Seconds(),
+	}, nil
 }
