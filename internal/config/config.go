@@ -143,6 +143,16 @@ type Config struct {
 	ProceduralMinSteps       int
 	ProceduralDedupThreshold float64
 
+	// Sleep-time consolidation (B3): idle-aware worker that replays sessions
+	// into durable gist facts. Off by default; never on the query path.
+	ConsolidationEnabled         bool
+	ConsolidationInterval        time.Duration
+	ConsolidationIdleWindow      time.Duration
+	ConsolidationBatchSize       int
+	ConsolidationInterleaveRatio float64
+	ConsolidationTurnLimit       int
+	ConsolidationGistTTLDays     int
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
@@ -485,9 +495,18 @@ func Load() (*Config, error) {
 		ProceduralEnabled:            envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
 		ProceduralMinSteps:           envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
 		ProceduralDedupThreshold:     envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
-		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
-		LogStorePath:                 os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
-		LogstoreMaxRows:              envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+
+		ConsolidationEnabled:         envBool("RAGAMUFFIN_CONSOLIDATION_ENABLED"),
+		ConsolidationInterval:        envDuration("RAGAMUFFIN_CONSOLIDATION_INTERVAL", 6*time.Hour),
+		ConsolidationIdleWindow:      envDuration("RAGAMUFFIN_CONSOLIDATION_IDLE_WINDOW", 30*time.Minute),
+		ConsolidationBatchSize:       envInt("RAGAMUFFIN_CONSOLIDATION_BATCH_SIZE", 20),
+		ConsolidationInterleaveRatio: envFloat("RAGAMUFFIN_CONSOLIDATION_INTERLEAVE_RATIO", 0.3),
+		ConsolidationTurnLimit:       envInt("RAGAMUFFIN_CONSOLIDATION_TURN_LIMIT", 50),
+		ConsolidationGistTTLDays:     envInt("RAGAMUFFIN_CONSOLIDATION_GIST_TTL_DAYS", 365),
+
+		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
+		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
+		LogstoreMaxRows:          envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
 
 		GraphEnabled: envBool("RAGAMUFFIN_GRAPH_ENABLED"),
 		GraphPath:    os.Getenv("RAGAMUFFIN_GRAPH_PATH"),

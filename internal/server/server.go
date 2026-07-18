@@ -16,6 +16,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/consolidation"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
@@ -80,6 +81,9 @@ type Server struct {
 	// is off. graphExtractor is nil without an LLM.
 	graph          *graph.Store
 	graphExtractor *graph.Extractor
+
+	// Sleep-time consolidation worker (B3). Optional; nil when disabled.
+	consolidator *consolidation.Consolidator
 }
 
 // SetGraph attaches the temporal knowledge graph store and (optional) extractor.
@@ -181,6 +185,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/events", s.withRequestID(s.handleEvents))
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
 	mux.HandleFunc("/webhook/git", s.withRequestID(s.handleWebhookGit))
+	mux.HandleFunc("/v1/consolidation/status", s.withRequestID(s.handleConsolidationStatus))
 
 	// Temporal knowledge graph (B2) — bare endpoints (single-tenant default vault)
 	mux.HandleFunc("/v1/graph/ingest", s.withRequestID(s.handleGraphIngest))

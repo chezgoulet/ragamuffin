@@ -14,6 +14,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/consolidation"
 	"github.com/chezgoulet/ragamuffin/internal/embeddedstore"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
@@ -543,6 +544,26 @@ func main() {
 			graphExt = graph.NewExtractor(graphStore, lm, logger)
 		}
 		srv.SetGraph(graphStore, graphExt)
+	}
+
+	// ── Sleep-time consolidation worker (B3, optional) ────────────────────────
+	if cfg.ConsolidationEnabled {
+		consCfg := consolidation.Config{
+			Enabled:         true,
+			Interval:        cfg.ConsolidationInterval,
+			IdleWindow:      cfg.ConsolidationIdleWindow,
+			BatchSize:       cfg.ConsolidationBatchSize,
+			InterleaveRatio: cfg.ConsolidationInterleaveRatio,
+			TurnLimit:       cfg.ConsolidationTurnLimit,
+			GistTTLDays:     cfg.ConsolidationGistTTLDays,
+		}
+		vaultNames := func() []string { return idxManager.VaultNames() }
+		cons := consolidation.New(consCfg, server.NewLogstoreSessionSource(logStore), lm, ec, factsQc, emitter, vaultNames, logger)
+		srv.SetConsolidator(cons)
+		ctxCons, cancelCons := context.WithCancel(context.Background())
+		defer cancelCons()
+		go cons.Run(ctxCons)
+		logger.Info("consolidation worker started", "interval", cfg.ConsolidationInterval.String())
 	}
 
 	// ── Snapshot restore detection ───────────────────────────────────────
