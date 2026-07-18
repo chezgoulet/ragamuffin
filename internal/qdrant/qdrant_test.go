@@ -954,8 +954,6 @@ func TestCreatePayloadIndex(t *testing.T) {
 		{"bool", pb.FieldType_FieldTypeBool},
 		{"datetime", pb.FieldType_FieldTypeDatetime},
 		{"uuid", pb.FieldType_FieldTypeUuid},
-		{"unknown", pb.FieldType_FieldTypeKeyword}, // default
-		{"", pb.FieldType_FieldTypeKeyword},        // default for empty
 	}
 	for _, tt := range tests {
 		t.Run(tt.fieldType, func(t *testing.T) {
@@ -992,6 +990,14 @@ func TestCreatePayloadIndex_Error(t *testing.T) {
 	err := c.CreatePayloadIndex(context.Background(), "col", "field", "keyword")
 	if err == nil {
 		t.Fatal("expected error, got nil")
+	}
+}
+
+func TestCreatePayloadIndex_UnknownTypeReturnsError(t *testing.T) {
+	c := newTestClient(&mockPointsClient{}, &mockCollectionsClient{})
+	err := c.CreatePayloadIndex(context.Background(), "col", "status", "unknown")
+	if err == nil {
+		t.Fatal("expected error for unknown field type, got nil")
 	}
 }
 

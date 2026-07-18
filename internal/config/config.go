@@ -493,7 +493,7 @@ func parseURL(raw string) (interface{}, error) {
 // RAGAMUFFIN_QDRANT_URL is required only when RAGAMUFFIN_VECTOR_STORE=qdrant
 // (the default). When RAGAMUFFIN_VECTOR_STORE=embedded, no Qdrant is needed.
 func Load() (*Config, error) {
-	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant")
+	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", aliasOrDefault("REACHLOCK_VECTOR_STORE", "qdrant"))
 	qdrantURL := os.Getenv("RAGAMUFFIN_QDRANT_URL")
 	if vectorStore == "qdrant" {
 		var err error

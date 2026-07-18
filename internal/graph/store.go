@@ -177,34 +177,47 @@ func normalizeTimestamp(s string) string {
 // same (vault, name, kind). Entity identity is name-based within a vault.
 func (s *Store) UpsertEntity(ctx context.Context, e Entity) (string, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	if e.ID == "" {
+		return "", fmt.Errorf("graph: upsert entity: empty id")
+	}
+	// Wrap SELECT+INSERT in a transaction to prevent TOCTOU races between
+	// concurrent goroutines (e.g. parallel ingest of two chunks referencing
+	// the same person). The unique index catches same-case duplicates, but
+	// the case-insensitive SELECT handles mixed-case dedup.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", fmt.Errorf("graph: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	var existingID string
-	// Dedup case-insensitively: the extractor resolves relation endpoints via a
-	// lowercased name map, so "Alice" and "alice" must map to a single entity or
-	// relations silently attach to the wrong (last-written) row.
-	err := s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`SELECT id FROM graph_entities WHERE vault = ? AND LOWER(name) = LOWER(?) AND kind = ?`,
 		e.Vault, e.Name, string(e.Kind)).Scan(&existingID)
 	switch {
 	case err == sql.ErrNoRows:
-		if e.ID == "" {
-			return "", fmt.Errorf("graph: upsert entity: empty id")
-		}
-		if _, err := s.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO graph_entities (id, vault, name, kind, summary, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 			e.ID, e.Vault, e.Name, string(e.Kind), e.Summary, now, now); err != nil {
 			return "", fmt.Errorf("graph: insert entity: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("graph: commit: %w", err)
 		}
 		return e.ID, nil
 	case err != nil:
 		return "", fmt.Errorf("graph: lookup entity: %w", err)
 	default:
 		if e.Summary != "" {
-			if _, err := s.db.ExecContext(ctx,
+			if _, err := tx.ExecContext(ctx,
 				`UPDATE graph_entities SET summary = ?, updated_at = ? WHERE id = ?`,
 				e.Summary, now, existingID); err != nil {
 				return "", fmt.Errorf("graph: update entity: %w", err)
 			}
+		}
+		if err := tx.Commit(); err != nil {
+			return "", fmt.Errorf("graph: commit: %w", err)
 		}
 		return existingID, nil
 	}

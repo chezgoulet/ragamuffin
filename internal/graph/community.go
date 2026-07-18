@@ -228,7 +228,7 @@ func (s *Store) DetectCommunities(ctx context.Context, vault string) ([]Communit
 		idx[e.ID] = i
 	}
 
-	edges, err := s.Edges(ctx, EdgeQuery{Vault: vault, Limit: 1000})
+	edges, err := s.Edges(ctx, EdgeQuery{Vault: vault, Limit: 100000})
 	if err != nil {
 		return nil, err
 	}
@@ -310,7 +310,7 @@ func (cs *CommunitySummarizer) SummarizeVault(ctx context.Context, vault string)
 	for _, e := range entities {
 		nameByID[e.ID] = e.Name
 	}
-	edges, err := cs.store.Edges(ctx, EdgeQuery{Vault: vault, Limit: 1000})
+	edges, err := cs.store.Edges(ctx, EdgeQuery{Vault: vault, Limit: 100000})
 	if err != nil {
 		return 0, err
 	}
