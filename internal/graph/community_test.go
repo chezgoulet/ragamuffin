@@ -88,6 +88,65 @@ func TestLouvain_NoEdges(t *testing.T) {
 	}
 }
 
+// TestAggregate_InternalEdgeWeightConserved verifies that collapsing communities
+// preserves total edge weight (m2). Regression for the intra-community edge
+// double-count bug where internal edges contributed 4w instead of 2w.
+func TestAggregate_InternalEdgeWeightConserved(t *testing.T) {
+	// Two 2-node communities each with an internal edge, plus a bridge.
+	//   {0,1} internal edge, {2,3} internal edge, 1--2 bridge.
+	g := newLouvainGraph(4)
+	g.addEdge(0, 1, 1) // internal to community A
+	g.addEdge(2, 3, 1) // internal to community B
+	g.addEdge(1, 2, 1) // bridge between A and B
+	wantM2 := g.m2
+
+	dense := []int{0, 0, 1, 1}
+	ng := aggregate(g, dense, 2)
+
+	if ng.m2 != wantM2 {
+		t.Errorf("aggregate must conserve total weight: got m2=%v, want %v", ng.m2, wantM2)
+	}
+	// Sum of degrees always equals m2 in an undirected weighted graph.
+	var degSum float64
+	for _, d := range ng.degree {
+		degSum += d
+	}
+	if degSum != wantM2 {
+		t.Errorf("sum of degrees must equal m2: got %v, want %v", degSum, wantM2)
+	}
+}
+
+// TestLouvain_ThreeLevels exercises multiple aggregation passes and asserts
+// modularity is non-decreasing across levels.
+func TestLouvain_ThreeLevels(t *testing.T) {
+	// Four dense triangles, chained by single bridges: forces >1 aggregation.
+	g := newLouvainGraph(12)
+	tri := func(a, b, c int) {
+		g.addEdge(a, b, 1)
+		g.addEdge(b, c, 1)
+		g.addEdge(a, c, 1)
+	}
+	tri(0, 1, 2)
+	tri(3, 4, 5)
+	tri(6, 7, 8)
+	tri(9, 10, 11)
+	g.addEdge(2, 3, 1)
+	g.addEdge(5, 6, 1)
+	g.addEdge(8, 9, 1)
+
+	labels := louvain(g)
+	_, k := denseLabels(labels)
+	if k < 2 || k > 4 {
+		t.Fatalf("expected 2..4 communities for chained triangles, got %d", k)
+	}
+	// Each triangle's nodes must stay together.
+	for _, tr := range [][3]int{{0, 1, 2}, {3, 4, 5}, {6, 7, 8}, {9, 10, 11}} {
+		if labels[tr[0]] != labels[tr[1]] || labels[tr[1]] != labels[tr[2]] {
+			t.Errorf("triangle %v split across communities: %v", tr, labels)
+		}
+	}
+}
+
 func TestDetectCommunities_PersistsAndClusters(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()

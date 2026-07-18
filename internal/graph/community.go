@@ -173,20 +173,30 @@ func denseLabels(label []int) ([]int, int) {
 }
 
 // aggregate collapses each community into a single super-node.
+//
+// Intra-community edges (both endpoints in the same super-node) are accumulated
+// directly into selfLoop rather than routed through addEdge, because addEdge
+// would fold them into m2/degree immediately and the post-loop below folds
+// selfLoop in a second time — double-counting each internal edge. Accumulating
+// here and folding once keeps total weight (m2) conserved across levels.
 func aggregate(g *louvainGraph, dense []int, k int) *louvainGraph {
 	ng := newLouvainGraph(k)
 	for u := 0; u < g.n; u++ {
 		cu := dense[u]
 		ng.selfLoop[cu] += g.selfLoop[u]
-		ng.degree[cu] += 0 // recomputed via addEdge below
 		for v, w := range g.adj[u] {
 			if u < v { // count each undirected edge once
 				cv := dense[v]
-				ng.addEdge(cu, cv, w)
+				if cu == cv {
+					// Internal edge becomes part of the super-node's self-loop.
+					ng.selfLoop[cu] += w
+				} else {
+					ng.addEdge(cu, cv, w)
+				}
 			}
 		}
 	}
-	// fold self-loops into m2/degree
+	// Fold self-loops (original + internal edges) into m2/degree exactly once.
 	for c := 0; c < k; c++ {
 		if ng.selfLoop[c] > 0 {
 			ng.degree[c] += 2 * ng.selfLoop[c]
