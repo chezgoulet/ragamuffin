@@ -23,6 +23,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
@@ -290,6 +291,8 @@ type recallRequest struct {
 	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
 	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
 	Expand         bool           `json:"expand,omitempty"`      // associative recall: also search facts (#794)
+	Rewrite        string         `json:"rewrite,omitempty"`     // off | hyde | stepback | multiquery (default: server config)
+	Rerank         bool           `json:"rerank,omitempty"`      // listwise LLM rerank of fused top-k (requires RAGAMUFFIN_RERANK)
 }
 
 type recallResult struct {
@@ -427,6 +430,15 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if req.Mode != "dense" && req.Mode != "sparse" && req.Mode != "hybrid" {
 		writeError(w, 400, "INVALID_REQUEST", "mode must be one of: dense, sparse, hybrid")
 		return
+	}
+
+	// Validate optional per-request query-rewrite override. Empty falls back to
+	// the server default in doRecall.
+	if req.Rewrite != "" {
+		if _, ok := retrieval.ParseRewriteMode(req.Rewrite); !ok {
+			writeError(w, 400, "INVALID_REQUEST", "rewrite must be one of: off, hyde, stepback, multiquery")
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)

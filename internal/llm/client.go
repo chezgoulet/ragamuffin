@@ -151,6 +151,17 @@ func (c *Client) Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB s
 	return result, nil
 }
 
+// Complete sends a raw prompt to the LLM and returns the completion text
+// verbatim. Unlike Synthesize it wraps the prompt in no template, making it
+// the building block for query rewriting (HyDE, step-back, multi-query) and
+// listwise reranking. Returns an error if the client is nil (unconfigured).
+func (c *Client) Complete(ctx context.Context, prompt string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("LLM not configured")
+	}
+	return c.chat(ctx, prompt)
+}
+
 func (c *Client) chat(ctx context.Context, userMessage string) (string, error) {
 	reqBody := chatRequest{
 		Model: c.model,

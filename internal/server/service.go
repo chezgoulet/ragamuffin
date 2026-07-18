@@ -26,8 +26,27 @@ import (
 // ensuring temporal filtering, detail-level filtering, and result
 // mapping are identical across both interfaces.
 func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResult, float32, error) {
+	// Optional LLM query rewriting (HyDE / step-back / multi-query) before
+	// embedding. Degrades to the original query on any error, so recall never
+	// fails because rewriting failed. embedQuery holds the text we embed;
+	// req.Query is preserved for lexical search and reranking.
+	embedQuery := req.Query
+	if mode := s.resolveRewriteMode(req); mode != retrieval.RewriteOff {
+		if c := s.completerFor(ctx); c != nil {
+			rewrites := retrieval.Rewrite(ctx, c, mode, req.Query)
+			if mode == retrieval.RewriteMultiQuery && len(rewrites) > 1 {
+				return s.rerankIfRequested(ctx, req, func() ([]recallResult, float32, error) {
+					return s.multiQueryRecall(ctx, req, rewrites)
+				})
+			}
+			if len(rewrites) > 0 && strings.TrimSpace(rewrites[0]) != "" {
+				embedQuery = rewrites[0]
+			}
+		}
+	}
+
 	// Embed query
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, embedQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("embedding failed: %w", err)
 	}
@@ -59,15 +78,96 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 		}
 	}
 
-	// Search — dispatch by retrieval mode.
-	switch req.Mode {
-	case "sparse":
-		return s.sparseRecall(ctx, req, filter)
-	case "hybrid":
-		return s.hybridRecall(ctx, req, vector, filter)
-	default: // dense (default, unchanged behavior)
-		return s.denseRecall(ctx, req, vector, filter)
+	// Search — dispatch by retrieval mode, then optionally rerank.
+	return s.rerankIfRequested(ctx, req, func() ([]recallResult, float32, error) {
+		switch req.Mode {
+		case "sparse":
+			return s.sparseRecall(ctx, req, filter)
+		case "hybrid":
+			return s.hybridRecall(ctx, req, vector, filter)
+		default: // dense (default, unchanged behavior)
+			return s.denseRecall(ctx, req, vector, filter)
+		}
+	})
+}
+
+// resolveRewriteMode determines the effective query-rewrite mode for a request:
+// the per-request override if present, else the server default. Unrecognized
+// values fall back to RewriteOff.
+func (s *Server) resolveRewriteMode(req recallRequest) retrieval.RewriteMode {
+	raw := req.Rewrite
+	if strings.TrimSpace(raw) == "" {
+		raw = s.cfg.RetrievalRewrite
 	}
+	mode, _ := retrieval.ParseRewriteMode(raw)
+	return mode
+}
+
+// rerankIfRequested runs the underlying recall, then applies listwise LLM
+// reranking when the request opts in (req.Rerank), the server allows it
+// (RAGAMUFFIN_RERANK), and an LLM is configured. Reranking degrades to the
+// original order on any error, so it never breaks recall.
+func (s *Server) rerankIfRequested(ctx context.Context, req recallRequest, recall func() ([]recallResult, float32, error)) ([]recallResult, float32, error) {
+	results, top, err := recall()
+	if err != nil || !req.Rerank || !s.cfg.RerankEnabled || len(results) < 2 {
+		return results, top, err
+	}
+	c := s.completerFor(ctx)
+	if c == nil {
+		return results, top, nil
+	}
+	docs := make([]retrieval.RerankDoc, 0, len(results))
+	for _, r := range results {
+		docs = append(docs, retrieval.RerankDoc{ID: r.ChunkID, Text: rerankText(r)})
+	}
+	order := retrieval.Rerank(ctx, c, req.Query, docs)
+	return applyRerankOrder(results, order), top, nil
+}
+
+// multiQueryRecall fans out one dense search per rewritten query, then fuses
+// the dense ID rankings with RRF before fetching and mapping payloads. The
+// original query is used for the lexical component when mode is hybrid.
+func (s *Server) multiQueryRecall(ctx context.Context, req recallRequest, queries []string) ([]recallResult, float32, error) {
+	emb := s.embeddingFor(ctx)
+	filter := recallFilter(req)
+	if isTemporalRecall(req.TimeFilter) {
+		if dateTo := temporalRecallDate(req.TimeFilter); dateTo != "" {
+			cond := &pb.Condition{ConditionOneOf: &pb.Condition_Field{Field: &pb.FieldCondition{
+				Key: "file_last_updated", Range: &pb.Range{Lte: float64Ptr(parseRFC3339Unix(dateTo))},
+			}}}
+			if filter != nil {
+				filter.Must = append(filter.Must, cond)
+			} else {
+				filter = &pb.Filter{Must: []*pb.Condition{cond}}
+			}
+		}
+	}
+
+	qc := s.qdrantFor(ctx)
+	var lists [][]string
+	for _, q := range queries {
+		vec, err := emb.EmbedSingle(ctx, q)
+		if err != nil {
+			continue
+		}
+		res, err := qc.Search(ctx, vec, uint64(req.TopK*2), float32(req.ScoreThreshold), req.SourceFilter, filter)
+		if err != nil {
+			continue
+		}
+		ids := make([]string, 0, len(res))
+		for _, r := range res {
+			ids = append(ids, r.Id.GetUuid())
+		}
+		lists = append(lists, ids)
+	}
+	if len(lists) == 0 {
+		return []recallResult{}, 0, nil
+	}
+	fused := retrieval.Fuse(lists, 60)
+	if len(fused) > req.TopK {
+		fused = fused[:req.TopK]
+	}
+	return s.recallByIDs(ctx, fused, req, filter)
 }
 
 // denseRecall runs the classic single-vector semantic search.
@@ -178,6 +278,49 @@ func (s *Server) recallByIDs(ctx context.Context, ranked []retrieval.RankedID, r
 		out = append(out, c.res)
 	}
 	return out, topScore, nil
+}
+
+// rerankText picks the best available text for a recall result to feed the
+// listwise reranker, preferring full text, then first paragraph, then header.
+func rerankText(r recallResult) string {
+	switch {
+	case r.Text != "":
+		return r.Text
+	case r.FirstParagraph != "":
+		return r.FirstParagraph
+	default:
+		return r.Header
+	}
+}
+
+// applyRerankOrder reorders results to match the ranked list of chunk IDs.
+// Any results whose IDs are absent from order are appended in original order,
+// so no result is dropped. Scores are left untouched (the reranker changes
+// order, not similarity scores).
+func applyRerankOrder(results []recallResult, order []string) []recallResult {
+	if len(order) == 0 {
+		return results
+	}
+	byID := make(map[string]recallResult, len(results))
+	for _, r := range results {
+		byID[r.ChunkID] = r
+	}
+	out := make([]recallResult, 0, len(results))
+	placed := make(map[string]struct{}, len(order))
+	for _, id := range order {
+		if r, ok := byID[id]; ok {
+			if _, dup := placed[id]; !dup {
+				out = append(out, r)
+				placed[id] = struct{}{}
+			}
+		}
+	}
+	for _, r := range results {
+		if _, ok := placed[r.ChunkID]; !ok {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // lexicalIndexFor returns the cached lexical index for a vault, building it

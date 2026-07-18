@@ -24,5 +24,16 @@ type Synthesizer interface {
 	Health(ctx context.Context) error
 }
 
-// Compile-time check: *Client satisfies Synthesizer.
-var _ Synthesizer = (*Client)(nil)
+// Completer sends a raw prompt to the LLM and returns the completion text
+// with no templating. It is the minimal surface needed by retrieval-side
+// query rewriting and listwise reranking, decoupling internal/retrieval from
+// the full Client so those helpers stay pure and mockable.
+type Completer interface {
+	Complete(ctx context.Context, prompt string) (string, error)
+}
+
+// Compile-time checks: *Client satisfies both facades.
+var (
+	_ Synthesizer = (*Client)(nil)
+	_ Completer   = (*Client)(nil)
+)
