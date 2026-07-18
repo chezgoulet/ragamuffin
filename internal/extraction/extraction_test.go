@@ -34,6 +34,15 @@ func (m *mockSynthesizer) Synthesize(_ context.Context, query, system string) (s
 	return m.result, m.err
 }
 
+func (m *mockSynthesizer) SynthesizeCited(_ context.Context, query, system string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.called = true
+	m.lastPrompt = query
+	m.lastSystem = system
+	return m.result, m.err
+}
+
 func (m *mockSynthesizer) Compare(_ context.Context, _, _, _, _ string) (string, error) {
 	return "", nil
 }
