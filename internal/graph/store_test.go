@@ -46,6 +46,80 @@ func TestUpsertEntityDedup(t *testing.T) {
 	}
 }
 
+func TestUpsertEntityCaseInsensitiveDedup(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	id1, err := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Alice", Kind: KindPerson})
+	if err != nil {
+		t.Fatalf("upsert 1: %v", err)
+	}
+	id2, err := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "ALICE", Kind: KindPerson})
+	if err != nil {
+		t.Fatalf("upsert 2: %v", err)
+	}
+	if id1 != id2 {
+		t.Errorf("case-differing names should dedup to one entity: %q != %q", id1, id2)
+	}
+}
+
+func TestAddEdgeNormalizesValidTime(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a, _ := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Alice", Kind: KindPerson})
+	b, _ := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Bob", Kind: KindPerson})
+
+	// Offset timestamp equal to 2020-01-01T00:00:00Z.
+	if _, err := s.AddEdge(ctx, Edge{
+		ID: uuid.NewString(), Vault: "v", SourceID: a, TargetID: b, Type: "knows",
+		ValidFrom: "2020-01-01T01:00:00+01:00",
+	}, false); err != nil {
+		t.Fatalf("add edge: %v", err)
+	}
+	edges, err := s.Edges(ctx, EdgeQuery{Vault: "v"})
+	if err != nil {
+		t.Fatalf("edges: %v", err)
+	}
+	if got := edges[0].ValidFrom; got != "2020-01-01T00:00:00Z" {
+		t.Errorf("valid_from not normalized to UTC RFC3339: got %q", got)
+	}
+}
+
+func TestAddEdgeSupersessionDisjointValidTime(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	a, _ := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Alice", Kind: KindPerson})
+	c1, _ := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Corp1", Kind: KindOrg})
+	c2, _ := s.UpsertEntity(ctx, Entity{ID: uuid.NewString(), Vault: "v", Name: "Corp2", Kind: KindOrg})
+
+	// Prior edge has an explicit far-future valid_until that overlaps the new one.
+	if _, err := s.AddEdge(ctx, Edge{
+		ID: uuid.NewString(), Vault: "v", SourceID: a, TargetID: c1, Type: "employed_by",
+		ValidFrom: "2020-01-01T00:00:00Z", ValidUntil: "2030-01-01T00:00:00Z",
+	}, false); err != nil {
+		t.Fatalf("add prior edge: %v", err)
+	}
+	// New single-valued assertion supersedes, starting mid-overlap.
+	if _, err := s.AddEdge(ctx, Edge{
+		ID: uuid.NewString(), Vault: "v", SourceID: a, TargetID: c2, Type: "employed_by",
+		ValidFrom: "2022-01-01T00:00:00Z",
+	}, true); err != nil {
+		t.Fatalf("add superseding edge: %v", err)
+	}
+
+	// As-of a point in the overlap window, exactly one edge must be valid.
+	edges, err := s.Edges(ctx, EdgeQuery{Vault: "v", AsOf: "2023-01-01T00:00:00Z"})
+	if err != nil {
+		t.Fatalf("edges: %v", err)
+	}
+	if len(edges) != 1 {
+		t.Fatalf("expected exactly 1 valid edge in overlap window, got %d: %+v", len(edges), edges)
+	}
+	if edges[0].TargetID != c2 {
+		t.Errorf("expected the newer edge to be valid, got target %q", edges[0].TargetID)
+	}
+}
+
 func TestAddEdgeAndCurrentQuery(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
