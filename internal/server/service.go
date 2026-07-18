@@ -34,10 +34,19 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 	if mode := s.resolveRewriteMode(req); mode != retrieval.RewriteOff {
 		if c := s.completerFor(ctx); c != nil {
 			rewrites := retrieval.Rewrite(ctx, c, mode, req.Query)
-			if mode == retrieval.RewriteMultiQuery && len(rewrites) > 1 {
+			// Multi-query fan-out is dense-only: it fuses per-query dense
+			// rankings with RRF. For hybrid/sparse modes it would silently
+			// drop the lexical component, so restrict the fan-out to dense
+			// recall and fall back to a single rewrite for the others so
+			// their lexical search is preserved.
+			if useMultiQueryFanout(mode, req.Mode, len(rewrites)) {
 				return s.rerankIfRequested(ctx, req, func() ([]recallResult, float32, error) {
 					return s.multiQueryRecall(ctx, req, rewrites)
 				})
+			}
+			if mode == retrieval.RewriteMultiQuery && isLexicalMode(req.Mode) {
+				s.log(ctx).Debug("multi-query rewrite falls back to single query for lexical modes",
+					"mode", req.Mode)
 			}
 			if len(rewrites) > 0 && strings.TrimSpace(rewrites[0]) != "" {
 				embedQuery = rewrites[0]
@@ -91,6 +100,20 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 	})
 }
 
+// isLexicalMode reports whether a recall mode has a lexical (BM25) component
+// that the dense-only multi-query fan-out would drop.
+func isLexicalMode(mode string) bool {
+	return mode == "hybrid" || mode == "sparse"
+}
+
+// useMultiQueryFanout decides whether to take the dense multi-query RRF path.
+// It requires multi-query rewriting, more than one rewrite to fuse, and a
+// non-lexical (dense) recall mode — otherwise the lexical component would be
+// silently lost, so the caller falls back to a single rewrite instead.
+func useMultiQueryFanout(mode retrieval.RewriteMode, reqMode string, rewriteCount int) bool {
+	return mode == retrieval.RewriteMultiQuery && rewriteCount > 1 && !isLexicalMode(reqMode)
+}
+
 // resolveRewriteMode determines the effective query-rewrite mode for a request:
 // the per-request override if present, else the server default. Unrecognized
 // values fall back to RewriteOff.
@@ -125,8 +148,9 @@ func (s *Server) rerankIfRequested(ctx context.Context, req recallRequest, recal
 }
 
 // multiQueryRecall fans out one dense search per rewritten query, then fuses
-// the dense ID rankings with RRF before fetching and mapping payloads. The
-// original query is used for the lexical component when mode is hybrid.
+// the dense ID rankings with RRF before fetching and mapping payloads. This is
+// a dense-only strategy; doRecall only routes dense-mode requests here so the
+// lexical component of hybrid/sparse recall is never silently dropped.
 func (s *Server) multiQueryRecall(ctx context.Context, req recallRequest, queries []string) ([]recallResult, float32, error) {
 	emb := s.embeddingFor(ctx)
 	filter := recallFilter(req)
