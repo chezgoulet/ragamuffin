@@ -19,12 +19,14 @@ export class MCPClient {
   #endpoint;
   #authToken;
   #vaultPrefix;
+  #timeout;
   #tools;
 
   constructor(config) {
     this.#endpoint = (config.endpoint || "http://localhost:8000").replace(/\/+$/, "");
     this.#authToken = config.authToken || "";
     this.#vaultPrefix = config.vaultPrefix || "agent::";
+    this.#timeout = (config.timeout || 30) * 1000;
     this.#tools = null;
   }
 
@@ -44,16 +46,32 @@ export class MCPClient {
   async #request(method, params = {}) {
     const id = nextId();
     const body = { jsonrpc: "2.0", id, method, params };
-    const resp = await fetch(`${this.#endpoint}/mcp`, {
-      method: "POST",
-      headers: this.#headers(),
-      body: JSON.stringify(body),
-    });
-    const data = await resp.json();
-    if (data.error) {
-      throw new Error(`MCP ${method}: ${data.error.message || JSON.stringify(data.error)}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#timeout);
+    try {
+      const resp = await fetch(`${this.#endpoint}/mcp`, {
+        method: "POST",
+        headers: this.#headers(),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`MCP ${method}: HTTP ${resp.status} ${text.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+      if (data.error) {
+        throw new Error(`MCP ${method}: ${data.error.message || JSON.stringify(data.error)}`);
+      }
+      return data.result;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error(`MCP ${method}: request timed out after ${this.#timeout}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return data.result;
   }
 
   /** Initialize the MCP session — returns protocol version and capabilities. */
@@ -98,7 +116,7 @@ export function extractUserText(messages) {
             texts.push(block.text);
           }
         }
-        if (texts.length > 0) return texts.join("").trim();
+        if (texts.length > 0) return texts.join(" ").trim();
       }
     }
   }
@@ -251,7 +269,7 @@ export default function pluginEntry(api) {
 
           if (!text || text.length < 10 || text.length > captureMaxChars) continue;
           if (text.includes("<relevant-memories>")) continue;
-          if (/^<[a-z].*<\/[a-z]>$/i.test(text)) continue;
+          if (/^<[a-z]+[^>]*>[\s\S]*<\/[a-z]+>$/i.test(text)) continue;
 
           const importantPatterns = [
             /prefer|like|love|hate|want|need|decide|always|never|important/i,
