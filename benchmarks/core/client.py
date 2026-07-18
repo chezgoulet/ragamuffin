@@ -258,14 +258,25 @@ class RagamuffinClient:
         query: str,
         vault: str,
         mode: str = "rag",
+        rewrite: str = "",
+        rerank: bool = False,
         timeout: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Ask a question against a vault.
 
         Uses ask_timeout (default 30s) unless timeout kwarg is provided.
+
+        rewrite: query-rewrite mode (off|hyde|stepback|multiquery). Empty
+            string lets the server use its configured default.
+        rerank: request listwise LLM rerank of retrieved chunks (requires
+            RAGAMUFFIN_RERANK on the server).
         """
         path = f"/vault/{vault}/ask"
-        body = {"query": query, "mode": mode}
+        body: Dict[str, Any] = {"query": query, "mode": mode}
+        if rewrite:
+            body["rewrite"] = rewrite
+        if rerank:
+            body["rerank"] = True
         effective = timeout if timeout is not None else self.ask_timeout
         data, _ = self._request("POST", path, body=body, timeout=effective)
         return data if isinstance(data, dict) else {"answer": str(data)}
