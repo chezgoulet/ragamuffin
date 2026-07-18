@@ -351,6 +351,9 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	case "supersede":
 		payload["status"] = qutil.Nv("superseded")
+		// Reconsolidation-on-recall (B5): a supersede within the recall window
+		// is recorded as a reconsolidation of the just-recalled memory.
+		s.applyReconsolidationV(payload, time.Now().UTC())
 		if req.NewKey != "" {
 			payload["supersedes"] = qutil.Nv(req.NewKey)
 		}
@@ -403,6 +406,9 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	case "reject":
 		payload["status"] = qutil.Nv("rejected")
+		// Reconsolidation-on-recall (B5): a reject within the recall window is
+		// also a reconsolidation event (the memory was labile when discarded).
+		s.applyReconsolidationV(payload, time.Now().UTC())
 
 	case "reclassify":
 		// Set status to active (reclassification is a resolution action)

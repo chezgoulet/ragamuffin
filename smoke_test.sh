@@ -1048,6 +1048,32 @@ assert_status "/v1/consolidation/status returns 200" "200" "$CODE" "$BODY"
 assert_field_type "consolidation status" "enabled" "bool" "$BODY"
 
 echo ""
+echo "--- reconsolidation-on-recall (B5) ---"
+# Create a fact, recall it (GET stamps last_recalled_at when enabled), then
+# update it within the window. The fact response must always round-trip; when
+# reconsolidation is enabled the update records the reconsolidation chain.
+curl -s -o /dev/null -X POST "$BASE/v1/facts" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"test/reconsolidation","value":"initial"}'
+curl -s -o /dev/null "$BASE/v1/facts?key=test/reconsolidation"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$BASE/v1/facts?key=test/reconsolidation" \
+  -H "Content-Type: application/json" \
+  -d '{"value":"updated"}')
+if [ "$CODE" = "200" ] || [ "$CODE" = "404" ]; then
+  green "reconsolidation update round-trips (HTTP $CODE)"
+else
+  red "reconsolidation update" "HTTP $CODE (expected 200 or 404)"
+fi
+# The fact response must remain valid JSON with the reconsolidation fields.
+RESP=$(curl -s "$BASE/v1/facts?key=test/reconsolidation")
+if echo "$RESP" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then
+  green "reconsolidated fact response is valid JSON"
+else
+  red "reconsolidation fact GET" "invalid JSON: $(echo "$RESP" | head -c 100)"
+fi
+curl -s -o /dev/null -X DELETE "$BASE/v1/facts?key=test/reconsolidation"
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
   exit 1

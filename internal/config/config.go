@@ -175,6 +175,14 @@ type Config struct {
 	DecayEnabled      bool
 	DecayHalfLifeDays float64 // baseline half-life for an unreinforced fact
 
+	// Reconsolidation-on-recall (B5). When enabled, the read path stamps
+	// last_recalled_at, and an update/supersede/reject that lands within
+	// ReconsolidationWindow of the last recall is recorded as a reconsolidation:
+	// reconsolidated_at is stamped and reconsolidation_chain is appended
+	// (Nader et al. 2000). Off by default; the raw event log is untouched.
+	ReconsolidationEnabled bool
+	ReconsolidationWindow  time.Duration // default 30m when enabled
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
@@ -422,6 +430,10 @@ func (c *Config) Validate() []string {
 	if c.GraphCommunityEnabled && !c.GraphEnabled {
 		errs = append(errs, "RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED=true requires RAGAMUFFIN_GRAPH_ENABLED=true")
 	}
+	// Reconsolidation config: window must be positive if enabled.
+	if c.ReconsolidationEnabled && c.ReconsolidationWindow <= 0 {
+		errs = append(errs, "RAGAMUFFIN_RECONSOLIDATION_WINDOW must be positive when reconsolidation is enabled")
+	}
 
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
@@ -565,6 +577,9 @@ func Load() (*Config, error) {
 
 		DecayEnabled:      envBool("RAGAMUFFIN_DECAY_ENABLED"),
 		DecayHalfLifeDays: envFloat("RAGAMUFFIN_DECAY_HALF_LIFE_DAYS", 30.0),
+
+		ReconsolidationEnabled: envBool("RAGAMUFFIN_RECONSOLIDATION_ENABLED"),
+		ReconsolidationWindow:  envDuration("RAGAMUFFIN_RECONSOLIDATION_WINDOW", 30*time.Minute),
 
 		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
