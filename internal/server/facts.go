@@ -413,7 +413,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	resp := pointToFactResponse(point.Payload, fp.Key)
+	resp := pointToFactResponse(point.Payload, fp.Key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
@@ -440,7 +440,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("fact not found: %s", key))
 			return
 		}
-		resp := pointToFact(points[0])
+		resp := pointToFact(points[0], s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 		if resp == nil {
 			writeError(w, 500, "INVALID_DATA", "corrupt fact data")
 			return
@@ -552,7 +552,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		resp := make([]factResponse, 0, len(points))
 		for _, p := range points {
 			key, _ := qutil.GetPayloadString(p.GetPayload(), "fact_key")
-			fr := pointToFactResponse(p.GetPayload(), key)
+			fr := pointToFactResponse(p.GetPayload(), key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 			if fr != nil {
 				fr.Score = float64(p.GetScore())
 				resp = append(resp, *fr)
@@ -682,7 +682,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays); fr != nil {
 			resp = append(resp, *fr)
 		}
 	}
@@ -842,7 +842,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		go s.registerProvenanceLink(s.shutdownCtx, key, *req.Source, vaultName)
 	}
 
-	resp := pointToFactResponse(payload, key)
+	resp := pointToFactResponse(payload, key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
@@ -1447,16 +1447,16 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 // pointToFact converts a Qdrant RetrievedPoint to a factResponse with all lifecycle fields.
-func pointToFact(p *qdrant.RetrievedPoint) *factResponse {
+func pointToFact(p *qdrant.RetrievedPoint, decayEnabled bool, halfLifeDays float64) *factResponse {
 	if p == nil {
 		return nil
 	}
-	return pointToFactResponse(p.GetPayload(), "")
+	return pointToFactResponse(p.GetPayload(), "", decayEnabled, halfLifeDays)
 }
 
 // pointToFactResponse builds a factResponse from a payload map and (optionally) a key.
 // If key is provided, it's used; otherwise reads from payload.
-func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *factResponse {
+func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string, decayEnabled bool, halfLifeDays float64) *factResponse {
 	fr := &factResponse{}
 
 	if keyOverride != "" {
@@ -1490,10 +1490,16 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
 	fr.ReadCount, _ = qutil.GetPayloadInt(payload, "access_count")
 	fr.LastReadAt, _ = qutil.GetPayloadString(payload, "last_accessed_at")
-	if acc, ok := qutil.GetPayloadFloat(payload, "accessibility"); ok {
+	// Accessibility / effective_confidence (B1) are computed live from the
+	// payload's last_accessed_at rather than read from a stored field. The
+	// stored value was stamped at access time (when last_accessed_at == now),
+	// so it always reported ~1.0 and never reflected real decay. Computing on
+	// read gives a true decayed value, matching what review stats already do.
+	if decayEnabled {
+		now := time.Now().UTC()
+		acc := pruner.Accessibility(payload, now, halfLifeDays)
+		eff := pruner.EffectiveConfidence(payload, now, halfLifeDays)
 		fr.Accessibility = &acc
-	}
-	if eff, ok := qutil.GetPayloadFloat(payload, "effective_confidence"); ok {
 		fr.EffectiveConfidence = &eff
 	}
 	fr.LastRecalledAt, _ = qutil.GetPayloadString(payload, "last_recalled_at")
@@ -1840,17 +1846,10 @@ func (s *Server) stampFactPointRecalled(ctx context.Context, pt factPoint) {
 		setPayload["last_recalled_at"] = qutil.Nv(nowStr)
 	}
 
-	// Continuous accessibility decay (B1): stamp the soft accessibility score
-	// and effective_confidence so ranking/threshold consumers and review stats
-	// see a current value without recomputing on every read. The updated
-	// access timestamp is applied first so decay reflects this very access.
-	if s.cfg.DecayEnabled {
-		merged := mergePayloadForDecay(pt.GetPayload(), newCount, nowStr)
-		acc := pruner.Accessibility(merged, now, s.cfg.DecayHalfLifeDays)
-		eff := pruner.EffectiveConfidence(merged, now, s.cfg.DecayHalfLifeDays)
-		setPayload["accessibility"] = qutil.Nv(acc)
-		setPayload["effective_confidence"] = qutil.Nv(eff)
-	}
+	// Note: accessibility / effective_confidence are intentionally NOT stamped
+	// here. Stamping at access time (when last_accessed_at == now) always yields
+	// ~1.0 and never reflects real decay. These fields are computed live in
+	// pointToFactResponse from the stored last_accessed_at instead (B1).
 
 	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
@@ -1910,19 +1909,6 @@ func (s *Server) reconsolidationChain(current map[string]*qdrant.Value, now time
 	nowStr := now.Format(time.RFC3339)
 	chain := append(qutil.GetPayloadStringList(current, "reconsolidation_chain"), nowStr)
 	return nowStr, chain, true
-}
-
-// mergePayloadForDecay returns a shallow copy of payload with the just-updated
-// access count and last_accessed_at applied, so decay is computed against the
-// current access rather than the stale stored values.
-func mergePayloadForDecay(payload map[string]*qdrant.Value, accessCount int, nowStr string) map[string]*qdrant.Value {
-	merged := make(map[string]*qdrant.Value, len(payload)+2)
-	for k, v := range payload {
-		merged[k] = v
-	}
-	merged["access_count"] = qutil.Nv(float64(accessCount))
-	merged["last_accessed_at"] = qutil.Nv(nowStr)
-	return merged
 }
 
 // ── /v1/facts/{key}/provenance — Fact Lineage (#803) ──────────────────────────

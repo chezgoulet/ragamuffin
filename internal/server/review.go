@@ -400,7 +400,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 					s.log(r.Context()).Error("failed to record review resolution", "error", err)
 				}
 			}
-			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
+			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays))
 			return
 		}
 
@@ -482,7 +482,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := pointToFactResponse(payload, key)
+	resp := pointToFactResponse(payload, key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
