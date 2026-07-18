@@ -95,11 +95,23 @@ func (s *Server) doAskCited(ctx context.Context, query string, topK int) (string
 		return "", nil, nil, fmt.Errorf("LLM not configured")
 	}
 
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
+	// HasLLM() does not imply an embedder or vector store is wired; guard both
+	// before dereferencing so a misconfigured deployment returns an error
+	// instead of panicking.
+	emb := s.embeddingFor(ctx)
+	if emb == nil {
+		return "", nil, nil, fmt.Errorf("embedder not configured")
+	}
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return "", nil, nil, fmt.Errorf("vector store not configured")
+	}
+
+	vector, err := emb.EmbedSingle(ctx, query)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("embedding failed: %w", err)
 	}
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
+	results, err := qc.Search(ctx, vector, uint64(topK), 0.0, "", nil)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("search failed: %w", err)
 	}
