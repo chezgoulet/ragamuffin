@@ -473,7 +473,10 @@ func (s *Store) ReplaceCommunities(ctx context.Context, vault string, comms []Co
 		return fmt.Errorf("graph: clear communities: %w", err)
 	}
 	for _, c := range comms {
-		members, _ := json.Marshal(c.MemberIDs)
+		members, err := json.Marshal(c.MemberIDs)
+		if err != nil {
+			return fmt.Errorf("graph: marshal community members: %w", err)
+		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO graph_communities (id, vault, label, member_ids, size, summary, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -1,9 +1,28 @@
 package server
 
 import (
+	"context"
+	"log/slog"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/chezgoulet/ragamuffin/internal/config"
 )
+
+// TestDoAskCitedNoEmbedder verifies doAskCited returns an error rather than
+// panicking when the LLM is configured but no embedder is wired.
+func TestDoAskCitedNoEmbedder(t *testing.T) {
+	s := &Server{
+		cfg:         &config.Config{LLMProvider: "openai", LLMAPIKey: "sk-test"},
+		shutdownCtx: context.Background(),
+		logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+	_, _, _, err := s.doAskCited(context.Background(), "q", 5)
+	if err == nil {
+		t.Fatal("expected error when embedder is not configured, got nil")
+	}
+}
 
 func TestBuildCitedContext(t *testing.T) {
 	chunks := []citedChunk{
