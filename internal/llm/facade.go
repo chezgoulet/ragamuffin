@@ -11,6 +11,11 @@ type Synthesizer interface {
 	// Synthesize answers a query using the given context text.
 	Synthesize(ctx context.Context, query, context string) (string, error)
 
+	// SynthesizeCited answers a query using context whose passages are
+	// labelled with chunk IDs, instructing the model to attribute each
+	// sentence with inline [cite: <chunk_id>] markers.
+	SynthesizeCited(ctx context.Context, query, context string) (string, error)
+
 	// Compare evaluates two text chunks from their sources and returns
 	// a qualitative assessment of similarity or difference.
 	Compare(ctx context.Context, chunkA, chunkB, sourceA, sourceB string) (string, error)

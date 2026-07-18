@@ -172,6 +172,10 @@ type Config struct {
 	AuditSampleSize int
 	AutoThreshold   float64
 
+	// Optional — Ask citations (#A4). When true, /ask returns sentence-level
+	// chunk attributions by default even if the request omits "cite".
+	AskCiteDefault bool
+
 	// Optional — Auth
 	AuthMode            string
 	AuthReadKey         string
@@ -509,6 +513,7 @@ func Load() (*Config, error) {
 
 		AuditSampleSize:               envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:                 envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
+		AskCiteDefault:                envBool("RAGAMUFFIN_ASK_CITE_DEFAULT"),
 		LogLevel:                      envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 		ErrorTrackingTelegramBotToken: os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_BOT_TOKEN"),
 		ErrorTrackingTelegramChatID:   os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID"),

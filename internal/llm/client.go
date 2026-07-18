@@ -76,6 +76,33 @@ func (c *Client) Synthesize(ctx context.Context, query, context string) (string,
 	return c.chat(ctx, prompt)
 }
 
+// SynthesizeCited answers a query using context whose passages are labelled
+// with chunk IDs (e.g. "[chunk_id: <uuid>]"). The model is instructed to
+// attribute each factual sentence with one or more inline [cite: <chunk_id>]
+// markers drawn only from the supplied chunk IDs. Callers parse the markers
+// out of the returned answer to build a structured citation list.
+func (c *Client) SynthesizeCited(ctx context.Context, query, context string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("LLM not configured")
+	}
+
+	prompt := fmt.Sprintf(
+		"Using the following context from a knowledge base, answer the question. "+
+			"Each passage is labelled with a chunk ID like [chunk_id: abc-123]. "+
+			"After every factual sentence, add one or more inline citation markers "+
+			"in the exact form [cite: <chunk_id>] naming the chunk(s) that support it. "+
+			"Only cite chunk IDs that appear in the context; never invent an ID. "+
+			"If no chunk supports a sentence, add [cite: none]. "+
+			"If multiple sources conflict about the same topic, prefer the later chunk. "+
+			"If facts include temporal metadata (Valid from / Valid until), use it to "+
+			"determine which fact was active at the time of the question.\n\n"+
+			"Context:\n%s\n\nQuestion: %s",
+		context, query,
+	)
+
+	return c.chat(ctx, prompt)
+}
+
 // Compare asks the LLM whether two chunks contradict each other.
 // Returns a summary if there's a conflict, empty string if none.
 // Health checks connectivity to the LLM provider by making a GET to the base URL.

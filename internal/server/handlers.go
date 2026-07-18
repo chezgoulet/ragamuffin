@@ -1092,6 +1092,7 @@ type askRequest struct {
 	Query string `json:"query"`
 	Mode  string `json:"mode"`
 	TopK  int    `json:"top_k"`
+	Cite  bool   `json:"cite"`
 }
 
 // explanationEntry is a single chunk's contribution to an /ask response (#804).
@@ -1298,6 +1299,30 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
+
+	cite := req.Cite || s.cfg.AskCiteDefault
+
+	if cite {
+		answer, sources, citations, err := s.doAskCited(ctx, req.Query, req.TopK)
+		if err != nil {
+			writeError(w, 502, "ASK_ERROR", err.Error())
+			return
+		}
+		resp := map[string]any{
+			"answer":    answer,
+			"sources":   sources,
+			"mode_used": "rag",
+			"citations": citations,
+		}
+		if s.emitter != nil {
+			vault := vaultFromContext(r.Context())
+			s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+				Query: req.Query, Results: len(sources), Vault: vault,
+			})
+		}
+		writeJSON(w, 200, resp)
+		return
+	}
 
 	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK)
 	if err != nil {
