@@ -25,31 +25,44 @@ mcp_rpc() {
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"${method}\",\"params\":${params}}"
 }
 
-get_field() {
+has_field() {
   local body="$1" field="$2"
-  echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$field','MISSING'))" 2>/dev/null || echo "PARSE_ERROR"
+  echo "$body" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+v = d
+for part in '$field'.split('.'):
+    if isinstance(v, dict) and part in v:
+        v = v[part]
+    else:
+        sys.exit(1)
+sys.exit(0)
+" 2>/dev/null
 }
 
 assert_no_error() {
   local desc="$1" body="$2"
-  local err
-  err=$(get_field "$body" "error")
-  if [ "$err" = "MISSING" ]; then
-    green "$desc"
-  elif [ "$err" = "null" ]; then
-    green "$desc"
-  elif [ "$err" = "None" ]; then
+  if echo "$body" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+e=d.get('error')
+sys.exit(0 if e is None or e == 'MISSING' else 1)
+" 2>/dev/null; then
     green "$desc"
   else
-    red "$desc" "unexpected error: $(echo "$err" | head -c 200)"
+    local err=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d.get('error','?')))" 2>/dev/null)
+    red "$desc" "unexpected error: $err"
   fi
 }
 
 assert_error() {
   local desc="$1" body="$2"
-  local err
-  err=$(get_field "$body" "error")
-  if [ "$err" != "MISSING" ] && [ "$err" != "null" ] && [ "$err" != "None" ]; then
+  if echo "$body" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+e=d.get('error')
+sys.exit(0 if e is not None and e != 'MISSING' else 1)
+" 2>/dev/null; then
     green "$desc"
   else
     red "$desc" "expected error but got: $(echo "$body" | head -c 200)"
@@ -58,14 +71,15 @@ assert_error() {
 
 assert_result_has() {
   local desc="$1" body="$2" field="$3"
-  local result
-  result=$(get_field "$body" "result")
-  if [ "$result" = "MISSING" ] || [ "$result" = "null" ]; then
-    red "$desc" "no result field"
-    return
-  fi
-  if echo "$result" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); print('yes' if '$field' in d else 'no')" 2>/dev/null | grep -q yes; then
+  if echo "$body" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+r=d.get('result')
+sys.exit(2 if r is None or r == 'MISSING' else (0 if '$field' in r else 1))
+" 2>/dev/null; then
     green "$desc"
+  elif [ $? -eq 2 ]; then
+    red "$desc" "no result field"
   else
     red "$desc" "result missing field '$field'"
   fi
@@ -195,7 +209,7 @@ if [ -n "$session_id" ]; then
   # Append a turn
   body=$(mcp_rpc "tools/call" "{\"name\":\"ragamuffin_turn_append\",\"arguments\":{\"session_id\":\"$session_id\",\"content\":\"User: hello\\nAssistant: hi there\",\"role\":\"assistant\"}}")
   turn_id=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}); print(r.get('turn_id',0))" 2>/dev/null)
-  if [ "$turn_id" != "0" ] && [ -n "$turn_id" ]; then
+  if [ "$turn_id" -gt 0 ] 2>/dev/null; then
     green "  turn_append succeeds, turn_id=$turn_id"
   else
     skip "  turn_append" "turn append may need specific server config"
