@@ -256,6 +256,18 @@ else
   assert_field "/ask error code (LLM not configured)" "code" "LLM_NOT_CONFIGURED" "$RESP"
 fi
 
+# ── /ask with rewrite + rerank (retrieval pipeline pass-through) ───────────
+echo "--- /ask rewrite+rerank ---"
+RESP=$(curl -s -X POST "$BASE/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","mode":"rag","rewrite":"hyde","rerank":true}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  assert_field_type "ask (rewrite+rerank) answer" "answer" "str" "$RESP"
+  assert_field_type "ask (rewrite+rerank) sources" "sources" "list" "$RESP"
+else
+  assert_field "/ask rewrite+rerank error code (LLM not configured)" "code" "LLM_NOT_CONFIGURED" "$RESP"
+fi
+
 # ── /ask with citations (#A4) ──────────────────────────────────────────────
 echo "--- /ask cite=true ---"
 RESP=$(curl -s -X POST "$BASE/ask" \

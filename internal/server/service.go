@@ -555,12 +555,12 @@ func (s *Server) doVerify(ctx context.Context, req verifyRequest) (verifyRespons
 
 // doAsk handles the full ask pipeline: retrieval + LLM synthesis.
 // Both REST handleAsk and MCP mcpAsk call this method.
-func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (string, []string, string, error) {
+func (s *Server) doAsk(ctx context.Context, query, mode string, topK int, rewrite string, rerank bool) (string, []string, string, error) {
 	if !s.cfg.HasLLM() {
 		return "", nil, "", fmt.Errorf("LLM not configured")
 	}
 
-	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK)
+	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK, rewrite, rerank)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("retrieval failed: %w", err)
 	}
@@ -577,8 +577,8 @@ func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (strin
 // Uses doAsk for the core synthesis, then builds explanation from a fresh search.
 // The double search is acceptable because explanation is only generated for the REST
 // handler (not MCP), and the cost is one extra embedding + one extra search.
-func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int) (string, []string, string, []explanationEntry, error) {
-	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK)
+func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int, rewrite string, rerank bool) (string, []string, string, []explanationEntry, error) {
+	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK, rewrite, rerank)
 	if err != nil {
 		return "", nil, "", nil, err
 	}

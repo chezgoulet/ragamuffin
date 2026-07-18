@@ -373,7 +373,7 @@ func (s *Server) mcpAsk(ctx context.Context, args map[string]interface{}) (inter
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK)
+	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK, "", false)
 	if err != nil {
 		return nil, err
 	}

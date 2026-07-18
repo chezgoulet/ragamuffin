@@ -1115,10 +1115,12 @@ func (s *Server) handleChunksDelete(w http.ResponseWriter, r *http.Request) {
 // ── /ask ───────────────────────────────────────────────────────────────────────
 
 type askRequest struct {
-	Query string `json:"query"`
-	Mode  string `json:"mode"`
-	TopK  int    `json:"top_k"`
-	Cite  bool   `json:"cite"`
+	Query   string `json:"query"`
+	Mode    string `json:"mode"`
+	TopK    int    `json:"top_k"`
+	Cite    bool   `json:"cite"`
+	Rewrite string `json:"rewrite,omitempty"` // off | hyde | stepback | multiquery (default: server config)
+	Rerank  bool   `json:"rerank,omitempty"`  // listwise LLM rerank of retrieved chunks (requires RAGAMUFFIN_RERANK)
 }
 
 // explanationEntry is a single chunk's contribution to an /ask response (#804).
@@ -1132,42 +1134,33 @@ type explanationEntry struct {
 
 // queryContext retrieves context text for /ask requests.
 // Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
-func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
+func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int, rewrite string, rerank bool) (contextText string, sources []string, modeUsed string, err error) {
 	modeUsed = mode
 
 	if mode == "rag" || mode == "auto" {
-		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
-		if err != nil {
-			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
-		}
-		results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
+		// Route through doRecall so /ask honors the full retrieval pipeline:
+		// query rewrite (HyDE/step-back/multi-query) and listwise rerank.
+		results, topScore, err := s.doRecall(ctx, recallRequest{
+			Query:   query,
+			TopK:    topK,
+			Detail:  "l2",
+			Rewrite: rewrite,
+			Rerank:  rerank,
+		})
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
 
 		seenSources := make(map[string]bool)
-		var topScore float32
 		var b strings.Builder
 		for _, r := range results {
-			if r.Score > topScore {
-				topScore = r.Score
+			if !seenSources[r.SourceFile] && r.SourceFile != "" {
+				sources = append(sources, r.SourceFile)
+				seenSources[r.SourceFile] = true
 			}
-			src := ""
-			if s, ok := r.Payload["source_file"]; ok {
-				sv := s.GetStringValue()
-				if !seenSources[sv] {
-					sources = append(sources, sv)
-					seenSources[sv] = true
-				}
-				src = sv
-			}
-			ci := int64(0)
-			if c, ok := r.Payload["chunk_index"]; ok {
-				ci = c.GetIntegerValue()
-			}
-			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", src, ci, r.Score))
-			if text, ok := r.Payload["text"]; ok {
-				b.WriteString(text.GetStringValue())
+			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", r.SourceFile, r.ChunkIndex, r.Score))
+			if r.Text != "" {
+				b.WriteString(r.Text)
 				b.WriteString("\n\n")
 			}
 		}
@@ -1175,8 +1168,10 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 
 		// ── Fact retrieval for temporal context ──
 		if s.facts != nil && contextText != "" {
-			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
-				contextText += "\n" + factText
+			if vector, verr := s.embeddingFor(ctx).EmbedSingle(ctx, query); verr == nil {
+				if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+					contextText += "\n" + factText
+				}
 			}
 		}
 
@@ -1350,7 +1345,7 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK)
+	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK, req.Rewrite, req.Rerank)
 	if err != nil {
 		writeError(w, 502, "ASK_ERROR", err.Error())
 		return
