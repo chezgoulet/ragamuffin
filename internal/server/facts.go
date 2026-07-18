@@ -257,8 +257,12 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	pointID := factKeyHash(fp.Key)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Check if fact already exists → preserve created_at
-	var createdAt string
+	// Check if fact already exists → preserve server-managed lifecycle fields
+	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
+	var confirmationCount, supersededBy, accessCount float64
+	var conflictResolved bool
+	var existingContradicts, existingSupports []string
+
 	exists, err := s.factExists(r.Context(), fp.Key)
 	if err != nil {
 		s.log(r.Context()).Error("fact existence check failed", "error", err)
@@ -266,18 +270,36 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if exists {
-		// Read existing point to preserve created_at
 		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(fp.Key), 1, "")
 		if err != nil {
-			s.log(r.Context()).Error("fact read for created_at failed", "error", err)
+			s.log(r.Context()).Error("fact read for existing fields failed", "error", err)
 		} else if len(points) > 0 {
-			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
-			// Carry forward confirmation_count and last_confirmed_at
-			// Only updated explicitly via PUT — preserve existing value on upsert
+			p := points[0].GetPayload()
+			createdAt, _ = qutil.GetPayloadString(p, "created_at")
+			status, _ = qutil.GetPayloadString(p, "status")
+			supersedes, _ = qutil.GetPayloadString(p, "supersedes")
+			refines, _ = qutil.GetPayloadString(p, "refines")
+			lastConfirmedAt, _ = qutil.GetPayloadString(p, "last_confirmed_at")
+			lastAccessedAt, _ = qutil.GetPayloadString(p, "last_accessed_at")
+			confirmationCount, _ = qutil.GetPayloadFloat(p, "confirmation_count")
+			supersededBy, _ = qutil.GetPayloadFloat(p, "superseded_by")
+			accessCount, _ = qutil.GetPayloadFloat(p, "access_count")
+			conflictResolved = qutil.GetPayloadBoolValue(p, "conflict_resolved")
+			existingContradicts = qutil.GetPayloadStringList(p, "contradicts")
+			existingSupports = qutil.GetPayloadStringList(p, "supports")
 		}
 	}
 	if createdAt == "" {
 		createdAt = now
+	}
+	if status == "" {
+		status = "active"
+	}
+	if lastConfirmedAt == "" {
+		lastConfirmedAt = now
+	}
+	if confirmationCount <= 0 {
+		confirmationCount = 1
 	}
 
 	// Compute fields
@@ -320,21 +342,21 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":           fp.Key,
-		"key_prefix":         versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
+		"key_prefix":         versionKeyPrefix(fp.Key),
 		"fact_value":         fp.Value,
 		"source":             fp.Source,
 		"source_type":        fp.SourceType,
 		"confidence":         confidence,
 		"version":            version,
-		"status":             "active",
-		"supersedes":         "",
-		"superseded_by":      0,
-		"refines":            "",
-		"conflict_resolved":  true,
-		"confirmation_count": 1,
-		"last_confirmed_at":  now,
-		"access_count":       0,
-		"last_accessed_at":   "",
+		"status":             status,
+		"supersedes":         supersedes,
+		"superseded_by":      supersededBy,
+		"refines":            refines,
+		"conflict_resolved":  conflictResolved,
+		"confirmation_count": confirmationCount,
+		"last_confirmed_at":  lastConfirmedAt,
+		"access_count":       accessCount,
+		"last_accessed_at":   lastAccessedAt,
 		"created_at":         createdAt,
 		"updated_at":         now,
 		"ttl_days":           intValue(fp.TTLDays),
@@ -345,18 +367,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"valid_until":        validUntil,
 		"valid_until_unix":   validUntilUnix,
 	})
-	// Contradicts: empty list (server-managed)
-	payload["contradicts"] = &qdrant.Value{
-		Kind: &qdrant.Value_ListValue{
-			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
-		},
-	}
-	// Supports: empty list (server-managed)
-	payload["supports"] = &qdrant.Value{
-		Kind: &qdrant.Value_ListValue{
-			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
-		},
-	}
+	// Contradicts: carried forward on re-upsert, empty list on create
+	payload["contradicts"] = qutil.NvList(existingContradicts)
+	// Supports: carried forward on re-upsert, empty list on create
+	payload["supports"] = qutil.NvList(existingSupports)
 
 	if len(fp.Tags) > 0 {
 		setPayloadTags(payload, fp.Tags)
@@ -1381,10 +1395,20 @@ func (s *Server) migrateFacts() {
 				continue
 			}
 
+			// Preserve existing vector if available; fall back to zero vector
+			// so migration doesn't destroy embeddings for the embedded store.
+			vec := store.GetPointVector(p)
+			if vec == nil || len(vec) == 0 {
+				vec = make([]float32, s.cfg.FactsVectorSize)
+			}
 			point := &qdrant.PointStruct{
 				Id:      p.Id,
 				Payload: payload,
-				Vectors: s.zeroFactVector(),
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{Data: vec},
+					},
+				},
 			}
 
 			if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
