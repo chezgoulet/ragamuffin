@@ -559,6 +559,10 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Reconsolidation-on-recall / accessibility decay (B1/B5): semantic
+		// fact search is a recall path, so stamp the returned facts.
+		stampFactsRecalled(s, r.Context(), points)
+
 		writeJSON(w, 200, map[string]any{"entries": resp})
 		return
 	}
@@ -1763,11 +1767,45 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 		s.log(ctx).Debug("incrementFactAccess: fact not found", "key", factKey, "error", err)
 		return
 	}
-	pt := points[0]
+	s.stampFactPointRecalled(ctx, points[0])
+}
+
+// stampFactsRecalled records recall access (access_count, last_accessed_at,
+// last_recalled_at, decay fields) for a batch of facts that were just returned
+// by a recall path (semantic fact search, /ask fact context). It is the shared
+// entry point so that reconsolidation-on-recall (B5) and accessibility decay
+// (B1) are stamped consistently regardless of which endpoint recalled the fact.
+//
+// It is a cheap no-op when neither reconsolidation nor decay is enabled and the
+// per-point debounce would skip the write anyway. Each point is stamped
+// independently; a failure on one does not abort the rest.
+func stampFactsRecalled[T factPoint](s *Server, ctx context.Context, points []T) {
+	for _, pt := range points {
+		s.stampFactPointRecalled(ctx, pt)
+	}
+}
+
+// factPoint is the minimal surface shared by qdrant.RetrievedPoint (scroll) and
+// qdrant.ScoredPoint (search) so the recall-stamping helpers accept results
+// from either API.
+type factPoint interface {
+	GetId() *qdrant.PointId
+	GetPayload() map[string]*qdrant.Value
+}
+
+// stampFactPointRecalled applies the access/recall/decay payload update to a
+// single already-fetched fact point. Callers that only have a fact key should
+// use incrementFactAccess; recall paths that already hold the points should use
+// stampFactsRecalled.
+func (s *Server) stampFactPointRecalled(ctx context.Context, pt factPoint) {
+	if pt == nil {
+		return
+	}
 	pointID := pt.GetId()
 	if pointID == nil || pointID.GetUuid() == "" {
 		return
 	}
+	factKey, _ := qutil.GetPayloadString(pt.GetPayload(), "fact_key")
 
 	// Read current access_count or default 0
 	currentCount := qutil.GetPayloadIntValue(pt.GetPayload(), "access_count")

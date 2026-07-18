@@ -470,6 +470,11 @@ RESP=$(curl -s -w "\\n%{http_code}" -X POST "$HOST/recall" \
   -d '{"query":"test","top_k":5,"time_filter":"all"}')
 assert_status "recall time_filter=all" 200 "$RESP"
 
+yellow "Reconsolidation: semantic fact search is a recall path (200)"
+RESP=$(curl -s -w "\\n%{http_code}" "$HOST/v1/facts?query=temporal%20test&limit=5" \
+  -H "Authorization: Bearer $TOKEN")
+assert_status "semantic fact recall stamps access" 200 "$RESP"
+
 # Cleanup
 curl -s -X DELETE "$HOST/v1/facts?key=test/temporal-fact" \
   -H "Authorization: Bearer $TOKEN" > /dev/null 2>&1

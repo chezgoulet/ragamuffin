@@ -53,6 +53,43 @@ func TestIncrementFactAccessNoLastRecalledWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestStampFactsRecalledScoredPoints verifies the shared recall-stamping helper
+// stamps last_recalled_at for facts returned by a search (ScoredPoint) path,
+// e.g. semantic fact search and /ask fact context.
+func TestStampFactsRecalledScoredPoints(t *testing.T) {
+	store := newFactsMockStore()
+	store.addPoint("user/pref", "dark mode", "active")
+
+	s := reconServer(store, true, 30*time.Minute)
+	pts := []*pb.ScoredPoint{{
+		Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: "p1"}},
+		Payload: store.points["user/pref"].GetPayload(),
+	}}
+	stampFactsRecalled(s, context.Background(), pts)
+
+	if store.setPayloadCalls == 0 {
+		t.Fatal("expected SetPayload to be called for recalled facts")
+	}
+	if _, ok := store.lastSetPayload["last_recalled_at"]; !ok {
+		t.Fatal("last_recalled_at not stamped on scored-point recall path")
+	}
+}
+
+// TestStampFactsRecalledRetrievedPoints proves the helper is generic over the
+// scroll (RetrievedPoint) result type too.
+func TestStampFactsRecalledRetrievedPoints(t *testing.T) {
+	store := newFactsMockStore()
+	store.addPoint("user/pref", "dark mode", "active")
+
+	s := reconServer(store, true, 30*time.Minute)
+	pts := []*pb.RetrievedPoint{store.points["user/pref"]}
+	stampFactsRecalled(s, context.Background(), pts)
+
+	if _, ok := store.lastSetPayload["last_recalled_at"]; !ok {
+		t.Fatal("last_recalled_at not stamped on retrieved-point recall path")
+	}
+}
+
 func TestApplyReconsolidationWithinWindow(t *testing.T) {
 	now := time.Now().UTC()
 	current := map[string]*pb.Value{

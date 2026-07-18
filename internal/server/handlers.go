@@ -1283,6 +1283,11 @@ func (s *Server) appendFactContext(ctx context.Context, vector []float32, topK i
 		b.WriteString(value)
 		b.WriteString("\n\n")
 	}
+
+	// Reconsolidation-on-recall / accessibility decay (B1/B5): the /ask fact
+	// context is a recall path, so stamp the returned facts.
+	stampFactsRecalled(s, ctx, factResults)
+
 	return b.String()
 }
 
