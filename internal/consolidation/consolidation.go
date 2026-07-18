@@ -318,6 +318,17 @@ func (c *Consolidator) summarize(ctx context.Context, transcript string) (string
 	return trimGist(out), nil
 }
 
+// gistNamespace is a fixed UUID namespace for deriving deterministic gist point
+// ids. Generated once; must never change or existing gists would orphan.
+var gistNamespace = uuid.MustParse("6f3d5c8e-2b1a-4d9f-8c7e-1a2b3c4d5e6f")
+
+// gistPointID derives a stable UUIDv5 from the gist fact key so that
+// re-consolidating the same session upserts the existing gist point in place
+// rather than creating a duplicate on every sweep (Qdrant upserts by point id).
+func gistPointID(key string) string {
+	return uuid.NewSHA1(gistNamespace, []byte(key)).String()
+}
+
 // writeGist stores a gist summary as a long-TTL fact. The fact is tagged
 // gist=true and source_type=consolidation so it is distinguishable from
 // extracted facts and the immutable session log.
@@ -356,7 +367,7 @@ func (c *Consolidator) writeGist(ctx context.Context, vault, sessionID, gist str
 		return fmt.Errorf("embed gist: %w", err)
 	}
 	point := &pb.PointStruct{
-		Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: uuid.New().String()}},
+		Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: gistPointID(key)}},
 		Payload: payload,
 		Vectors: &pb.Vectors{VectorsOptions: &pb.Vectors_Vector{Vector: &pb.Vector{Data: vec}}},
 	}

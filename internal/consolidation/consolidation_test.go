@@ -205,6 +205,49 @@ func TestRunOnceWritesGistAndEmits(t *testing.T) {
 	}
 }
 
+func TestGistPointIDDeterministic(t *testing.T) {
+	a := gistPointID("gist:s1")
+	b := gistPointID("gist:s1")
+	if a != b {
+		t.Errorf("gistPointID not stable: %q != %q", a, b)
+	}
+	if a == gistPointID("gist:s2") {
+		t.Error("different sessions must map to different point ids")
+	}
+}
+
+// TestRunOnceGistIdempotentAcrossRuns verifies re-consolidating the same session
+// upserts the existing gist point (stable id) rather than duplicating it.
+func TestRunOnceGistIdempotentAcrossRuns(t *testing.T) {
+	src := &mockSource{
+		sessions: map[string][]Session{
+			"v": {{ID: "s1", Vault: "v", TurnCount: 4, UpdatedAt: oldTime(5)}},
+		},
+		transcript: map[string][]Turn{
+			"s1": {{Role: "user", Content: "I prefer Go for backends"}, {Role: "assistant", Content: "Noted."}},
+		},
+	}
+	facts := &mockFacts{}
+	c := New(Config{Enabled: true, IdleWindow: time.Hour, BatchSize: 10, GistTTLDays: 100},
+		src, &mockLLM{resp: "The user prefers Go."}, &mockEmbedder{}, facts, &mockEmitter{},
+		func() []string { return []string{"v"} }, nil)
+
+	if err := c.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce #1: %v", err)
+	}
+	if err := c.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce #2: %v", err)
+	}
+	if len(facts.upserted) != 2 {
+		t.Fatalf("expected 2 upsert calls (one per run), got %d", len(facts.upserted))
+	}
+	id0 := facts.upserted[0].GetId().GetUuid()
+	id1 := facts.upserted[1].GetId().GetUuid()
+	if id0 == "" || id0 != id1 {
+		t.Errorf("gist point id must be stable across runs: %q vs %q", id0, id1)
+	}
+}
+
 func TestRunOnceIdleGate(t *testing.T) {
 	// Newest session updated 1 minute ago; idle window 1 hour → skip.
 	src := &mockSource{
