@@ -15,6 +15,9 @@ type mockSynth struct {
 func (m *mockSynth) Synthesize(_ context.Context, _, _ string) (string, error) {
 	return m.resp, m.err
 }
+func (m *mockSynth) SynthesizeCited(_ context.Context, _, _ string) (string, error) {
+	return m.resp, m.err
+}
 func (m *mockSynth) Compare(_ context.Context, _, _, _, _ string) (string, error) { return "", nil }
 func (m *mockSynth) Health(_ context.Context) error                               { return nil }
 
