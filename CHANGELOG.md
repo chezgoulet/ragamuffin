@@ -1,9 +1,77 @@
 # Changelog
 
-## Unreleased
+## v0.9.6 (2026-07-18)
 
 ### Features
-- **Auto session-to-fact storage (Hermes adapter)**: `on_session_end` now automatically extracts key decisions, conclusions, config facts, and preferences from the transcript and writes them to the vault as deduplicated facts via `POST /v1/facts`. Fact keys are deterministic (`house/<domain>/<topic>`), so a later session reaching the same conclusion overwrites the earlier value instead of creating a duplicate. No manual `ragamuffin_learn`/`ragamuffin_fact_put` call required. Toggle with `RAGAMUFFIN_AUTO_SESSION_FACTS` (default `true`) and namespace prefix `RAGAMUFFIN_SESSION_FACTS_PREFIX` (default `house`). (#793)
+- **MCP tool surface expansion (33 tools)**: Fact operations split into discrete tools
+  (`ragamuffin_fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance`).
+  New graph tools (`ragamuffin_graph_entity`, `_edges`, `_communities`), context
+  (`ragamuffin_context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes`),
+  review (`ragamuffin_review`, `_contradictions`), hybrid search (`ragamuffin_hybrid_search`),
+  and utilities (`ragamuffin_links`, `_status`, `_chunks`, `_turn_append`, etc.).
+  Backward-compatible: legacy `ragamuffin_facts` still dispatched. (#858)
+- **MCP session-end notification**: `notifications/session_end` auto-finalizes sessions,
+  builds structured summaries, extracts decision/conclusion facts from assistant turns,
+  and marks sessions finalized. Idempotent. (#861)
+- **Auto-provision agent vaults**: Agent vaults created on first MCP tool dispatch —
+  no manual `POST /vaults` needed. Detected by vault prefix (e.g., `agent::`). (#859)
+- **SDK packages**: Reusable MCP client libraries for Node.js (`sdks/ragamuffin-client-js/`)
+  and Python (`sdks/ragamuffin-client-py/`). Zero external dependencies. (#860)
+- **OpenClaw MCP rewrite**: Plugin connects via JSON-RPC 2.0 to `/mcp` instead of REST,
+  dynamically discovering all 33 server tools. Replaces 3 hardcoded tools. (#859)
+- **Adapter conformance test suite**: `tests/mcp_conformance_test.sh` — standard MCP
+  integration tests for any adapter. (#862)
+- **`ragamuffin_dialectic` tool**: Multi-pass reasoning prompts (cold analytical, warm
+  synthetic, hot evaluative). Depth 1–3. Mirrors Hermes adapter's dialectic logic. (#862)
+- **`ragamuffin_changes` tool**: Temporal awareness — vault activity over time. Shows
+  recent log events and facts sorted by recency. (#862)
+- **Documentation rewrite**: `docs/integration/memory-provider-api.md` rewritten MCP-first
+  with full 33-tool catalog. REST documented as underlying transport. (direct)
+- **Auto session-to-fact storage (Hermes adapter)**: `on_session_end` auto-extracts
+  decisions, conclusions, config, and preferences from transcripts. Deduplicated by
+  deterministic key. (#793)
+
+### Bug Fixes
+- **Lifecycle field preservation (REST + MCP)**: `POST /v1/facts` re-upsert no longer
+  resets status, supersedes, refines, contradicts, supports, or access count. (#853)
+- **Lifecycle field preservation (service.doFactsUpsert)**: MCP `ragamuffin_fact_put`
+  now carries forward all lifecycle fields matching the REST path. (#863)
+- **MCP nil dereferences**: Guarded `s.logStore`, `s.qdrantFor()`, `s.embeddingFor()`,
+  `s.llmFor()`, and `s.facts` for nil across all MCP handlers. (#851)
+- **Louvain community detection**: Self-loop weight now included in modularity gain
+  for the stay candidate, preventing incorrect community splits at higher aggregation
+  levels. (#855)
+- **Proof-of-decay fields computed live**: Accessibility and EffectiveConfidence are
+  computed via half-life formula rather than stamped on recall. (#846)
+- **Reconsolidation no longer a no-op**: Facts now stamped on semantic recall path,
+  making reconsolidation-on-recall functional. (#844)
+- **Gist ID determinism**: UUIDv5 from gist key prevents duplicate gist points across
+  consolidation runs. (#845)
+- **Multi-query preserves lexical search**: Multi-query fan-out restricted to dense
+  mode; hybrid/sparse use single rewrite with lexical preserved. (#847)
+- **Graph correctness**: Entity dedup via `LOWER()`; temporal bounds normalized to
+  RFC3339 UTC; supersession clamps prior edge's `valid_until` for disjoint intervals. (#848)
+- **Shutdown ordering**: Consolidation worker stopped before logStore close. (#850)
+- **Indexer data safety**: `indexFile` keeps delete-before-upsert pattern with
+  documentation; `Ingest` now calls `DeleteBySource` before upserting; `chunkCount`
+  tracks per-file counts for accurate stats. (#852)
+- **LogStore double-close removed**: Signal handler no longer calls `logStore.Close()`
+  — deferred close handles it. Prune context cancellable during shutdown. (#854)
+- **`envBool` silent fallback warning**: Added warning for unrecognized bool values. (direct)
+- **Review endpoint**: `min_confidence` renamed to `max_confidence` to match Lt semantics. (#856)
+
+### Documentation
+- **MCP-first integration guide**: Complete rewrite with 33-tool catalog, MCP session-end
+  lifecycle, per-harness config reference, and REST-as-transport documentation. (direct)
+- **CHANGELOG backfill**: All missing v0.9.0–v0.9.5 entries consolidated into release history.
+- **SPEC.md MCP section**: Full tool catalog, session-end notification, auto-provisioning docs.
+- **AGENTS.md**: Version table updated through v0.9.x; `sdks/` in project structure.
+- **ROADMAP.md**: All v0.6–v0.9 items marked done; v0.9.x MCP expansion documented.
+- **README.md**: Tool list updated to 33; MCP SDK and session-end notification added.
+- **OpenAPI spec**: Version bumped to 0.9.6; MCP stub expanded.
+- **Archive specs**: SPEC-MCP.md, SPEC-v0.5.md, SPEC-semantic-fact-search.md, and
+  SPEC-temporal-awareness-complete.md updated with Done status banners and current
+  implementation notes.
 
 ## v1.0.0-rc.1
 

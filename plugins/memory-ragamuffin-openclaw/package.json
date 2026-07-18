@@ -1,6 +1,6 @@
 {
   "name": "memory-ragamuffin-openclaw",
-  "version": "0.5.0",
+  "version": "0.9.6",
   "description": "Ragamuffin-backed memory for OpenClaw — per-agent Qdrant-isolated semantic search via Vault recall",
   "type": "module",
   "main": "dist/index.js",

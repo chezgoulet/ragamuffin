@@ -1,6 +1,6 @@
 # Ragamuffin MCP Tool Manifest — Specification
 
-**Status:** Draft · v0.5 scope
+**Status:** Superseded — MCP tool surface now has 33 tools (see `internal/server/mcp_handlers.go` or `docs/integration/memory-provider-api.md`). This spec describes the original 8-tool v0.5 design.
 **Spec version:** 2026-05-22
 **REST foundation:** v0.4 (multi-tenant, auth, graph)
 

@@ -25,7 +25,7 @@ vector embeddings for similarity search.
 
 Ragamuffin is available at `http://ragamuffin:8000` (or wherever
 configured). All integration patterns are documented in
-`ragamuffin-integration.md`.
+`api-reference.md`.
 
 ## Core Capabilities
 
@@ -81,7 +81,8 @@ ragamuffin-agent/
 ├── SOUL.md                     ← Personality (fill in)
 ├── IDENTITY.md                 ← Agent identity card
 ├── USER.md                     ← User setup guide
-├── ragamuffin-integration.md   ← API reference & patterns
+├── api-reference.md            ← API reference & patterns
+├── TOOLS.md                    ← Tool access guide
 ├── openclaw-config.json.example ← Config snippet
 └── HEARTBEAT.md                ← Run history
 ```

@@ -1,5 +1,7 @@
 # Temporal Awareness for /ask — Complete Specification
 
+> **Status:** Done (v0.9.x) — temporal metadata injected into `/ask` context, fact CRUD carries timestamps, temporal recall filters, session-end summarization with timestamps.
+
 ## Problem
 
 Facts stored in Qdrant carry `valid_from` and `valid_until` metadata, but the

@@ -1,5 +1,5 @@
 name: "ragamuffin"
 description: "Per-agent Qdrant-isolated memory with cross-agent recall via Ragamuffin"
-version: "0.5.0"
+version: "0.9.6"
 author: "ChezGoulet"
 homepage: "https://github.com/chezgoulet/ragamuffin"

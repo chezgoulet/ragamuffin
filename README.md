@@ -1337,14 +1337,19 @@ curl -s -X POST http://localhost:8000/mcp \
 
 #### Available Tools
 
-All tools mirror the REST API:
-- `ragamuffin_recall` — semantic search (`/recall`, supports `mode` and `time_filter`)
-- `ragamuffin_ask` — synthesized answer with RAG (`/ask`)
-- `ragamuffin_draft` — write files to vault or create PR (`/draft`)
-- `ragamuffin_audit` — vault health checks (`/audit`)
-- `ragamuffin_store` — ingest content into agent vault (`POST /v1/ingest`)
-- `ragamuffin_facts` — upsert and query structured facts (`POST /v1/facts`)
-- `ragamuffin_inbox` — send and receive inbox messages (`POST /inbox`, `GET /inbox`)
+All tools mirror the REST API. Full 33-tool catalog:
+
+- **Search & Synthesis:** `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_hybrid_search`, `ragamuffin_verify`
+- **Fact CRUD & Lineage:** `ragamuffin_fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` + legacy `ragamuffin_facts`
+- **Knowledge Graph:** `ragamuffin_graph_entity`, `_edges`, `_communities`, `ragamuffin_links`
+- **Quality & Review:** `ragamuffin_review`, `_contradictions`, `_audit`, `ragamuffin_get_chunk`
+- **Context & Discovery:** `ragamuffin_context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes`
+- **Session Management:** `ragamuffin_session_create`, `_get`, `_list`, `ragamuffin_turn_append`
+- **Utilities:** `ragamuffin_store`, `_draft`, `_stats`, `_status`
+
+**Auto-provisioning:** Agent vaults (names containing `:`) created on first tool dispatch.
+**Session end:** Send `notifications/session_end` to auto-finalize sessions with summary and fact extraction.
+**SDK clients:** Node.js (`sdks/ragamuffin-client-js/`) and Python (`sdks/ragamuffin-client-py/`).
 
 Client disconnect cancels any in-flight operations. Each SSE connection has a
 40-second keepalive heartbeat. Sessions expire after 5 minutes of inactivity.

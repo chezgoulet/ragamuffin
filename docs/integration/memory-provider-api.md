@@ -17,7 +17,7 @@ guide covers three integration tiers:
 
 ```bash
 # Point your MCP client at ragamuffin's SSE endpoint
-# An MCP-capable agent gets 30 tools immediately.
+# An MCP-capable agent gets 33 tools immediately.
 MCP_SERVER_URL="http://ragamuffin:8000/mcp"
 ```
 
@@ -40,7 +40,7 @@ add a thin shim (~100 lines) that:
                     └──┬──────────────┬────┘
                        │              │
               MCP      │     Harness  │ Lifecycle hooks
-           (30 tools)  │     plugin   │ (prefetch, session-end)
+           (33 tools)  │     plugin   │ (prefetch, session-end)
                        ▼              ▼
               ┌──────────────────────────┐
               │     Ragamuffin           │
@@ -50,14 +50,14 @@ add a thin shim (~100 lines) that:
 ```
 
 **The MCP layer is the universal tool surface.** Any MCP-compatible host gets
-30 tools with zero adapter code. Per-harness adapters add only what MCP can't:
+33 tools with zero adapter code. Per-harness adapters add only what MCP can't:
 auto-injection (prefetch, cadence-gated context) and session-end hooks.
 
 ---
 
 ## MCP Tool Catalog
 
-Ragamuffin exposes **30 tools** via `POST /mcp` (JSON-RPC 2.0) on an SSE
+Ragamuffin exposes **33 tools** via `POST /mcp` (JSON-RPC 2.0) on an SSE
 stream at `GET /mcp`. Call `tools/list` to discover them, or refer to the
 catalog below.
 
@@ -104,8 +104,10 @@ catalog below.
 | Tool | What it does |
 |------|-------------|
 | `ragamuffin_context_bundle` | Composite context: peer card + recent facts + recall in one call. Use at turn start to orient. |
+| `ragamuffin_dialectic` | Multi-pass reasoning prompts: cold (analytical), warm (synthetic), hot (evaluative). Depth 1–3. |
 | `ragamuffin_peer_list` | Discover other agents from `/peer/*/profile` fact keys. Returns vault names and peer cards. |
 | `ragamuffin_briefing` | Vault activity digest for a time period (24h/7d/30d). Counts events by type. |
+| `ragamuffin_changes` | Recent vault activity: new/updated facts and log events with timestamps. Time-filterable. |
 | `ragamuffin_store` | Ingest content into the vault. The canonical write path. |
 | `ragamuffin_draft` | Write a file to the vault (direct mode) or open a PR. |
 
@@ -117,6 +119,12 @@ catalog below.
 | `ragamuffin_session_get` | Get session metadata and turn history. |
 | `ragamuffin_session_list` | List active sessions by agent or vault. Paginated. |
 | `ragamuffin_turn_append` | Append a turn (user/assistant) to an existing session. |
+
+### Notifications
+
+| Notification | What it does |
+|-------------|-------------|
+| `notifications/session_end` | Auto-finalizes a session: builds a structured summary, indexes it as a fact, extracts decision/conclusion facts from assistant turns, and marks the session finalized (idempotent). Send after the last turn with `session_id` and optional `vault`. |
 
 ### Retrieval
 
@@ -228,9 +236,9 @@ skips persistence.
 
 - **OpenClaw plugin:** `plugins/memory-ragamuffin-openclaw/` (Node.js, ~250 lines)
 - **Hermes adapter:** `adapters/hermes-memory/` (Python, ~200 lines)
-- **MCP tools:** `internal/server/mcp_handlers.go` (Go, ~1400 lines)
+- **MCP tools:** `internal/server/mcp_handlers.go` (Go, ~1500 lines)
 
-The MCP handler is the canonical reference — it implements all 30 tools and
+The MCP handler is the canonical reference — it implements all 33 tools and
 demonstrates the correct dispatch pattern for every endpoint.
 
 ---
