@@ -45,6 +45,7 @@ func main() {
 	reporter := logging.New(logging.Config{
 		TelegramBotToken: cfg.ErrorTrackingTelegramBotToken,
 		TelegramChatID:   cfg.ErrorTrackingTelegramChatID,
+		Level:            slogLevel(cfg.LogLevel),
 	})
 	logger := slog.New(reporter.Handler())
 	slog.SetDefault(logger)
@@ -207,6 +208,10 @@ func main() {
 	// before dependencies (logStore, factsQc) are closed.
 	cancelCons := func() {}
 	var consWG sync.WaitGroup
+
+	// Logstore prune worker lifecycle. Cancelled in the signal handler before
+	// logStore.Close() to prevent a concurrent SQL query during shutdown.
+	cancelPrune := func() {}
 	var initialDoneChs []chan struct{}
 
 	// Shared driver config
@@ -227,10 +232,6 @@ func main() {
 			vlog := logger.With("vault", name)
 
 			drv, err := newVaultDriver(ctx, cfg, collectionName, vc.Path, chunkVectorSize, watchInterval, vlog)
-			if err != nil {
-				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
-				os.Exit(1)
-			}
 			if err != nil {
 				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
 				os.Exit(1)
@@ -303,10 +304,6 @@ func main() {
 	} else {
 		// Single-tenant: one driver, one indexer
 		drv, err := newVaultDriver(ctx, cfg, cfg.QdrantCollection, cfg.VaultPath, chunkVectorSize, watchInterval, logger)
-		if err != nil {
-			logger.Error("failed to create file watcher driver", "error", err)
-			os.Exit(1)
-		}
 		if err != nil {
 			logger.Error("failed to create file watcher driver", "error", err)
 			os.Exit(1)
@@ -426,10 +423,10 @@ func main() {
 	// ── Logstore periodic pruning ────────────────────────────────────────────
 	if cfg.LogstoreMaxRows > 0 {
 		// Run prune immediately, then every hour
+		var ctxPrune context.Context
+		ctxPrune, cancelPrune = context.WithCancel(context.Background())
 		go func() {
-			ctxPrune, cancelPrune := context.WithCancel(context.Background())
 			defer cancelPrune()
-
 			// Initial prune at startup
 			if deleted, err := logStore.Prune(ctxPrune, cfg.LogstoreMaxRows); err != nil {
 				logger.Warn("logstore initial prune failed", "error", err)
@@ -622,12 +619,15 @@ func main() {
 		cancelCons()
 		consWG.Wait()
 
-		// 1. Flush SQLite pending writes
+		// 0.6 Cancel the logstore prune worker so it doesn't race with Close.
+		cancelPrune()
+
+		// 1. Flush SQLite pending writes. The deferred logStore.Close() from
+		// main handles closing; signal handler only flushes.
 		if logStore != nil {
 			if err := logStore.Flush(); err != nil {
 				logger.Warn("logstore flush failed", "error", err)
 			}
-			logStore.Close()
 		}
 
 		// 2. Cancel all indexers (stopping in-flight indexing)
@@ -663,8 +663,8 @@ func main() {
 	logger.Info("shutdown complete")
 }
 
-func slogLevel() slog.Level {
-	switch os.Getenv("RAGAMUFFIN_LOG_LEVEL") {
+func slogLevel(s string) slog.Level {
+	switch s {
 	case "debug":
 		return slog.LevelDebug
 	case "warn":
