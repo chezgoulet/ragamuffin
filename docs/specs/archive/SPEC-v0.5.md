@@ -1,5 +1,7 @@
 # Ragamuffin v0.5 — Fact Lifecycle & Memory Pruning
 
+> **Status:** Done — all phases implemented in v0.5 through v0.9.
+
 Extends [SPEC-v0.4.md](SPEC-v0.4.md). All v0.1–v0.4 endpoints and behaviors
 remain unchanged unless explicitly noted.
 

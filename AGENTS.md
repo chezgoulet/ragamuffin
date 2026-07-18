@@ -60,25 +60,30 @@ internal/
   auth/                   # API key and JWT authentication
   ratelimit/              # Per-endpoint rate limiter
   logstore/               # SQLite-backed structured log store
-  vault/                  # v0.5 — per-agent vault lifecycle, provisioning
-  session/                # v0.5 — session ingest and recall dispatch
+  vault/                  # per-agent vault lifecycle, provisioning
+  session/                # session ingest and recall dispatch
 
 plugins/
-  memory-ragamuffin-openclaw/  # v0.5 — OpenClaw plugin adapter (Node.js)
+  memory-ragamuffin-openclaw/  # OpenClaw plugin adapter (Node.js) — MCP client
 adapters/
-  hermes-memory/               # v0.5 — Hermes memory adapter (Python)
+  hermes-memory/               # Hermes memory adapter (Python)
+
+sdks/
+  ragamuffin-client-js/        # Node.js MCP client SDK (zero-dep)
+  ragamuffin-client-py/        # Python MCP client SDK (zero-dep)
 
 docs/
   integration/
-    memory-provider-api.md     # v0.5 — HTTP contract for adapters
+    memory-provider-api.md     # MCP-first integration guide with 33-tool catalog
 ```
 
 ## Coding Conventions
 
 ### Go Style
 
-- Standard library first. The only external dependency is the Qdrant gRPC
-  client (`github.com/qdrant/go-client`). Everything else is `net/http`.
+- Standard library first. The only external dependencies are the Qdrant gRPC
+  client (`github.com/qdrant/go-client`) and `modernc.org/sqlite` (log store).
+  Everything else is `net/http`.
 - Errors are wrapped: `fmt.Errorf("what failed: %w", err)`. Never discard
   an error without at least logging it.
 - Contexts are passed through. Every I/O operation takes a context.
@@ -128,39 +133,28 @@ docker build -t ragamuffin .      # build Docker image
 
 ## Version Specs
 
-Each version has its own spec. Always read the version spec before starting
-work on that version.
+Previous version specs are archived in `docs/specs/archive/`. The current version is v0.9.6.
 
-| Version | Spec | Status |
-|---|---|---|
-| v0.1 | [SPEC.md](SPEC.md) | Done |
-| v0.2 | [SPEC-v0.2.md](SPEC-v0.2.md) | Designed, not started |
-| v0.3 | [SPEC-v0.3.md](SPEC-v0.3.md) | Done |
-| v0.4 | [SPEC-v0.4.md](SPEC-v0.4.md) | Done — multi-tenancy, auth, graph, CloudEvents, web UI |
-| v0.5 | [SPEC-v0.5.md](SPEC-v0.5.md) | In progress — agent memory backend, per-agent vaults, session ingest, harness plugin adapters |
+| Version | Status |
+|---|---|
+| v0.1–v0.4 | Done — foundation, multi-tenancy, auth, graph, CloudEvents |
+| v0.5 | Done — fact lifecycle, memory pruning, review queue |
+| v0.6 | Done — session management, per-vault fact isolation, configurable embedding dims |
+| v0.7 | Done — fact graph, webhook notifications, versioned supersede, MCP foundation |
+| v0.8 | Done — tiered recall, review queue dashboard, MCP-to-REST adapter, fact extraction |
+| v0.9 | Done — OIDC auth, 33-tool MCP surface, session-end notifications, SDK packages |
+| v0.9.6 (current) | In progress — MCP expansion, auto-provisioning, OpenClaw MCP rewrite, conformance tests |
 
 The [ROADMAP.md](ROADMAP.md) has the high-level vision and out-of-scope list.
 
 ### Integration docs
 
 Adapter authors and operators should read:
-- [docs/integration/memory-provider-api.md](docs/integration/memory-provider-api.md) — HTTP contract, lifecycle mapping, error handling
+- [docs/integration/memory-provider-api.md](docs/integration/memory-provider-api.md) — MCP-first integration guide with 33-tool catalog
 
 ## Implementation Order
 
-When building a version, follow the spec's feature order. Each feature is
-designed to be implemented independently — do one, test it, commit, move on.
-
-For v0.2 specifically:
-
-1. `server.go` split → refactor only, no behavior change
-2. `/version` endpoint → simplest, good warm-up
-3. Request ID tracing → middleware pattern
-4. Rate limiting → `internal/ratelimit/`
-5. `/metrics` endpoint → Prometheus format
-6. Config validation → `config.Load()` enhancement
-7. Chunk size enforcement → `internal/indexer/` chunker
-8. Native file watcher → `internal/watcher/inotify.go`
+Recent versions are tracked in [CHANGELOG.md](CHANGELOG.md). For current work, follow the feature order in the relevant SPEC or ROADMAP item.
 
 ## Non-Goals
 

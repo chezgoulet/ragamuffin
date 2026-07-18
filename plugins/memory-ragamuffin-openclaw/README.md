@@ -52,18 +52,18 @@ Config values take precedence over env vars.
 ## Tools
 
 Dynamically discovered from the MCP server on startup. Typically includes:
-- `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_store`
+- `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_store`, `ragamuffin_hybrid_search`
 - `ragamuffin_fact_get`, `ragamuffin_fact_put`, `ragamuffin_fact_list`, `ragamuffin_fact_delete`
 - `ragamuffin_fact_graph`, `ragamuffin_fact_history`, `ragamuffin_fact_provenance`
-- `ragamuffin_review`, `ragamuffin_verify`, `ragamuffin_context_bundle`
-- `ragamuffin_hybrid_search`, `ragamuffin_peer_list`, `ragamuffin_briefing`
-- `ragamuffin_contradictions`, `ragamuffin_links`, `ragamuffin_draft`
+- `ragamuffin_review`, `ragamuffin_verify`, `ragamuffin_context_bundle`, `ragamuffin_dialectic`
+- `ragamuffin_peer_list`, `ragamuffin_briefing`, `ragamuffin_changes`
+- `ragamuffin_contradictions`, `ragamuffin_links`, `ragamuffin_draft`, `ragamuffin_audit`
 - `ragamuffin_graph_entity`, `ragamuffin_graph_edges`, `ragamuffin_graph_communities`
 - `ragamuffin_stats`, `ragamuffin_status`
 - `ragamuffin_session_create`, `ragamuffin_session_get`, `ragamuffin_session_list`
-- `ragamuffin_turn_append`, `ragamuffin_get_chunk`
+- `ragamuffin_turn_append`, `ragamuffin_get_chunk`, `ragamuffin_facts`
 
-Run `ragamuffin tools` via the OpenClaw CLI to see the full live list.
+Run `ragamuffin tools` via the OpenClaw CLI to see the full live list (typically ~33 tools).
 
 ## Hooks
 

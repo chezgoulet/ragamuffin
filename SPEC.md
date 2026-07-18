@@ -1454,11 +1454,36 @@ Force a full re-index of the vault. Requires write access. Returns 200 `{"reinde
 
 ---
 
-### `/mcp` — SSE
+### `/mcp` — Model Context Protocol (SSE + JSON-RPC 2.0)
 
-Model Context Protocol SSE transport. Provides tool-based access to Ragamuffin's core operations for MCP-compatible agents (e.g., Claude Desktop). Includes tools for recall, ask, draft, fact management, chunk retrieval, and session management.
+Ragamuffin's primary agent integration surface. Exposes **33 tools** via the Model Context Protocol (MCP 2024-11-05). Supports both SSE streams (GET) and stateless JSON-RPC calls (POST).
 
-Connection is maintained as an open SSE stream. Tools are called via JSON-RPC messages over the same connection.
+**Connection flow:**
+
+1. `GET /mcp` — open SSE stream, receive `endpoint` event with `session_id`
+2. `POST /mcp` — send JSON-RPC 2.0 requests: `initialize` → `tools/list` → `tools/call`
+3. `POST /mcp?session_id=XXX` — optional session scoping for SSE push notifications
+
+**Auto-provisioning:** Agent vaults (names containing `:`, e.g., `agent::dev`) are created on first tool dispatch. No manual `POST /vaults` required.
+
+**Notifications:** `notifications/session_end` triggers automatic session finalization (summary indexing, decision fact extraction). Send after the last turn:
+```json
+{"jsonrpc":"2.0","method":"notifications/session_end","params":{"session_id":"abc","vault":"agent::dev"}}
+```
+
+**Tool catalog (33 tools):**
+
+| Category | Tools |
+|----------|-------|
+| Search & Synthesis | `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_hybrid_search`, `ragamuffin_verify` |
+| Fact CRUD & Lineage | `ragamuffin_fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` |
+| Knowledge Graph | `ragamuffin_graph_entity`, `_edges`, `_communities`, `ragamuffin_links` |
+| Quality & Review | `ragamuffin_review`, `_contradictions`, `_audit`, `ragamuffin_get_chunk` |
+| Context & Discovery | `ragamuffin_context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes` |
+| Session Management | `ragamuffin_session_create`, `_get`, `_list`, `ragamuffin_turn_append` |
+| Utilities | `ragamuffin_store`, `_draft`, `_stats`, `_status`, `ragamuffin_facts` (legacy) |
+
+Full signatures in `docs/integration/memory-provider-api.md` or via `tools/list` on any running instance.
 
 ---
 
