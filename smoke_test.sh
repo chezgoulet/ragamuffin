@@ -953,6 +953,31 @@ else
 fi
 
 echo ""
+echo "--- /v1/graph (temporal knowledge graph) ---"
+# Read endpoints work whether or not the graph is enabled: 200 when enabled,
+# 503 when disabled. Accept either so the smoke suite is env-agnostic.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/stats")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/stats reachable (HTTP $CODE)"
+else
+  red "/v1/graph/stats" "HTTP $CODE (expected 200 or 503)"
+fi
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/edges")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/edges reachable (HTTP $CODE)"
+else
+  red "/v1/graph/edges" "HTTP $CODE (expected 200 or 503)"
+fi
+# Malformed as_of must be rejected with 400 when the graph is enabled;
+# 503 is acceptable when disabled.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/edges?as_of=not-a-date")
+if [ "$CODE" = "400" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/edges rejects bad as_of (HTTP $CODE)"
+else
+  red "/v1/graph/edges bad as_of" "HTTP $CODE (expected 400 or 503)"
+fi
+
+echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ "$FAIL" -gt 0 ]; then
   exit 1

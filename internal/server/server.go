@@ -20,6 +20,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
+	"github.com/chezgoulet/ragamuffin/internal/graph"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -74,6 +75,17 @@ type Server struct {
 
 	qdrantReconnecting bool
 	qdrantMu           sync.RWMutex
+
+	// Temporal knowledge graph (B2). Optional; nil when RAGAMUFFIN_GRAPH_ENABLED
+	// is off. graphExtractor is nil without an LLM.
+	graph          *graph.Store
+	graphExtractor *graph.Extractor
+}
+
+// SetGraph attaches the temporal knowledge graph store and (optional) extractor.
+func (s *Server) SetGraph(store *graph.Store, ext *graph.Extractor) {
+	s.graph = store
+	s.graphExtractor = ext
 }
 
 // New creates a new Server.
@@ -170,6 +182,12 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
 	mux.HandleFunc("/webhook/git", s.withRequestID(s.handleWebhookGit))
 
+	// Temporal knowledge graph (B2) — bare endpoints (single-tenant default vault)
+	mux.HandleFunc("/v1/graph/ingest", s.withRequestID(s.handleGraphIngest))
+	mux.HandleFunc("/v1/graph/entity/{id}", s.withRequestID(s.handleGraphEntity))
+	mux.HandleFunc("/v1/graph/edges", s.withRequestID(s.handleGraphEdges))
+	mux.HandleFunc("/v1/graph/stats", s.withRequestID(s.handleGraphStats))
+
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
 	mux.Handle("/static/", s.with404Check(staticHandler))
@@ -199,6 +217,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.handleChunksList))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleProvenance))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactHistory))))
+		mux.HandleFunc("/vault/{name}/v1/graph/ingest", s.withRequestID(s.withVault(s.handleGraphIngest)))
+		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.handleGraphEntity)))
+		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.handleGraphEdges)))
+		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.handleGraphStats)))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -229,6 +251,10 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleProvenance)))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleFactHistory)))))
 		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.requireVaultName(vaultName, s.handleChunksList)))))
+		mux.HandleFunc("/vault/{name}/v1/graph/ingest", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphIngest))))
+		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEntity))))
+		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEdges))))
+		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphStats))))
 
 	}
 
