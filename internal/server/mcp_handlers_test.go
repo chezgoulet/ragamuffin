@@ -74,11 +74,27 @@ func TestMCPTools_Definitions(t *testing.T) {
 		"ragamuffin_ask",
 		"ragamuffin_store",
 		"ragamuffin_draft",
-		"ragamuffin_facts",
-		"ragamuffin_audit",
+		"ragamuffin_fact_get",
+		"ragamuffin_fact_put",
+		"ragamuffin_fact_list",
+		"ragamuffin_fact_delete",
+		"ragamuffin_fact_graph",
+		"ragamuffin_fact_history",
+		"ragamuffin_fact_provenance",
+		"ragamuffin_review",
+		"ragamuffin_hybrid_search",
 		"ragamuffin_verify",
-		"ragamuffin_graph",
+		"ragamuffin_context_bundle",
+		"ragamuffin_peer_list",
+		"ragamuffin_briefing",
+		"ragamuffin_contradictions",
+		"ragamuffin_links",
+		"ragamuffin_graph_entity",
+		"ragamuffin_graph_edges",
+		"ragamuffin_graph_communities",
+		"ragamuffin_audit",
 		"ragamuffin_stats",
+		"ragamuffin_status",
 		"ragamuffin_session_create",
 		"ragamuffin_session_get",
 		"ragamuffin_session_list",
@@ -150,9 +166,27 @@ func TestMCPDispatch_RoutesCorrectly(t *testing.T) {
 		{"ragamuffin_store", true, "content is required"},
 		{"ragamuffin_draft", true, "title is required"},
 		{"ragamuffin_facts", true, "operation is required: list or upsert"},
+		{"ragamuffin_fact_get", true, "key is required"},
+		{"ragamuffin_fact_put", true, "both key and value are required"},
+		{"ragamuffin_fact_list", false, ""},
+		{"ragamuffin_fact_delete", true, "key is required"},
+		{"ragamuffin_fact_graph", true, "key is required"},
+		{"ragamuffin_fact_history", true, "key is required"},
+		{"ragamuffin_fact_provenance", true, "key is required"},
+		{"ragamuffin_review", false, ""},
+		{"ragamuffin_hybrid_search", true, "query, key, or prefix is required"},
+		{"ragamuffin_verify", true, "fact is required"},
+		{"ragamuffin_context_bundle", false, ""},
+		{"ragamuffin_peer_list", false, ""},
+		{"ragamuffin_briefing", false, ""},
+		{"ragamuffin_contradictions", false, ""},
+		{"ragamuffin_links", false, ""},
+		{"ragamuffin_graph_entity", true, "entity_id is required"},
+		{"ragamuffin_graph_edges", true, "graph store not configured"},
+		{"ragamuffin_graph_communities", true, "graph store not configured"},
 		{"ragamuffin_audit", false, ""},
-		{"ragamuffin_graph", true, `vault "default" not found`},
 		{"ragamuffin_stats", false, ""},
+		{"ragamuffin_status", false, ""},
 		{"ragamuffin_session_create", true, "agent_id is required"},
 		{"ragamuffin_session_get", true, "session_id is required"},
 		{"ragamuffin_session_list", false, ""},
@@ -417,16 +451,29 @@ func TestMCPAudit_SucceedsWithDefaults(t *testing.T) {
 	}
 }
 
-// ── Adapter: mcpGraph ─────────────────────────────────────────────────────────
+// ── Adapter: graph_entity ─────────────────────────────────────────────────────
 
-func TestMCPGraph_DefaultVault(t *testing.T) {
+func TestMCPGraphEntity_NoEntityID(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_entity", map[string]interface{}{})
 	if err == nil {
-		t.Fatal("expected error — needs real vault/indexer")
+		t.Fatal("expected error — entity_id is required")
 	}
-	if err.Error() != `vault "default" not found` {
-		t.Errorf("expected vault not found error, got %q", err.Error())
+}
+
+func TestMCPGraphEdges_NoGraphStore(t *testing.T) {
+	srv := newMCPTestServer(t)
+	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_edges", map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error — graph store not configured")
+	}
+}
+
+func TestMCPGraphCommunities_NoGraphStore(t *testing.T) {
+	srv := newMCPTestServer(t)
+	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_communities", map[string]interface{}{})
+	if err == nil {
+		t.Fatal("expected error — graph store not configured")
 	}
 }
 
@@ -596,8 +643,8 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	if !ok || len(tools) == 0 {
 		t.Fatal("expected non-empty tools list")
 	}
-	if len(tools) != 14 {
-		t.Errorf("expected 14 tools, got %d", len(tools))
+	if len(tools) != len(srv.mcpTools()) {
+		t.Errorf("expected %d tools, got %d", len(srv.mcpTools()), len(tools))
 	}
 }
 
