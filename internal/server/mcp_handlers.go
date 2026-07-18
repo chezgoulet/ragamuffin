@@ -3,10 +3,14 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/graph"
+	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
 	pb "github.com/qdrant/go-client/qdrant"
@@ -422,15 +426,15 @@ func (s *Server) mcpVaultContext(ctx context.Context, args map[string]interface{
 func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
 	ctx = s.mcpVaultContext(ctx, args)
 
-	// Enforce vault scope from auth claims. A scoped key that only grants
-	// access to vault "default" must not be able to read/write any other
-	// vault via MCP tool arguments. This mirrors the REST withVault middleware.
+	// Enforce vault scope from auth claims.
 	if vaultName := vaultFromContext(ctx); vaultName != "" {
 		if claims := auth.ClaimsFromContext(ctx); claims != nil {
 			if !claims.HasVaultAccess(vaultName) {
 				return nil, fmt.Errorf("access to vault %q denied by key scope", vaultName)
 			}
 		}
+		// Auto-provision vault on first use — no explicit POST /vaults needed.
+		s.ensureAgentVault(ctx, vaultName)
 	}
 
 	switch toolName {
@@ -1368,4 +1372,38 @@ func (s *Server) mcpStatus(ctx context.Context, args map[string]interface{}) (in
 		"errors":  healthErrors,
 		"uptime":  time.Since(s.started).Seconds(),
 	}, nil
+}
+
+// ensureAgentVault creates an agent vault on demand if it doesn't exist.
+// Agent vaults are Qdrant-backed memory stores — no filesystem path needed.
+// Safe to call on every tool dispatch; idempotent after first creation.
+func (s *Server) ensureAgentVault(ctx context.Context, vaultName string) {
+	if s.indexers == nil {
+		return
+	}
+	if s.indexers.Get(vaultName) != nil {
+		return // already provisioned
+	}
+
+	// Check if this is a valid agent vault prefix (agent:: or similar).
+	if !strings.Contains(vaultName, ":") {
+		return // not an agent vault, skip auto-provision
+	}
+
+	// Agent vaults don't need a filesystem path — create one in tmp.
+	vaultPath := filepath.Join("/tmp/ragamuffin-agents", vaultName)
+	if err := os.MkdirAll(vaultPath, 0755); err != nil {
+		s.logger.Warn("mcp: failed to create agent vault dir", "vault", vaultName, "error", err)
+		return
+	}
+
+	qc := s.qdrantFor(ctx)
+	ec := s.embeddingFor(ctx)
+
+	idx := indexer.New(vaultPath, vaultName, qc, ec, s.logger)
+	if err := s.indexers.Add(vaultName, idx, qc); err != nil {
+		s.logger.Warn("mcp: failed to register agent vault", "vault", vaultName, "error", err)
+		return
+	}
+	s.logger.Info("mcp: auto-provisioned agent vault", "vault", vaultName, "path", vaultPath)
 }
