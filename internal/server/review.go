@@ -69,7 +69,7 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 	reasonFilter := r.URL.Query().Get("reason")
 	tag := r.URL.Query().Get("tag")
 	sourceType := r.URL.Query().Get("source_type")
-	minConfidenceStr := r.URL.Query().Get("min_confidence")
+	minConfidenceStr := r.URL.Query().Get("max_confidence")
 
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {

@@ -2134,7 +2134,7 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"period_hours": 24,
 		"total_events": len(entries),
-		"vaults":       vaults,
+		"agents":       vaults,
 	})
 }
 
