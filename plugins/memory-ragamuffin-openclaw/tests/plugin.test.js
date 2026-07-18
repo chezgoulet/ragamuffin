@@ -1,12 +1,11 @@
 /**
- * Tests for the OpenClaw plugin entry function.
- * Mocks the `api` object to verify tool/hook/CLI/service registration
- * and tests the execute handlers for each tool.
+ * Tests for the MCP-based OpenClaw plugin entry function.
+ * Mocks the `api` object and the MCP server responses.
  */
 
 import { describe, it, mock, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import pluginEntry, { RagamuffinClient } from "../index.js";
+import pluginEntry from "../index.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -48,7 +47,6 @@ function makeApi() {
       warn: (...args) => logLines.push(["warn", ...args]),
       error: (...args) => logLines.push(["error", ...args]),
     },
-    // Test accessors
     _tools: () => tools,
     _hooks: () => hooks,
     _clis: () => clis,
@@ -57,29 +55,32 @@ function makeApi() {
   };
 }
 
-/** Run a tool's execute handler and return the result. */
-async function runTool(api, toolName, params) {
-  const tools = api._tools();
-  const tool = tools.find((t) => t.meta && t.meta.name === toolName);
-  if (!tool) throw new Error(`Tool "${toolName}" not registered`);
-  return tool.def.execute("call-1", params);
+function jsonRpcResponse(result) {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ jsonrpc: "2.0", id: 1, result }),
+    text: () => Promise.resolve(""),
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("pluginEntry", () => {
+describe("pluginEntry (MCP)", () => {
   let api;
 
   beforeEach(() => {
     api = makeApi();
+    // Default mock: return a small tool list
     mock.method(globalThis, "fetch", () =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
+      jsonRpcResponse({
+        tools: [
+          { name: "ragamuffin_recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+          { name: "ragamuffin_fact_put", description: "Write fact", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
+          { name: "ragamuffin_fact_delete", description: "Delete fact", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
+        ],
       }),
     );
   });
@@ -88,14 +89,19 @@ describe("pluginEntry", () => {
     mock.reset();
   });
 
-  it("registers three tools", () => {
+  it("registers tools dynamically from MCP tools/list", async () => {
     pluginEntry(api);
+    // Tools are registered in the service start handler
+    const svc = api._services()[0];
+    if (svc.start) {
+      await svc.start();
+    }
     const tools = api._tools();
     assert.equal(tools.length, 3);
     const names = tools.map((t) => t.meta.name);
-    assert.ok(names.includes("memory_recall"));
-    assert.ok(names.includes("memory_store"));
-    assert.ok(names.includes("memory_forget"));
+    assert.ok(names.includes("ragamuffin_recall"));
+    assert.ok(names.includes("ragamuffin_fact_put"));
+    assert.ok(names.includes("ragamuffin_fact_delete"));
   });
 
   it("registers before_prompt_build hook", () => {
@@ -120,181 +126,55 @@ describe("pluginEntry", () => {
     assert.deepEqual(api._clis()[0].meta, { commands: ["ragamuffin"] });
   });
 
-  it("registers a service", () => {
+  it("registers a service with start/stop", () => {
     pluginEntry(api);
     assert.equal(api._services().length, 1);
     assert.equal(api._services()[0].id, "memory-ragamuffin-openclaw");
+    assert.ok(typeof api._services()[0].start === "function");
+    assert.ok(typeof api._services()[0].stop === "function");
   });
 
-  describe("memory_recall tool", () => {
-    it("returns memories on success", async () => {
+  describe("MCP tool dispatch", () => {
+    it("calls MCP and returns formatted result", async () => {
+      pluginEntry(api);
+      const svc = api._services()[0];
+      if (svc.start) await svc.start();
+
+      const tools = api._tools();
+      const recallTool = tools.find((t) => t.meta.name === "ragamuffin_recall");
+      assert.ok(recallTool);
+
+      // Override fetch for this specific test
+      mock.reset();
+      mock.method(globalThis, "fetch", () =>
+        jsonRpcResponse({
+          content: [{ type: "text", text: '{"results":[{"text":"found it","score":0.9}]}' }],
+        }),
+      );
+
+      const result = await recallTool.def.execute("call-1", { query: "test" });
+      assert.ok(result.content[0].text.includes("found it"));
+    });
+
+    it("returns error on MCP failure", async () => {
+      pluginEntry(api);
+      const svc = api._services()[0];
+      if (svc.start) await svc.start();
+
+      const tools = api._tools();
+      const recallTool = tools.find((t) => t.meta.name === "ragamuffin_recall");
+
+      mock.reset();
       mock.method(globalThis, "fetch", () =>
         Promise.resolve({
           ok: true,
           status: 200,
-          json: () =>
-            Promise.resolve({
-              results: [
-                { text: "User prefers dark mode", score: 0.95 },
-                { text: "Uses Vim", score: 0.72 },
-              ],
-              top_score: 0.95,
-            }),
-          text: () =>
-            Promise.resolve(
-              '{"results":[{"text":"User prefers dark mode","score":0.95},{"text":"Uses Vim","score":0.72}],"top_score":0.95}',
-            ),
-        }),
-      );
-
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", {
-        query: "preferences",
-        limit: 3,
-        threshold: 0.5,
-      });
-
-      assert.equal(result.isError, undefined);
-      assert.ok(result.content[0].text.includes("dark mode"));
-      assert.ok(result.content[0].text.includes("Vim"));
-    });
-
-    it("returns no results message when empty", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", { query: "nothing" });
-      assert.equal(result.isError, undefined);
-      assert.ok(result.content[0].text.includes("No relevant memories found"));
-    });
-
-    it("returns error on missing query", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", {});
-      assert.equal(result.isError, true);
-      assert.ok(result.content[0].text.includes("Query is required"));
-    });
-
-    it("returns error on empty string query", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", { query: "" });
-      assert.equal(result.isError, true);
-    });
-
-    it("fail-open on network error", async () => {
-      mock.method(globalThis, "fetch", () => Promise.reject(new Error("connection refused")));
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", { query: "test" });
-      assert.equal(result.isError, true);
-      assert.ok(result.content[0].text.includes("connection refused"));
-    });
-
-    it("fail-open on server error", async () => {
-      mock.method(globalThis, "fetch", () =>
-        Promise.resolve({
-          ok: false,
-          status: 502,
-          json: () => Promise.resolve({}),
-          text: () => Promise.resolve("Bad Gateway"),
-        }),
-      );
-
-      pluginEntry(api);
-      const result = await runTool(api, "memory_recall", { query: "test" });
-      assert.equal(result.isError, true);
-      assert.ok(result.content[0].text.includes("continues without memory"));
-    });
-  });
-
-  describe("memory_store tool", () => {
-    it("stores fact on success", async () => {
-      let capturedBody;
-      mock.method(globalThis, "fetch", (url, opts) => {
-        capturedBody = JSON.parse(opts.body);
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ key: "test/key" }),
-          text: () => Promise.resolve('{"key":"test/key"}'),
-        });
-      });
-
-      pluginEntry(api);
-      const result = await runTool(api, "memory_store", {
-        key: "test/key",
-        value: "test value",
-        tags: ["test"],
-      });
-
-      assert.equal(capturedBody.key, "test/key");
-      assert.equal(capturedBody.value, "test value");
-      assert.deepEqual(capturedBody.tags, ["test"]);
-      assert.equal(result.content[0].text, 'Stored: "test/key" → saved.');
-    });
-
-    it("returns error on missing key", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_store", { key: "", value: "v" });
-      assert.equal(result.isError, true);
-    });
-
-    it("returns error on missing value", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_store", { key: "k", value: "" });
-      assert.equal(result.isError, true);
-    });
-
-    it("fail-open on server error", async () => {
-      mock.method(globalThis, "fetch", () =>
-        Promise.resolve({
-          ok: false,
-          status: 500,
-          json: () => Promise.resolve({}),
-          text: () => Promise.resolve("Internal Server Error"),
-        }),
-      );
-
-      pluginEntry(api);
-      const result = await runTool(api, "memory_store", { key: "k", value: "v" });
-      assert.equal(result.isError, true);
-    });
-  });
-
-  describe("memory_forget tool", () => {
-    it("deletes fact on success", async () => {
-      let capturedMethod;
-      mock.method(globalThis, "fetch", (url, opts) => {
-        capturedMethod = opts.method;
-        return Promise.resolve({
-          ok: true,
-          status: 204,
-          json: () => Promise.resolve(null),
+          json: () => Promise.resolve({ jsonrpc: "2.0", id: 1, error: { message: "query is required", code: -32602 } }),
           text: () => Promise.resolve(""),
-        });
-      });
-
-      pluginEntry(api);
-      const result = await runTool(api, "memory_forget", { key: "test/key" });
-      assert.equal(capturedMethod, "DELETE");
-      assert.equal(result.content[0].text, 'Forgotten: "test/key"');
-    });
-
-    it("returns error on missing key", async () => {
-      pluginEntry(api);
-      const result = await runTool(api, "memory_forget", { key: "" });
-      assert.equal(result.isError, true);
-    });
-
-    it("fail-open on server error", async () => {
-      mock.method(globalThis, "fetch", () =>
-        Promise.resolve({
-          ok: false,
-          status: 500,
-          json: () => Promise.resolve({}),
-          text: () => Promise.resolve("error"),
         }),
       );
 
-      pluginEntry(api);
-      const result = await runTool(api, "memory_forget", { key: "bad" });
+      const result = await recallTool.def.execute("call-1", {});
       assert.equal(result.isError, true);
     });
   });
@@ -308,20 +188,16 @@ describe("pluginEntry", () => {
     });
 
     it("returns prepended context when results found", async () => {
+      pluginEntry(api);
+      // Override fetch to return MCP JSON-RPC with recall results
+      mock.reset();
       mock.method(globalThis, "fetch", () =>
-        Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () =>
-            Promise.resolve({
-              results: [{ text: "User prefers dark mode", score: 0.95 }],
-              top_score: 0.95,
-            }),
-          text: () => Promise.resolve('{"results":[{"text":"User prefers dark mode","score":0.95}],"top_score":0.95}'),
+        jsonRpcResponse({
+          results: [{ text: "User prefers dark mode", score: 0.95 }],
+          top_score: 0.95,
         }),
       );
 
-      pluginEntry(api);
       const handler = api._hooks()["before_prompt_build"];
       const result = await handler({ prompt: "tell me about preferences", messages: [] });
 
@@ -331,25 +207,13 @@ describe("pluginEntry", () => {
     });
 
     it("does not throw on network error (fail-open)", async () => {
-      mock.method(globalThis, "fetch", () => Promise.reject(new Error("timeout")));
       pluginEntry(api);
+      mock.reset();
+      mock.method(globalThis, "fetch", () => Promise.reject(new Error("timeout")));
+
       const handler = api._hooks()["before_prompt_build"];
       const result = await handler({ prompt: "test", messages: [] });
       assert.equal(result, undefined);
-    });
-
-    it("skips injection when prompt is too short", async () => {
-      // Should not even call fetch for very short prompts
-      let fetchCalled = false;
-      mock.method(globalThis, "fetch", () => {
-        fetchCalled = true;
-        return Promise.reject(new Error("should not be called"));
-      });
-
-      pluginEntry(api);
-      const handler = api._hooks()["before_prompt_build"];
-      await handler({ prompt: "hi", messages: [] });
-      assert.equal(fetchCalled, false);
     });
   });
 
@@ -359,18 +223,21 @@ describe("pluginEntry", () => {
     });
 
     it("stores important user messages as facts", async () => {
-      let capturedBody;
+      let capturedArgs;
+      pluginEntry(api);
+
+      // Mock each fetch to track the MCP call
+      mock.reset();
+      let fetchIdx = 0;
       mock.method(globalThis, "fetch", (url, opts) => {
-        capturedBody = JSON.parse(opts.body);
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ key: capturedBody.key }),
-          text: () => Promise.resolve("{}"),
-        });
+        fetchIdx++;
+        const body = JSON.parse(opts.body);
+        if (body.method === "tools/call") {
+          capturedArgs = body.params.arguments;
+        }
+        return jsonRpcResponse({});
       });
 
-      pluginEntry(api);
       const handler = api._hooks()["agent_end"];
       await handler({
         success: true,
@@ -380,23 +247,19 @@ describe("pluginEntry", () => {
         ],
       });
 
-      assert.ok(capturedBody);
-      assert.equal(capturedBody.value, "I prefer dark mode for all my apps");
+      assert.ok(capturedArgs);
+      assert.equal(capturedArgs.value, "I prefer dark mode for all my apps");
     });
 
     it("skips non-important messages", async () => {
       let fetchCalled = false;
+      pluginEntry(api);
+      mock.reset();
       mock.method(globalThis, "fetch", () => {
         fetchCalled = true;
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({}),
-          text: () => Promise.resolve("{}"),
-        });
+        return jsonRpcResponse({});
       });
 
-      pluginEntry(api);
       const handler = api._hooks()["agent_end"];
       await handler({
         success: true,
@@ -407,18 +270,17 @@ describe("pluginEntry", () => {
     });
 
     it("does not crash on store failure (best-effort)", async () => {
+      pluginEntry(api);
+      mock.reset();
       mock.method(globalThis, "fetch", () => Promise.reject(new Error("timeout")));
 
-      pluginEntry(api);
       const handler = api._hooks()["agent_end"];
-      // Should not throw despite store failure
       await handler({
         success: true,
         messages: [
           { role: "user", content: "I need to remember this important thing" },
         ],
       });
-      // If we get here without throwing, the test passes
     });
   });
 });

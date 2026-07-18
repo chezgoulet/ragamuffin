@@ -1,14 +1,24 @@
 /**
  * Tests for config resolution — env var fallback, defaults, and edge cases.
+ * Plugin uses MCP; mocks return JSON-RPC 2.0 responses.
  */
 
 import { describe, it, mock, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import pluginEntry from "../index.js";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const MOCK_TOOLS = [
+  { name: "ragamuffin_recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+];
+
+function jsonRpcResult(result) {
+  return Promise.resolve({
+    ok: true,
+    status: 200,
+    json: () => Promise.resolve({ jsonrpc: "2.0", id: 1, result }),
+    text: () => Promise.resolve(""),
+  });
+}
 
 function makeApi(overrides = {}) {
   const tools = [];
@@ -31,14 +41,20 @@ function makeApi(overrides = {}) {
     registerTool: (def, meta) => tools.push({ def, meta }),
     registerCli: () => {},
     registerService: (svc) => services.push(svc),
-    on: (event, handler) => {
-      hooks[event] = handler;
-    },
+    on: (event, handler) => { hooks[event] = handler; },
     logger: { info: () => {}, warn: () => {}, error: () => {} },
     _tools: () => tools,
     _hooks: () => hooks,
     _services: () => services,
   };
+}
+
+/** Start the plugin's service to trigger MCP tool registration. */
+async function startPlugin(api) {
+  const svc = api._services()[0];
+  if (svc && svc.start) {
+    await svc.start();
+  }
 }
 
 async function runTool(api, toolName, params) {
@@ -56,14 +72,7 @@ describe("config resolution (env vars)", () => {
   const ORIG_ENV = { ...process.env };
 
   beforeEach(() => {
-    mock.method(globalThis, "fetch", () =>
-      Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      }),
-    );
+    mock.method(globalThis, "fetch", () => jsonRpcResult({ tools: MOCK_TOOLS }));
   });
 
   afterEach(() => {
@@ -71,129 +80,85 @@ describe("config resolution (env vars)", () => {
     mock.reset();
   });
 
-  it("uses empty config if pluginConfig is missing", () => {
-    // When pluginConfig is undefined, defaults should be used
+  it("uses empty config if pluginConfig is missing", async () => {
     const api = makeApi();
-    // Remove pluginConfig to simulate missing config
     delete api.pluginConfig;
 
-    // Should not throw
     pluginEntry(api);
-    assert.equal(api._tools().length, 3);
+    await startPlugin(api);
+    assert.equal(api._tools().length, 1);
   });
 
-  it("uses env vars for endpoint when config missing", () => {
+  it("uses env vars for endpoint when config missing", async () => {
     process.env.RAGAMUFFIN_ENDPOINT = "http://env-ragamuffin:9090";
     let capturedUrl;
 
-    mock.method(globalThis, "fetch", (url) => {
+    mock.reset();
+    mock.method(globalThis, "fetch", (url, opts) => {
       capturedUrl = url;
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      });
+      return jsonRpcResult({ tools: MOCK_TOOLS });
     });
 
     const api = makeApi();
     delete api.pluginConfig;
     pluginEntry(api);
+    await startPlugin(api);
 
-    return runTool(api, "memory_recall", { query: "test" }).then(() => {
-      assert.ok(capturedUrl.startsWith("http://env-ragamuffin:9090"));
-    });
+    // The first MCP call uses the endpoint
+    assert.ok(capturedUrl.startsWith("http://env-ragamuffin:9090"));
   });
 
-  it("uses env vars for auth token", () => {
+  it("uses env vars for auth token", async () => {
     process.env.RAGAMUFFIN_AUTH_TOKEN = "env-token";
     let capturedHeaders;
 
+    mock.reset();
     mock.method(globalThis, "fetch", (url, opts) => {
       capturedHeaders = opts.headers;
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      });
+      return jsonRpcResult({ tools: MOCK_TOOLS });
     });
 
     const api = makeApi();
     delete api.pluginConfig;
     pluginEntry(api);
+    await startPlugin(api);
 
-    return runTool(api, "memory_recall", { query: "test" }).then(() => {
-      assert.equal(capturedHeaders["Authorization"], "Bearer env-token");
-    });
+    assert.equal(capturedHeaders["Authorization"], "Bearer env-token");
   });
 
-  it("uses env vars for vault prefix", () => {
-    process.env.RAGAMUFFIN_VAULT_PREFIX = "env::";
-    let capturedBody;
-
-    mock.method(globalThis, "fetch", (url, opts) => {
-      capturedBody = JSON.parse(opts.body);
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      });
-    });
-
-    const api = makeApi();
-    delete api.pluginConfig;
-    pluginEntry(api);
-
-    return runTool(api, "memory_store", { key: "k", value: "v" }).then(() => {
-      // Vault name in recall should use env prefix
-    });
-  });
-
-  it("config values take precedence over env vars", () => {
+  it("config values take precedence over env vars", async () => {
     process.env.RAGAMUFFIN_ENDPOINT = "http://env-should-be-overridden:9090";
     let capturedUrl;
 
+    mock.reset();
     mock.method(globalThis, "fetch", (url) => {
       capturedUrl = url;
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      });
+      return jsonRpcResult({ tools: MOCK_TOOLS });
     });
 
     const api = makeApi({ endpoint: "http://config-chosen:7070" });
     pluginEntry(api);
+    await startPlugin(api);
 
-    return runTool(api, "memory_recall", { query: "test" }).then(() => {
-      assert.ok(capturedUrl.startsWith("http://config-chosen:7070"));
-    });
+    assert.ok(capturedUrl.startsWith("http://config-chosen:7070"));
   });
 
-  it("falls back to default endpoint when nothing configured", () => {
+  it("falls back to default endpoint when nothing configured", async () => {
     process.env.RAGAMUFFIN_ENDPOINT = "";
     let capturedUrl;
 
+    mock.reset();
     mock.method(globalThis, "fetch", (url) => {
       capturedUrl = url;
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ results: [], top_score: 0 }),
-        text: () => Promise.resolve("{}"),
-      });
+      return jsonRpcResult({ tools: MOCK_TOOLS });
     });
 
     const api = makeApi({ endpoint: "" });
     delete api.pluginConfig;
     pluginEntry(api);
+    await startPlugin(api);
 
-    return runTool(api, "memory_recall", { query: "test" }).then(() => {
-      assert.ok(capturedUrl.startsWith("http://localhost:8000"));
-    });
+    assert.ok(capturedUrl.startsWith("http://localhost:8000"));
   });
 
   it("disables auto-capture when config not set", () => {

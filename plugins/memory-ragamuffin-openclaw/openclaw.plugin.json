@@ -1,7 +1,7 @@
 {
   "id": "memory-ragamuffin-openclaw",
   "name": "Memory (Ragamuffin)",
-  "description": "Per-agent Qdrant-isolated memory backed by Ragamuffin. Uses server-side embedding and vault recall for cross-session semantic memory.",
+  "description": "Universal MCP-powered memory backed by Ragamuffin. Discovers all server tools dynamically via MCP — recall, facts, synthesis, graph, review, and more. Uses server-side embedding.",
   "memory": true,
   "configSchema": {
     "type": "object",
