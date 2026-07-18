@@ -158,13 +158,31 @@ func migrate(db *sql.DB) error {
 	return nil
 }
 
+// normalizeTimestamp reparses a caller-supplied timestamp into RFC3339 UTC so
+// stored valid-time bounds sort lexicographically. Empty input stays empty;
+// unparseable input is returned unchanged (best effort — never fail a write on
+// a malformed optional bound).
+func normalizeTimestamp(s string) string {
+	if s == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.UTC().Format(time.RFC3339)
+}
+
 // UpsertEntity inserts an entity or returns the id of an existing one with the
 // same (vault, name, kind). Entity identity is name-based within a vault.
 func (s *Store) UpsertEntity(ctx context.Context, e Entity) (string, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var existingID string
+	// Dedup case-insensitively: the extractor resolves relation endpoints via a
+	// lowercased name map, so "Alice" and "alice" must map to a single entity or
+	// relations silently attach to the wrong (last-written) row.
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id FROM graph_entities WHERE vault = ? AND name = ? AND kind = ?`,
+		`SELECT id FROM graph_entities WHERE vault = ? AND LOWER(name) = LOWER(?) AND kind = ?`,
 		e.Vault, e.Name, string(e.Kind)).Scan(&existingID)
 	switch {
 	case err == sql.ErrNoRows:
@@ -202,6 +220,11 @@ func (s *Store) UpsertEntity(ctx context.Context, e Entity) (string, error) {
 // multi-valued relations (e.g. "knows") should pass invalidatePrior=false.
 func (s *Store) AddEdge(ctx context.Context, e Edge, invalidatePrior bool) (string, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
+	// Normalize caller-supplied valid-time bounds to RFC3339 UTC so the
+	// lexicographic comparisons used by as_of time-travel queries are correct
+	// even when callers pass offset timestamps or fractional seconds.
+	e.ValidFrom = normalizeTimestamp(e.ValidFrom)
+	e.ValidUntil = normalizeTimestamp(e.ValidUntil)
 	if e.ValidFrom == "" {
 		e.ValidFrom = now
 	}
@@ -215,11 +238,20 @@ func (s *Store) AddEdge(ctx context.Context, e Edge, invalidatePrior bool) (stri
 	defer func() { _ = tx.Rollback() }()
 
 	if invalidatePrior {
+		// Close the prior edge's valid-time interval at the new edge's
+		// valid_from so the two intervals stay disjoint. If the prior edge
+		// already had an explicit valid_until later than the new valid_from,
+		// clamp it down to valid_from; otherwise set it. This guarantees an
+		// as_of query in the transition window returns exactly one edge.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE graph_edges
-			 SET invalidated_at = ?, valid_until = CASE WHEN valid_until = '' THEN ? ELSE valid_until END
+			 SET invalidated_at = ?,
+			     valid_until = CASE
+			         WHEN valid_until = '' OR valid_until > ? THEN ?
+			         ELSE valid_until
+			     END
 			 WHERE vault = ? AND source_id = ? AND type = ? AND invalidated_at = ''`,
-			now, e.ValidFrom, e.Vault, e.SourceID, e.Type); err != nil {
+			now, e.ValidFrom, e.ValidFrom, e.Vault, e.SourceID, e.Type); err != nil {
 			return "", fmt.Errorf("graph: invalidate prior edge: %w", err)
 		}
 	}
@@ -333,7 +365,16 @@ func (s *Store) Edges(ctx context.Context, q EdgeQuery) ([]Edge, error) {
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Signal truncation: callers (e.g. community detection) that assume a
+	// complete edge set will silently operate on a partial graph otherwise.
+	if len(out) == limit {
+		s.logger.Warn("graph: edge query hit result limit; results may be truncated",
+			"limit", limit, "vault", q.Vault, "type", q.Type)
+	}
+	return out, nil
 }
 
 // EntityView bundles an entity with its temporal edges for the entity endpoint.
