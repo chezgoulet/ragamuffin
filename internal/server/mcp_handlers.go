@@ -235,6 +235,18 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
+			Name:        "ragamuffin_dialectic",
+			Description: "Multi-pass reasoning prompts for deep context analysis. Returns structured cold (analytical), warm (creative), and hot (evaluative) reasoning blocks. Use before making decisions that need thorough vetting against stored knowledge.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"depth":   map[string]interface{}{"type": "integer", "description": "Reasoning depth: 1=cold only, 2=cold+warm, 3=cold+warm+hot (default: 1)"},
+					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"context": map[string]interface{}{"type": "string", "description": "Optional additional context to reason about"},
+				},
+			},
+		},
+		{
 			Name:        "ragamuffin_peer_list",
 			Description: "Discover other agents by listing peer cards (peer/*/profile facts). Returns each agent's vault name and card content.",
 			InputSchema: map[string]interface{}{
@@ -252,6 +264,18 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"properties": map[string]interface{}{
 					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
 					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '7d', '30d'"},
+				},
+			},
+		},
+		{
+			Name:        "ragamuffin_changes",
+			Description: "List recent changes in the vault — newly created facts, updated facts, and indexed content. Each change includes a timestamp. Use to understand what's happened since the last session.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '7d', '30d'"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 20)"},
 				},
 			},
 		},
@@ -472,10 +496,14 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpVerify(ctx, args)
 	case "ragamuffin_context_bundle":
 		return s.mcpContextBundle(ctx, args)
+	case "ragamuffin_dialectic":
+		return s.mcpDialectic(ctx, args)
 	case "ragamuffin_peer_list":
 		return s.mcpPeerList(ctx, args)
 	case "ragamuffin_briefing":
 		return s.mcpBriefing(ctx, args)
+	case "ragamuffin_changes":
+		return s.mcpChanges(ctx, args)
 	case "ragamuffin_contradictions":
 		return s.mcpContradictions(ctx, args)
 	case "ragamuffin_links":
@@ -1183,6 +1211,49 @@ func (s *Server) mcpContextBundle(ctx context.Context, args map[string]interface
 	return bundle, nil
 }
 
+// ── Dialectic handler ─────────────────────────────────────────────────────
+
+func (s *Server) mcpDialectic(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	depth := 1
+	if v, ok := args["depth"].(float64); ok && v >= 1 && v <= 3 {
+		depth = int(v)
+	}
+
+	contextStr, _ := args["context"].(string)
+
+	passes := []map[string]interface{}{
+		{
+			"level":  "cold",
+			"role":   "analytical",
+			"prompt": "<dialectic-pass level=\"cold\" role=\"analytical\">\n# Analytical Reasoning\nReview the context below. Identify:\n- Specific verifiable facts you can extract\n- Contradictions or inconsistencies\n- Stale or out-of-date information\n- Gaps where information is missing\n</dialectic-pass>",
+		},
+	}
+	if depth >= 2 {
+		passes = append(passes, map[string]interface{}{
+			"level":  "warm",
+			"role":   "synthetic",
+			"prompt": "<dialectic-pass level=\"warm\" role=\"synthetic\">\n# Synthetic Reasoning\nDraw connections from the context below. Consider:\n- What underlying patterns emerge?\n- What hypotheses explain the data?\n- What related information might be useful?\n- What should this agent learn next?\n</dialectic-pass>",
+		})
+	}
+	if depth >= 3 {
+		passes = append(passes, map[string]interface{}{
+			"level":  "hot",
+			"role":   "evaluative",
+			"prompt": "<dialectic-pass level=\"hot\" role=\"evaluative\">\n# Evaluative Reasoning\nAssess the quality of information below:\n- Rate confidence in each fact (0.0-1.0)\n- Which facts are most critical to remember?\n- Which facts need verification?\n- Summarize the current state of knowledge\n</dialectic-pass>",
+		})
+	}
+
+	result := map[string]interface{}{
+		"depth":  depth,
+		"passes": passes,
+	}
+	if contextStr != "" {
+		result["context"] = contextStr
+	}
+
+	return result, nil
+}
+
 // ── Peer discovery ──────────────────────────────────────────────────────────
 
 func (s *Server) mcpPeerList(ctx context.Context, args map[string]interface{}) (interface{}, error) {
@@ -1233,6 +1304,65 @@ func (s *Server) mcpBriefing(ctx context.Context, args map[string]interface{}) (
 		"period_hours": d.Hours(),
 		"total_events": 0,
 	}, nil
+}
+
+// ── Changes handler — temporal awareness: what changed recently? ────────────
+
+func (s *Server) mcpChanges(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	period, _ := args["period"].(string)
+	if period == "" {
+		period = "24h"
+	}
+	d, err := time.ParseDuration(period)
+	if err != nil {
+		return nil, fmt.Errorf("invalid period: %q", period)
+	}
+	since := time.Now().Add(-d)
+
+	limit := 20
+	if v, ok := args["limit"].(float64); ok && v > 0 && v <= 50 {
+		limit = int(v)
+	}
+
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+
+	changes := map[string]interface{}{
+		"vault":        vault,
+		"period_hours": d.Hours(),
+	}
+
+	// Recent log events
+	if s.logStore != nil {
+		entries, _, err := s.logStore.List(ctx, logstore.Filter{
+			Since: since.Format(time.RFC3339),
+			Limit: limit,
+		})
+		if err == nil {
+			events := make([]map[string]interface{}, 0, len(entries))
+			for _, e := range entries {
+				events = append(events, map[string]interface{}{
+					"time": e.CreatedAt,
+					"type": e.Type,
+					"body": e.Body,
+				})
+			}
+			changes["events"] = events
+			changes["total_events"] = len(events)
+		}
+	}
+
+	// Recent facts
+	qrCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	factsResult, err := s.doFactsList(qrCtx, "", "", "", "", "", limit)
+	if err == nil {
+		changes["facts"] = factsResult
+	}
+
+	return changes, nil
 }
 
 // ── Contradictions handler ──────────────────────────────────────────────────
