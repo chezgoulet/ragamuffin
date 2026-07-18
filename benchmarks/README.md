@@ -55,10 +55,16 @@ The harness runs each benchmark against four Ragamuffin configurations:
 | **A** | Baseline | Pure `/ask` (recall + synthesize). No fact extraction or graph traversal. |
 | **B** | Recall + Facts | `/ask` + `auto_extract: true` on ingest. Facts stored alongside chunks in Qdrant. |
 | **C** | Tiered Recall | Efficiency variant using `mode: auto` on recall. Falls back from RAG to full-document when confidence is low. Score ≈ Config A. |
-| **D** | Full Stack | `/ask` + facts + fact graph traversal (`/v1/facts/{key}/graph`). Most comprehensive — uses relationships for multi-hop reasoning. |
+| **D** | Full Stack | `/ask` + facts + fact graph traversal (`/v1/facts/{key}/graph`) + query rewrite (HyDE) + listwise rerank. Most comprehensive — uses relationships for multi-hop reasoning and the full retrieval pipeline. |
 
 Config D is the primary target. A–C exist as ablation controls to measure the
 contribution of each pipeline stage.
+
+Config D sends `rewrite: "hyde"` and `rerank: true` on every `/ask` call, so
+the server must have `RAGAMUFFIN_RETRIEVAL_REWRITE` (LLM available) and
+`RAGAMUFFIN_RERANK` enabled for these stages to take effect. When the server
+has them disabled, the flags are safe no-ops and Config D degrades to plain
+recall + synthesis.
 
 ## Requirements
 
@@ -313,6 +319,14 @@ tooling, consider both the shared-vault and per-conversation-vault patterns.
 | `LITELLM_URL` | `http://localhost:4000` | LiteLLM proxy URL |
 | `LITELLM_MASTER_KEY` | `""` | LiteLLM API key |
 | `OPENAI_API_KEY` | — | Evaluator LLM key (required) |
+
+For Config D's full retrieval pipeline, the **Ragamuffin server** (not the
+harness) must also set:
+
+| Server variable | Effect |
+|---|---|
+| `RAGAMUFFIN_RETRIEVAL_REWRITE` | Default query-rewrite mode; Config D overrides per-request with `hyde` |
+| `RAGAMUFFIN_RERANK` | Enables listwise LLM rerank; required for Config D's `rerank: true` to apply |
 
 ## Architecture
 

@@ -18,7 +18,7 @@ class Config(Enum):
     | A | Baseline | Pure /ask (recall + synthesize). No fact extraction. |
     | B | Recall + Facts | /ask + auto_extract: true on ingest |
     | C | Tiered | /ask mode: auto — falls back to full-document on low confidence |
-    | D | Full Stack | /ask + facts + fact graph traversal |
+    | D | Full Stack | /ask + facts + fact graph traversal + query rewrite + rerank |
     """
 
     A = "A"
@@ -61,12 +61,31 @@ class Config(Enum):
         return self == Config.D
 
     @property
+    def rewrite(self) -> str:
+        """Query-rewrite mode sent on /ask.
+
+        Full Stack (D) enables HyDE rewriting; other configs leave it empty
+        so the server falls back to its own default (typically off).
+        """
+        if self == Config.D:
+            return "hyde"
+        return ""
+
+    @property
+    def rerank(self) -> bool:
+        """Whether listwise LLM rerank is requested on /ask.
+
+        Only Full Stack (D) opts in. Requires RAGAMUFFIN_RERANK on the server.
+        """
+        return self == Config.D
+
+    @property
     def description(self) -> str:
         return {
             Config.A: "Baseline: pure /ask (recall + synthesize)",
             Config.B: "Recall + Facts: /ask + auto_extract on ingest",
             Config.C: "Tiered: /ask mode=auto, falls back to full-document",
-            Config.D: "Full Stack: /ask + facts + fact graph traversal",
+            Config.D: "Full Stack: /ask + facts + graph + query rewrite + rerank",
         }[self]
 
     def to_meta(self) -> Dict[str, object]:
@@ -75,5 +94,7 @@ class Config(Enum):
             "ask_mode": self.ask_mode,
             "auto_extract": self.auto_extract,
             "full_stack": self.full_stack,
+            "rewrite": self.rewrite,
+            "rerank": self.rerank,
             "description": self.description,
         }
