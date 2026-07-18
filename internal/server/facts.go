@@ -1118,7 +1118,10 @@ func isAllDigits(s string) bool {
 // segment). Returns empty string if no version pattern is found.
 func versionKeyPrefix(key string) string {
 	parts := strings.Split(key, "/")
-	for i, part := range parts {
+	// Iterate in reverse so the last version segment wins, matching
+	// the pruner's parseVersionedKey (nested API versions are more specific).
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
 		if len(part) > 1 && part[0] == 'v' {
 			var v int
 			for _, c := range part[1:] {
@@ -1129,7 +1132,7 @@ func versionKeyPrefix(key string) string {
 				v = v*10 + int(c-'0')
 			}
 			if v >= 1 {
-				parts = parts[:i] // drop version and everything after
+				parts = parts[:i]
 				return strings.Join(parts, "/")
 			}
 		}

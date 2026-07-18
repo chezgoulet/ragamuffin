@@ -103,10 +103,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	for _, name := range s.indexers.VaultNames() {
 		vs := s.indexers.Stats(name)
 		vaults[name] = map[string]any{
-			"chunk_count":  vs.ChunkCount,
-			"file_count":   vs.FileCount,
-			"last_indexed": vs.LastIndexed.Format(time.RFC3339),
-			"indexing":     vs.Indexing,
+			"chunk_count": vs.ChunkCount,
+			"file_count":  vs.FileCount,
+			"indexing":    vs.Indexing,
+		}
+		if !vs.LastIndexed.IsZero() {
+			vaults[name]["last_indexed"] = vs.LastIndexed.Format(time.RFC3339)
 		}
 	}
 	if len(vaults) > 0 {

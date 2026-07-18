@@ -191,13 +191,13 @@ func (p *Pruner) markContradiction(ctx context.Context, pointID, otherKey string
 	}
 	existing = append(existing, otherKey)
 
-	tagVals := make([]*pb.Value, len(existing))
-	for i, t := range existing {
+	tagVals := make([]*pb.Value, 0, len(existing))
+	for _, t := range existing {
 		v, err := pb.NewValue(t)
 		if err != nil {
 			continue
 		}
-		tagVals[i] = v
+		tagVals = append(tagVals, v)
 	}
 
 	// Use SetPayload (via updateFactPayload) to update only the fields that changed
