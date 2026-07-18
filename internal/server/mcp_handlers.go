@@ -235,6 +235,18 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 			},
 		},
 		{
+			Name:        "ragamuffin_dialectic",
+			Description: "Multi-pass reasoning prompts for deep context analysis. Returns structured cold (analytical), warm (creative), and hot (evaluative) reasoning blocks. Use before making decisions that need thorough vetting against stored knowledge.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"depth":   map[string]interface{}{"type": "integer", "description": "Reasoning depth: 1=cold only, 2=cold+warm, 3=cold+warm+hot (default: 1)"},
+					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"context": map[string]interface{}{"type": "string", "description": "Optional additional context to reason about"},
+				},
+			},
+		},
+		{
 			Name:        "ragamuffin_peer_list",
 			Description: "Discover other agents by listing peer cards (peer/*/profile facts). Returns each agent's vault name and card content.",
 			InputSchema: map[string]interface{}{
@@ -472,6 +484,8 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpVerify(ctx, args)
 	case "ragamuffin_context_bundle":
 		return s.mcpContextBundle(ctx, args)
+	case "ragamuffin_dialectic":
+		return s.mcpDialectic(ctx, args)
 	case "ragamuffin_peer_list":
 		return s.mcpPeerList(ctx, args)
 	case "ragamuffin_briefing":
@@ -1181,6 +1195,49 @@ func (s *Server) mcpContextBundle(ctx context.Context, args map[string]interface
 	}
 
 	return bundle, nil
+}
+
+// ── Dialectic handler ─────────────────────────────────────────────────────
+
+func (s *Server) mcpDialectic(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	depth := 1
+	if v, ok := args["depth"].(float64); ok && v >= 1 && v <= 3 {
+		depth = int(v)
+	}
+
+	contextStr, _ := args["context"].(string)
+
+	passes := []map[string]interface{}{
+		{
+			"level":  "cold",
+			"role":   "analytical",
+			"prompt": "<dialectic-pass level=\"cold\" role=\"analytical\">\n# Analytical Reasoning\nReview the context below. Identify:\n- Specific verifiable facts you can extract\n- Contradictions or inconsistencies\n- Stale or out-of-date information\n- Gaps where information is missing\n</dialectic-pass>",
+		},
+	}
+	if depth >= 2 {
+		passes = append(passes, map[string]interface{}{
+			"level":  "warm",
+			"role":   "synthetic",
+			"prompt": "<dialectic-pass level=\"warm\" role=\"synthetic\">\n# Synthetic Reasoning\nDraw connections from the context below. Consider:\n- What underlying patterns emerge?\n- What hypotheses explain the data?\n- What related information might be useful?\n- What should this agent learn next?\n</dialectic-pass>",
+		})
+	}
+	if depth >= 3 {
+		passes = append(passes, map[string]interface{}{
+			"level":  "hot",
+			"role":   "evaluative",
+			"prompt": "<dialectic-pass level=\"hot\" role=\"evaluative\">\n# Evaluative Reasoning\nAssess the quality of information below:\n- Rate confidence in each fact (0.0-1.0)\n- Which facts are most critical to remember?\n- Which facts need verification?\n- Summarize the current state of knowledge\n</dialectic-pass>",
+		})
+	}
+
+	result := map[string]interface{}{
+		"depth":  depth,
+		"passes": passes,
+	}
+	if contextStr != "" {
+		result["context"] = contextStr
+	}
+
+	return result, nil
 }
 
 // ── Peer discovery ──────────────────────────────────────────────────────────
