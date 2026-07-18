@@ -30,6 +30,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/google/uuid"
@@ -84,6 +85,11 @@ type Server struct {
 
 	// Sleep-time consolidation worker (B3). Optional; nil when disabled.
 	consolidator *consolidation.Consolidator
+
+	// lexical indexes provide in-process BM25 recall, fused with dense
+	// semantic search via RRF for hybrid retrieval. Keyed by vault name.
+	lexicalMu sync.Mutex
+	lexical   map[string]*retrieval.LexicalIndex
 }
 
 // SetGraph attaches the temporal knowledge graph store and (optional) extractor.
@@ -116,6 +122,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		requestCounts:  make(map[string]map[string]int64),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
+		lexical:        make(map[string]*retrieval.LexicalIndex),
 	}
 
 	// Configure rate limits

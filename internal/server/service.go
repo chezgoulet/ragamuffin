@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 )
 
 // ── Recall ─────────────────────────────────────────────────────────────────────
@@ -57,57 +59,265 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 		}
 	}
 
-	// Search
+	// Search — dispatch by retrieval mode.
+	switch req.Mode {
+	case "sparse":
+		return s.sparseRecall(ctx, req, filter)
+	case "hybrid":
+		return s.hybridRecall(ctx, req, vector, filter)
+	default: // dense (default, unchanged behavior)
+		return s.denseRecall(ctx, req, vector, filter)
+	}
+}
+
+// denseRecall runs the classic single-vector semantic search.
+func (s *Server) denseRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search failed: %w", err)
 	}
+	return mapDenseResults(results, req.Detail), topScoreOf(results), nil
+}
 
-	// Map results with detail-level filtering
-	out := make([]recallResult, 0, len(results))
-	var topScore float32
-	for _, r := range results {
-		payload := r.Payload
-		res := recallResult{
-			Score:   r.Score,
-			ChunkID: r.Id.GetUuid(),
-		}
-		if r.Score > topScore {
-			topScore = r.Score
-		}
-		if v, ok := payload["text"]; ok {
-			res.Text = v.GetStringValue()
-		}
-		if v, ok := payload["first_paragraph"]; ok {
-			res.FirstParagraph = v.GetStringValue()
-		}
-		if v, ok := payload["source_file"]; ok {
-			res.SourceFile = v.GetStringValue()
-		}
-		if v, ok := payload["header"]; ok {
-			res.Header = v.GetStringValue()
-		}
-		if v, ok := payload["chunk_index"]; ok {
-			res.ChunkIndex = int(v.GetIntegerValue())
-		}
-		if v, ok := payload["file_last_updated"]; ok {
-			res.FileLastUpdated = v.GetStringValue()
-		}
+// sparseRecall runs lexical (BM25) recall only via Reciprocal Rank Fusion over
+// the in-process lexical index. Used when mode=sparse.
+func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb.Filter) ([]recallResult, float32, error) {
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+	idx := s.lexicalIndexFor(ctx, vault)
+	if idx == nil || idx.Size() == 0 {
+		return nil, 0, fmt.Errorf("lexical index unavailable")
+	}
+	ranked := idx.Search(req.Query, req.TopK*2)
+	if len(ranked) == 0 {
+		return []recallResult{}, 0, nil
+	}
+	return s.recallByIDs(ctx, ranked, req, filter)
+}
 
-		// Detail-level field filtering
-		switch req.Detail {
-		case "l0":
-			res.Text = ""
-			res.FirstParagraph = ""
-		case "l1":
-			res.Text = ""
-		}
-		// l2: include everything
-
-		out = append(out, res)
+// hybridRecall fuses dense semantic + lexical BM25 results via Reciprocal Rank
+// Fusion (RRF). The two rankers produce heterogeneous scores (cosine vs BM25),
+// which RRF reconciles without calibration (Cormack et al., SIGIR 2009).
+func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
 	}
 
+	denseResults, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK*2), float32(req.ScoreThreshold), req.SourceFilter, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("dense search failed: %w", err)
+	}
+	denseIDs := make([]string, 0, len(denseResults))
+	for _, r := range denseResults {
+		denseIDs = append(denseIDs, r.Id.GetUuid())
+	}
+
+	var lexicalIDs []string
+	if idx := s.lexicalIndexFor(ctx, vault); idx != nil && idx.Size() > 0 {
+		ranked := idx.Search(req.Query, req.TopK*2)
+		for _, r := range ranked {
+			lexicalIDs = append(lexicalIDs, r.ID)
+		}
+	}
+
+	fused := retrieval.Hybrid(denseIDs, lexicalIDs, 60)
+	if len(fused) == 0 {
+		// Degenerate: dense only.
+		return mapDenseResults(denseResults, req.Detail), topScoreOf(denseResults), nil
+	}
+	if len(fused) > req.TopK {
+		fused = fused[:req.TopK]
+	}
+	return s.recallByIDs(ctx, fused, req, filter)
+}
+
+// recallByIDs fetches payloads for a fused ranking and maps them to
+// recallResult, preserving the fused order. Used by sparse and hybrid modes.
+func (s *Server) recallByIDs(ctx context.Context, ranked []retrieval.RankedID, req recallRequest, filter *pb.Filter) ([]recallResult, float32, error) {
+	qc := s.qdrantFor(ctx)
+	ids := make([]*pb.PointId, 0, len(ranked))
+	for _, r := range ranked {
+		ids = append(ids, pb.NewIDUUID(r.ID))
+	}
+	pts, err := qc.GetPoints(ctx, qc.Collection(), ids)
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch fused points: %w", err)
+	}
+	// Preserve fused order; map by chunk id.
+	order := make(map[string]int, len(ranked))
+	for i, r := range ranked {
+		order[r.ID] = i
+	}
+	type scored struct {
+		rank  int
+		res   recallResult
+		score float32
+	}
+	collected := make([]scored, 0, len(pts))
+	for _, p := range pts {
+		id := p.Id.GetUuid()
+		rank, ok := order[id]
+		if !ok {
+			continue
+		}
+		res := mapPayloadToRecall(p.Payload, id, req.Detail)
+		collected = append(collected, scored{rank: rank, res: res, score: ranked[rank].Score})
+	}
+	sort.Slice(collected, func(i, j int) bool { return collected[i].rank < collected[j].rank })
+
+	out := make([]recallResult, 0, len(collected))
+	var topScore float32
+	for _, c := range collected {
+		if c.score > topScore {
+			topScore = c.score
+		}
+		c.res.Score = c.score
+		out = append(out, c.res)
+	}
 	return out, topScore, nil
+}
+
+// lexicalIndexFor returns the cached lexical index for a vault, building it
+// lazily from a Qdrant scroll of chunk text if absent or empty. The index is
+// rebuilt on reindex via RefreshLexicalIndex.
+func (s *Server) lexicalIndexFor(ctx context.Context, vault string) *retrieval.LexicalIndex {
+	s.lexicalMu.Lock()
+	idx, ok := s.lexical[vault]
+	if ok && idx != nil && idx.Size() > 0 {
+		s.lexicalMu.Unlock()
+		return idx
+	}
+	s.lexicalMu.Unlock()
+
+	if !s.cfg.SparseEnabled {
+		return nil
+	}
+	// Build off the hot path. Use a background context bounded by timeout.
+	bctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	built := s.buildLexicalIndex(bctx, vault)
+	if built == nil {
+		return nil
+	}
+	s.lexicalMu.Lock()
+	s.lexical[vault] = built
+	s.lexicalMu.Unlock()
+	return built
+}
+
+// buildLexicalIndex scrolls the vault's chunk collection and constructs a BM25
+// index from chunk text. Returns nil on any error (caller falls back to dense).
+func (s *Server) buildLexicalIndex(ctx context.Context, vault string) *retrieval.LexicalIndex {
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil
+	}
+	idx := retrieval.NewLexicalIndex()
+	var docs []retrieval.Doc
+	var offset *pb.PointId
+	for {
+		points, nextOffset, err := qc.Scroll(ctx, 200, offset)
+		if err != nil {
+			s.log(ctx).Warn("lexical index: scroll failed", "vault", vault, "error", err)
+			return nil
+		}
+		for _, p := range points {
+			id := p.Id.GetUuid()
+			text := p.Payload["text"].GetStringValue()
+			if text == "" {
+				text = p.Payload["first_paragraph"].GetStringValue()
+			}
+			if text != "" {
+				docs = append(docs, retrieval.Doc{ID: id, Text: text})
+			}
+		}
+		if nextOffset == nil {
+			break
+		}
+		offset = nextOffset
+	}
+	if len(docs) == 0 {
+		return idx // empty but valid (so we don't rebuild constantly)
+	}
+	idx.Build(docs)
+	return idx
+}
+
+// RefreshLexicalIndex rebuilds the lexical index for a vault. Called on reindex
+// and after large vault mutations.
+func (s *Server) RefreshLexicalIndex(ctx context.Context, vault string) {
+	if !s.cfg.SparseEnabled {
+		return
+	}
+	built := s.buildLexicalIndex(ctx, vault)
+	s.lexicalMu.Lock()
+	if built != nil {
+		s.lexical[vault] = built
+	}
+	s.lexicalMu.Unlock()
+}
+
+// InvalidateLexicalIndex drops the cached lexical index for a vault so it is
+// rebuilt lazily on the next hybrid/sparse recall. Used after async reindex,
+// where a synchronous rebuild is not possible.
+func (s *Server) InvalidateLexicalIndex(vault string) {
+	s.lexicalMu.Lock()
+	delete(s.lexical, vault)
+	s.lexicalMu.Unlock()
+}
+
+// mapDenseResults maps Qdrant scored points to recallResult with detail filtering.
+func mapDenseResults(results []*pb.ScoredPoint, detail string) []recallResult {
+	out := make([]recallResult, 0, len(results))
+	for _, r := range results {
+		res := mapPayloadToRecall(r.Payload, r.Id.GetUuid(), detail)
+		res.Score = r.Score
+		out = append(out, res)
+	}
+	return out
+}
+
+func mapPayloadToRecall(payload map[string]*pb.Value, id, detail string) recallResult {
+	res := recallResult{Score: 0, ChunkID: id}
+	if v, ok := payload["text"]; ok {
+		res.Text = v.GetStringValue()
+	}
+	if v, ok := payload["first_paragraph"]; ok {
+		res.FirstParagraph = v.GetStringValue()
+	}
+	if v, ok := payload["source_file"]; ok {
+		res.SourceFile = v.GetStringValue()
+	}
+	if v, ok := payload["header"]; ok {
+		res.Header = v.GetStringValue()
+	}
+	if v, ok := payload["chunk_index"]; ok {
+		res.ChunkIndex = int(v.GetIntegerValue())
+	}
+	if v, ok := payload["file_last_updated"]; ok {
+		res.FileLastUpdated = v.GetStringValue()
+	}
+	switch detail {
+	case "l0":
+		res.Text = ""
+		res.FirstParagraph = ""
+	case "l1":
+		res.Text = ""
+	}
+	return res
+}
+
+func topScoreOf(results []*pb.ScoredPoint) float32 {
+	var top float32
+	for _, r := range results {
+		if r.Score > top {
+			top = r.Score
+		}
+	}
+	return top
 }
 
 // doVerify validates a fact statement against the vault (#810).

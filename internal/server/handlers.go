@@ -285,6 +285,7 @@ type recallRequest struct {
 	SourceFilter   string         `json:"source_filter"`
 	Filters        *recallFilters `json:"filters,omitempty"`
 	Detail         string         `json:"detail"`
+	Mode           string         `json:"mode,omitempty"`        // dense | sparse | hybrid (default dense)
 	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
 	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
 	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
@@ -412,6 +413,19 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Detail != "l0" && req.Detail != "l1" && req.Detail != "l2" {
 		writeError(w, 400, "INVALID_REQUEST", "detail must be one of: l0, l1, l2")
+		return
+	}
+
+	// Resolve retrieval mode. Config default is dense (unchanged behavior);
+	// hybrid fuses dense semantic + in-process BM25 lexical via RRF.
+	if req.Mode == "" {
+		req.Mode = s.cfg.RecallMode
+	}
+	if req.Mode == "" {
+		req.Mode = "dense"
+	}
+	if req.Mode != "dense" && req.Mode != "sparse" && req.Mode != "hybrid" {
+		writeError(w, 400, "INVALID_REQUEST", "mode must be one of: dense, sparse, hybrid")
 		return
 	}
 
@@ -1634,6 +1648,9 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "CONFLICT", fmt.Sprintf("vault %q is already indexing", vaultName))
 		return
 	}
+
+	// Reindex is async; drop the stale lexical index so it rebuilds lazily.
+	s.InvalidateLexicalIndex(vaultName)
 
 	writeJSON(w, 202, map[string]any{
 		"status":  "accepted",
