@@ -124,37 +124,34 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 // toolProfileMap assigns each base tool name to its profile set.
 // Tools not listed default to "full"-only.
 var toolProfileMap = map[string][]string{
-	"recall":            {"core", "session", "analyst", "graph"},
-	"ask":               {"core", "session", "analyst", "graph"},
-	"store":             {"core", "session", "analyst", "graph"},
-	"fact_get":          {"core", "session", "analyst", "graph"},
-	"fact_put":          {"core", "session", "analyst", "graph"},
-	"fact_list":         {"core", "session", "analyst", "graph"},
-	"status":            {"core", "session", "analyst", "graph"},
-	"draft":             {"core", "session", "analyst", "graph"},
-	"fact_delete":       {"core", "session", "analyst", "graph"},
-	"context_bundle":    {"core", "session", "analyst", "graph"},
-	"dialectic":         {"core", "session", "analyst", "graph"},
-	"peer_list":         {"core", "session", "analyst", "graph"},
-	"get_chunk":         {"core", "session", "analyst", "graph"},
-	"session_create":    {"session", "analyst"},
-	"session_get":       {"session", "analyst"},
-	"session_list":      {"session", "analyst"},
-	"turn_append":       {"session"},
-	"hybrid_search":     {"analyst"},
-	"verify":            {"analyst"},
-	"audit":             {"analyst"},
-	"contradictions":    {"analyst"},
-	"review":            {"analyst"},
-	"fact_graph":        {"analyst"},
-	"fact_history":      {"analyst"},
-	"briefing":          {"analyst"},
-	"changes":           {"analyst"},
+	// core (7): essential tools every agent needs
+	"recall":    {"core", "session", "analyst", "graph"},
+	"ask":       {"core", "session", "analyst", "graph"},
+	"store":     {"core", "session", "analyst", "graph"},
+	"fact_get":  {"core", "session", "analyst", "graph"},
+	"fact_put":  {"core", "session", "analyst", "graph"},
+	"fact_list": {"core", "session", "analyst", "graph"},
+	"status":    {"core", "session", "analyst", "graph"},
+	// session (+4): session management
+	"session_create": {"session", "analyst"},
+	"session_get":    {"session", "analyst"},
+	"session_list":   {"session", "analyst"},
+	"turn_append":    {"session"},
+	// analyst (+5): deep analysis (inherits session)
+	"hybrid_search":  {"analyst"},
+	"verify":         {"analyst"},
+	"audit":          {"analyst"},
+	"contradictions": {"analyst"},
+	"review":         {"analyst"},
+	// graph (+5): entity graph traversal (inherits core only)
 	"graph_entity":      {"graph"},
 	"graph_edges":       {"graph"},
 	"graph_communities": {"graph"},
 	"links":             {"graph"},
 	"fact_provenance":   {"graph"},
+	// full-only (unlisted = full-only): draft, fact_delete, fact_graph,
+	// fact_history, context_bundle, dialectic, peer_list, get_chunk,
+	// briefing, changes, stats
 }
 
 // toolInProfile checks whether a tool with the given base name belongs to the given profile.
@@ -267,7 +264,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"required": []string{"key"},
 			}),
 		s.toolDef("fact_put",
-			"Record a discrete decision, preference, or configuration as a named fact. Use for small, structured knowledge — connection strings, architectural decisions, agent preferences. Facts are versioned and can be superseded.",
+			"Record a discrete decision, preference, or configuration as a named fact. Use for small, structured knowledge — connection strings, architectural decisions, agent preferences. Returns the stored fact key, value, and status.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

@@ -1487,45 +1487,45 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	var b strings.Builder
 
 	s.mu.Lock()
-	b.WriteString("# HELP ragamuffin_requests_total Total HTTP requests by endpoint and status.\n")
-	b.WriteString("# TYPE ragamuffin_requests_total counter\n")
+	b.WriteString("# HELP memory_requests_total Total HTTP requests by endpoint and status.\n")
+	b.WriteString("# TYPE memory_requests_total counter\n")
 	for endpoint, statuses := range s.requestCounts {
 		for status, count := range statuses {
-			fmt.Fprintf(&b, "ragamuffin_requests_total{endpoint=\"%s\",status=\"%s\"} %d\n", endpoint, status, count)
+			fmt.Fprintf(&b, "memory_requests_total{endpoint=\"%s\",status=\"%s\"} %d\n", endpoint, status, count)
 		}
 	}
 	s.mu.Unlock()
 
 	b.WriteString("\n")
 	fmt.Fprint(&b, strings.Join([]string{
-		"# HELP ragamuffin_indexed_files Number of files in the index.",
-		"# TYPE ragamuffin_indexed_files gauge",
-		fmt.Sprintf("ragamuffin_indexed_files %d", fileCount),
+		"# HELP memory_indexed_files Number of files in the index.",
+		"# TYPE memory_indexed_files gauge",
+		fmt.Sprintf("memory_indexed_files %d", fileCount),
 		"",
-		"# HELP ragamuffin_indexed_chunks Total chunks in the index.",
-		"# TYPE ragamuffin_indexed_chunks gauge",
-		fmt.Sprintf("ragamuffin_indexed_chunks %d", chunkCount),
+		"# HELP memory_indexed_chunks Total chunks in the index.",
+		"# TYPE memory_indexed_chunks gauge",
+		fmt.Sprintf("memory_indexed_chunks %d", chunkCount),
 		"",
-		"# HELP ragamuffin_qdrant_health Qdrant connectivity (1 = healthy, 0 = down).",
-		"# TYPE ragamuffin_qdrant_health gauge",
-		fmt.Sprintf("ragamuffin_qdrant_health %d", s.qdrantHealth()),
+		"# HELP memory_qdrant_health Qdrant connectivity (1 = healthy, 0 = down).",
+		"# TYPE memory_qdrant_health gauge",
+		fmt.Sprintf("memory_qdrant_health %d", s.qdrantHealth()),
 		"",
 	}, "\n"))
 
 	// ── Pruner metrics ─────────────────────────────────────────────────
 	if s.pruner != nil {
 		scanCounts, flaggedCount, resolvedCount := s.pruner.Metrics()
-		b.WriteString("# HELP ragamuffin_pruner_scans_total Total pruner scan runs by type.\n")
-		b.WriteString("# TYPE ragamuffin_pruner_scans_total counter\n")
+		b.WriteString("# HELP memory_pruner_scans_total Total pruner scan runs by type.\n")
+		b.WriteString("# TYPE memory_pruner_scans_total counter\n")
 		for scanType, count := range scanCounts {
-			fmt.Fprintf(&b, "ragamuffin_pruner_scans_total{scan_type=\"%s\"} %d\n", scanType, count)
+			fmt.Fprintf(&b, "memory_pruner_scans_total{scan_type=\"%s\"} %d\n", scanType, count)
 		}
-		b.WriteString("# HELP ragamuffin_pruner_facts_flagged_total Total facts flagged for review.\n")
-		b.WriteString("# TYPE ragamuffin_pruner_facts_flagged_total counter\n")
-		fmt.Fprintf(&b, "ragamuffin_pruner_facts_flagged_total %d\n", flaggedCount)
-		b.WriteString("# HELP ragamuffin_pruner_facts_resolved_total Total review queue resolutions.\n")
-		b.WriteString("# TYPE ragamuffin_pruner_facts_resolved_total counter\n")
-		fmt.Fprintf(&b, "ragamuffin_pruner_facts_resolved_total %d\n", resolvedCount)
+		b.WriteString("# HELP memory_pruner_facts_flagged_total Total facts flagged for review.\n")
+		b.WriteString("# TYPE memory_pruner_facts_flagged_total counter\n")
+		fmt.Fprintf(&b, "memory_pruner_facts_flagged_total %d\n", flaggedCount)
+		b.WriteString("# HELP memory_pruner_facts_resolved_total Total review queue resolutions.\n")
+		b.WriteString("# TYPE memory_pruner_facts_resolved_total counter\n")
+		fmt.Fprintf(&b, "memory_pruner_facts_resolved_total %d\n", resolvedCount)
 	}
 
 	w.Write([]byte(b.String()))
