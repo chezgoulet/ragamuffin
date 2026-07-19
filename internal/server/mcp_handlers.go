@@ -121,6 +121,59 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 
 // ── MCP Tools ─────────────────────────────────────────────────────────────
 
+// toolProfileMap assigns each base tool name to its profile set.
+// Tools not listed default to "full"-only.
+var toolProfileMap = map[string][]string{
+	"recall":            {"core", "session", "analyst", "graph"},
+	"ask":               {"core", "session", "analyst", "graph"},
+	"store":             {"core", "session", "analyst", "graph"},
+	"fact_get":          {"core", "session", "analyst", "graph"},
+	"fact_put":          {"core", "session", "analyst", "graph"},
+	"fact_list":         {"core", "session", "analyst", "graph"},
+	"status":            {"core", "session", "analyst", "graph"},
+	"draft":             {"core", "session", "analyst", "graph"},
+	"fact_delete":       {"core", "session", "analyst", "graph"},
+	"context_bundle":    {"core", "session", "analyst", "graph"},
+	"dialectic":         {"core", "session", "analyst", "graph"},
+	"peer_list":         {"core", "session", "analyst", "graph"},
+	"get_chunk":         {"core", "session", "analyst", "graph"},
+	"session_create":    {"session", "analyst"},
+	"session_get":       {"session", "analyst"},
+	"session_list":      {"session", "analyst"},
+	"turn_append":       {"session"},
+	"hybrid_search":     {"analyst"},
+	"verify":            {"analyst"},
+	"audit":             {"analyst"},
+	"contradictions":    {"analyst"},
+	"review":            {"analyst"},
+	"fact_graph":        {"analyst"},
+	"fact_history":      {"analyst"},
+	"briefing":          {"analyst"},
+	"changes":           {"analyst"},
+	"graph_entity":      {"graph"},
+	"graph_edges":       {"graph"},
+	"graph_communities": {"graph"},
+	"links":             {"graph"},
+	"fact_provenance":   {"graph"},
+}
+
+// toolInProfile checks whether a tool with the given base name belongs to the given profile.
+func toolInProfile(baseName, profile string) bool {
+	if profile == "full" {
+		return true
+	}
+	profiles, ok := toolProfileMap[baseName]
+	if !ok {
+		return false // unknown tool — exclude
+	}
+	for _, p := range profiles {
+		if p == profile {
+			return true
+		}
+	}
+	return false
+}
+
 // toolDef builds an MCP tool definition with the configured prefix applied.
 func (s *Server) toolDef(name, desc string, schema map[string]interface{}) mcp.ToolDefinition {
 	return mcp.ToolDefinition{
@@ -128,6 +181,24 @@ func (s *Server) toolDef(name, desc string, schema map[string]interface{}) mcp.T
 		Description: desc,
 		InputSchema: schema,
 	}
+}
+
+// mcpToolsForProfile returns the tool definitions for a given profile.
+// Delegates to mcpTools() then filters by the profile map.
+func (s *Server) mcpToolsForProfile(profile string) []mcp.ToolDefinition {
+	all := s.mcpTools()
+	// When "full" or empty, return all tools.
+	if profile == "" || profile == "full" {
+		return all
+	}
+	filtered := make([]mcp.ToolDefinition, 0, len(all))
+	for _, t := range all {
+		baseName := strings.TrimPrefix(t.Name, s.cfg.MCPToolPrefix)
+		if toolInProfile(baseName, profile) {
+			filtered = append(filtered, t)
+		}
+	}
+	return filtered
 }
 
 func (s *Server) mcpTools() []mcp.ToolDefinition {

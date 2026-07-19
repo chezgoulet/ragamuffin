@@ -247,6 +247,9 @@ type Config struct {
 
 	// Optional — MCP tool prefix (default: "memory.")
 	MCPToolPrefix string
+
+	// Optional — MCP tool profile (default: "core")
+	MCPProfile string
 }
 
 // IsMultiTenant returns true when multi-tenancy is active.
@@ -477,6 +480,14 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not contain whitespace")
 	}
 
+	// MCP profile must be valid
+	switch c.MCPProfile {
+	case "core", "session", "analyst", "graph", "full":
+		// valid
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_PROFILE must be 'core', 'session', 'analyst', 'graph', or 'full', got %q", c.MCPProfile))
+	}
+
 	return errs
 }
 
@@ -637,6 +648,7 @@ func Load() (*Config, error) {
 		ErrorTrackingTelegramChatID:   os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID"),
 
 		MCPToolPrefix: envOrDefault("RAGAMUFFIN_MCP_TOOL_PREFIX", "memory."),
+		MCPProfile:    envOrDefault("RAGAMUFFIN_MCP_PROFILE", "core"),
 	}
 
 	// Parse vaults root for multi-tenant path validation

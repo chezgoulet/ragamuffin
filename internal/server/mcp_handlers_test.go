@@ -154,6 +154,102 @@ func toolNames(tools []mcp.ToolDefinition) []string {
 	return names
 }
 
+// ── Tool profiles ─────────────────────────────────────────────────────────────
+
+func TestMCPTools_CoreProfile(t *testing.T) {
+	srv := newMCPTestServer(t)
+	tools := srv.mcpToolsForProfile("core")
+	if len(tools) < 7 {
+		t.Fatalf("core profile expected >= 7 tools, got %d", len(tools))
+	}
+	names := toolNames(tools)
+	for _, name := range []string{"recall", "ask", "store", "fact_get", "fact_put", "fact_list", "status"} {
+		fullName := "memory." + name
+		found := false
+		for _, n := range names {
+			if n == fullName {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("core profile missing tool: %s", fullName)
+		}
+	}
+}
+
+func TestMCPTools_FullProfile(t *testing.T) {
+	srv := newMCPTestServer(t)
+	tools := srv.mcpToolsForProfile("full")
+	fullCount := len(srv.mcpTools())
+	if len(tools) != fullCount {
+		t.Errorf("full profile expected %d tools (same as unfiltered), got %d", fullCount, len(tools))
+	}
+}
+
+func TestMCPTools_SessionProfile(t *testing.T) {
+	srv := newMCPTestServer(t)
+	tools := srv.mcpToolsForProfile("session")
+	names := toolNames(tools)
+	// Should have core tools + session tools
+	coreNames := toolNames(srv.mcpToolsForProfile("core"))
+	for _, n := range coreNames {
+		if !containsName(names, n) {
+			t.Errorf("session profile missing core tool: %s", n)
+		}
+	}
+	for _, n := range []string{"memory.session_create", "memory.session_get", "memory.session_list", "memory.turn_append"} {
+		if !containsName(names, n) {
+			t.Errorf("session profile missing tool: %s", n)
+		}
+	}
+}
+
+func TestMCPTools_AnalystProfile(t *testing.T) {
+	srv := newMCPTestServer(t)
+	tools := srv.mcpToolsForProfile("analyst")
+	names := toolNames(tools)
+	coreNames := toolNames(srv.mcpToolsForProfile("core"))
+	for _, n := range coreNames {
+		if !containsName(names, n) {
+			t.Errorf("analyst profile missing core tool: %s", n)
+		}
+	}
+	for _, n := range []string{"hybrid_search", "verify", "audit", "contradictions", "review", "fact_graph", "fact_history", "briefing", "changes"} {
+		fullName := "memory." + n
+		if !containsName(names, fullName) {
+			t.Errorf("analyst profile missing tool: %s", fullName)
+		}
+	}
+}
+
+func TestMCPTools_GraphProfile(t *testing.T) {
+	srv := newMCPTestServer(t)
+	tools := srv.mcpToolsForProfile("graph")
+	names := toolNames(tools)
+	coreNames := toolNames(srv.mcpToolsForProfile("core"))
+	for _, n := range coreNames {
+		if !containsName(names, n) {
+			t.Errorf("graph profile missing core tool: %s", n)
+		}
+	}
+	for _, n := range []string{"graph_entity", "graph_edges", "graph_communities", "links", "fact_provenance"} {
+		fullName := "memory." + n
+		if !containsName(names, fullName) {
+			t.Errorf("graph profile missing tool: %s", fullName)
+		}
+	}
+}
+
+func containsName(names []string, target string) bool {
+	for _, n := range names {
+		if n == target {
+			return true
+		}
+	}
+	return false
+}
+
 // ── Dispatch routing ──────────────────────────────────────────────────────────
 
 func TestMCPDispatch_RoutesCorrectly(t *testing.T) {
