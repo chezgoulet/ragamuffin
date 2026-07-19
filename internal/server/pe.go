@@ -20,7 +20,8 @@ const (
 
 // computePE returns the prediction error between old and new fact values using
 // normalized Levenshtein (edit) distance. Returns 0.0 for identical strings,
-// 1.0 for completely different or when old is empty (new fact).
+// 1.0 for completely different. Two empty strings return 1.0 by design: no
+// prior fact exists, so the prediction error is maximum (new-learning).
 func computePE(oldValue, newValue string) float64 {
 	if oldValue == "" || newValue == "" {
 		return 1.0

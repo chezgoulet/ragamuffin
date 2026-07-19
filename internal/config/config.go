@@ -188,7 +188,8 @@ type Config struct {
 	// Levenshtein distance. In dry-run mode (default) PE is logged and emitted
 	// as a CloudEvent but no side effects occur. With dry-run off, low-PE
 	// updates auto-confirm and high-PE updates flag for review.
-	PEDryRun             bool
+	PEDryRun             bool    // dry-run: log+emit but no side effects (default true)
+	PELive               bool    // live mode: when true, dry-run is disabled (RAGAMUFFIN_PE_LIVE)
 	PEReinforceThreshold float64 // below this → reinforcement (default 0.1)
 	PEMinorThreshold     float64 // below this → minor-update (default 0.4)
 	PEMajorThreshold     float64 // below this → major-update (default 0.7)
@@ -626,7 +627,8 @@ func Load() (*Config, error) {
 		ReconsolidationEnabled: envBool("RAGAMUFFIN_RECONSOLIDATION_ENABLED"),
 		ReconsolidationWindow:  envDuration("RAGAMUFFIN_RECONSOLIDATION_WINDOW", 30*time.Minute),
 
-		PEDryRun:             envOrDefault("RAGAMUFFIN_PE_DRY_RUN", "true") == "true",
+		PELive:               envBool("RAGAMUFFIN_PE_LIVE"), // default false → PEDryRun=true
+		PEDryRun:             true,                          // overridden in Load() from PELive
 		PEReinforceThreshold: envFloat("RAGAMUFFIN_PE_REINFORCE_THRESHOLD", 0.1),
 		PEMinorThreshold:     envFloat("RAGAMUFFIN_PE_MINOR_THRESHOLD", 0.4),
 		PEMajorThreshold:     envFloat("RAGAMUFFIN_PE_MAJOR_THRESHOLD", 0.7),
@@ -676,6 +678,11 @@ func Load() (*Config, error) {
 
 		MCPToolPrefix: envOrDefault("RAGAMUFFIN_MCP_TOOL_PREFIX", "memory."),
 		MCPProfile:    envOrDefault("RAGAMUFFIN_MCP_PROFILE", "core"),
+	}
+
+	// PE dry-run defaults to true; set RAGAMUFFIN_PE_LIVE=true to disable.
+	if cfg.PELive {
+		cfg.PEDryRun = false
 	}
 
 	// Parse vaults root for multi-tenant path validation

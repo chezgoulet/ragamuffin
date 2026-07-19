@@ -1411,7 +1411,6 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 	var oldValue string
 	var pe float64
 	var peClassification string
-	var peEmitted bool
 	if exists {
 		oldValue = s.fetchExistingFactValue(ctx, key)
 		pe = computePE(oldValue, value)
@@ -1431,7 +1430,6 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 				Vault:          vault,
 				DryRun:         s.cfg.PEDryRun,
 			})
-			peEmitted = true
 		}
 		s.log(ctx).Info("prediction error computed",
 			"key", key, "pe", pe, "classification", peClassification,
@@ -1481,7 +1479,7 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 
 	// Non-dry-run PE side effects: auto-confirm on reinforcement,
 	// flag for review on major-update.
-	if peEmitted && !s.cfg.PEDryRun {
+	if exists && !s.cfg.PEDryRun {
 		switch peClassification {
 		case PEReinforcement:
 			confirmationCount++
