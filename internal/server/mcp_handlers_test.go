@@ -85,6 +85,7 @@ func TestMCPTools_Definitions(t *testing.T) {
 		"memory.review",
 		"memory.hybrid_search",
 		"memory.verify",
+		"memory.context",
 		"memory.context_bundle",
 		"memory.dialectic",
 		"memory.peer_list",

@@ -163,6 +163,50 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 	return len(points) > 0, nil
 }
 
+// sourceTypeFilter builds a Qdrant filter matching a specific source_type.
+func sourceTypeFilter(sourceType string) *qdrant.Filter {
+	return &qdrant.Filter{
+		Must: []*qdrant.Condition{
+			{
+				ConditionOneOf: &qdrant.Condition_Field{
+					Field: &qdrant.FieldCondition{
+						Key: "source_type",
+						Match: &qdrant.Match{
+							MatchValue: &qdrant.Match_Keyword{Keyword: sourceType},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// factsByFilter scrolls the facts collection with the given Qdrant filter and
+// returns mapped fact responses. Up to limit results; returns nil on error or
+// empty (caller degrades gracefully).
+func (s *Server) factsByFilter(ctx context.Context, filter *qdrant.Filter, limit int) []map[string]interface{} {
+	if filter == nil {
+		return nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	scrollCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	points, err := s.facts.ScrollFiltered(scrollCtx, s.factsCollectionFor(ctx), filter, uint32(limit), "")
+	if err != nil || len(points) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(points))
+	for _, p := range points {
+		if fr := pointToFact(p, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays); fr != nil {
+			out = append(out, factToMap(fr))
+		}
+	}
+	return out
+}
+
 // zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
 // configured facts vector dimension. Used as fallback when the embedder is
 // unavailable (degraded mode).
