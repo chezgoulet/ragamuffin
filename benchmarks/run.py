@@ -42,7 +42,7 @@ from benchmarks.core.types import Question, Result
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Ragamuffin Benchmark Gauntlet — v2.0",
+        description="Ragamuffin Benchmark Gauntlet — v2.1",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -587,7 +587,7 @@ def post_to_github(
         "### Notes",
         "- Scored with fallback fuzzy matcher (see #720 for limitations)",
         "- Vault: per-run deterministic names",
-        "- Runner: v2.0 (see #719 for design)",
+        "- Runner: v2.1 (see #719 for design)",
     ])
 
     body = "\n".join(body_lines)
@@ -841,7 +841,7 @@ def main():
     with open(summary_path, "w") as f:
         json.dump({
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "runner": "v2.0",
+            "runner": "v2.1",
             "results": all_scores,
         }, f, indent=2)
         f.flush()

@@ -302,7 +302,7 @@ class RagamuffinClient:
             url = self.base_url + path
             headers = {
                 "Content-Type": "application/json",
-                "User-Agent": "RagamuffinBenchmark/0.9",
+                "User-Agent": "RagamuffinBenchmark/0.10",
             }
             if self.api_key:
                 headers["Authorization"] = f"Bearer {self.api_key}"

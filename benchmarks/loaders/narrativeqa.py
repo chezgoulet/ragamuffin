@@ -318,12 +318,12 @@ class NarrativeQALoader(DatasetLoader):
 
     @staticmethod
     def _fetch_json(url: str) -> object:
-        req = urllib.request.Request(url, headers={"User-Agent": "RagamuffinBenchmark/0.9"})
+        req = urllib.request.Request(url, headers={"User-Agent": "RagamuffinBenchmark/0.10"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode())
 
     @staticmethod
     def _download_file(url: str, dest: str) -> None:
-        req = urllib.request.Request(url, headers={"User-Agent": "RagamuffinBenchmark/0.9"})
+        req = urllib.request.Request(url, headers={"User-Agent": "RagamuffinBenchmark/0.10"})
         with urllib.request.urlopen(req, timeout=120) as resp, open(dest, "wb") as fh:
             shutil.copyfileobj(resp, fh)
