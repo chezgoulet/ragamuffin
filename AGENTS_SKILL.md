@@ -84,8 +84,8 @@ gives you:
 
 | Tool | What it does | When to use it |
 |---|---|---|
-| `ragamuffin_store(vault, id, text, metadata)` | Write a fact or conclusion to your agent vault | After reaching an important conclusion, making a decision, or learning something cross-agent useful |
-| `ragamuffin_recall(vault, query, limit)` | Search any agent's vault for relevant context | When you need to know what another agent has been doing, or recall something you stored earlier |
+| `memory.store(vault, id, text, metadata)` | Write a fact or conclusion to your agent vault | After reaching an important conclusion, making a decision, or learning something cross-agent useful |
+| `memory.recall(vault, query, limit)` | Search any agent's vault for relevant context | When you need to know what another agent has been doing, or recall something you stored earlier |
 
 Your harness slot (claudemem / Honcho) still handles turn-by-turn memory
 automatically. You use the Ragamuffin tools **selectively** — only for things
@@ -94,7 +94,7 @@ worth sharing across harness boundaries or persisting beyond the session.
 ```
 # You (dev agent): reach a design decision
 # Store it so robot can reference it later
-ragamuffin_store(
+memory.store(
   vault="agent::dev",
   id="decision-qdrant-isolation-2026-05-17",
   text="Decision: use physical Qdrant collection isolation per agent, not metadata filters. Source: Reddit post on multi-tenant AI vector store risks.",
@@ -102,7 +102,7 @@ ragamuffin_store(
 )
 
 # Later, robot agent: what did dev decide?
-ragamuffin_recall(
+memory.recall(
   vault="agent::dev",
   query="Qdrant isolation decision",
   limit=3

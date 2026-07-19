@@ -13,7 +13,7 @@ pip install ragamuffin-client
 ## Usage
 
 ```python
-from ragamuffin_client import MCPClient
+from memory.client import MCPClient
 
 client = MCPClient(
     endpoint="http://ragamuffin:8000",
@@ -28,7 +28,7 @@ tools = client.list_tools()
 print([t["name"] for t in tools])
 
 # Call a tool
-result = client.call("ragamuffin_recall", {
+result = client.call("memory.recall", {
     "query": "how does Qdrant isolation work?",
     "vault": "agent::dev",
 })

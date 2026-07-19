@@ -1346,21 +1346,21 @@ Server version information.
 
 ### `/metrics` — GET
 
-Prometheus-format metrics. Returns `ragamuffin_requests_total{endpoint,status}` counters per endpoint and HTTP status, plus indexed file and chunk counts.
+Prometheus-format metrics. Returns `memory.requests_total{endpoint,status}` counters per endpoint and HTTP status, plus indexed file and chunk counts.
 
 ```
 Content-Type: text/plain; version=0.0.4
 
-# HELP ragamuffin_requests_total Total HTTP requests by endpoint and status.
-# TYPE ragamuffin_requests_total counter
-ragamuffin_requests_total{endpoint="/recall",status="200"} 142
-ragamuffin_requests_total{endpoint="/health",status="200"} 38
-# HELP ragamuffin_files_total Total indexed files.
-# TYPE ragamuffin_files_total gauge
-ragamuffin_files_total 247
-# HELP ragamuffin_chunks_total Total indexed chunks.
-# TYPE ragamuffin_chunks_total gauge
-ragamuffin_chunks_total 1893
+# HELP memory.requests_total Total HTTP requests by endpoint and status.
+# TYPE memory.requests_total counter
+memory.requests_total{endpoint="/recall",status="200"} 142
+memory.requests_total{endpoint="/health",status="200"} 38
+# HELP memory.files_total Total indexed files.
+# TYPE memory.files_total gauge
+memory.files_total 247
+# HELP memory.chunks_total Total indexed chunks.
+# TYPE memory.chunks_total gauge
+memory.chunks_total 1893
 ```
 
 ---
@@ -1475,13 +1475,13 @@ Ragamuffin's primary agent integration surface. Exposes **33 tools** via the Mod
 
 | Category | Tools |
 |----------|-------|
-| Search & Synthesis | `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_hybrid_search`, `ragamuffin_verify` |
-| Fact CRUD & Lineage | `ragamuffin_fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` |
-| Knowledge Graph | `ragamuffin_graph_entity`, `_edges`, `_communities`, `ragamuffin_links` |
-| Quality & Review | `ragamuffin_review`, `_contradictions`, `_audit`, `ragamuffin_get_chunk` |
-| Context & Discovery | `ragamuffin_context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes` |
-| Session Management | `ragamuffin_session_create`, `_get`, `_list`, `ragamuffin_turn_append` |
-| Utilities | `ragamuffin_store`, `_draft`, `_stats`, `_status`, `ragamuffin_facts` (legacy) |
+| Search & Synthesis | `memory.recall`, `memory.ask`, `memory.hybrid_search`, `memory.verify` |
+| Fact CRUD & Lineage | `memory.fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` |
+| Knowledge Graph | `memory.graph_entity`, `_edges`, `_communities`, `memory.links` |
+| Quality & Review | `memory.review`, `_contradictions`, `_audit`, `memory.get_chunk` |
+| Context & Discovery | `memory.context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes` |
+| Session Management | `memory.session_create`, `_get`, `_list`, `memory.turn_append` |
+| Utilities | `memory.store`, `_draft`, `_stats`, `_status`, `memory.facts` (legacy) |
 
 Full signatures in `docs/integration/memory-provider-api.md` or via `tools/list` on any running instance.
 
@@ -1664,7 +1664,7 @@ RAGAMUFFIN_CHUNK_VECTOR_SIZE=0           # 0 = inherit from EMBEDDING_DIMS
 
 # ── Optional — Qdrant ─────────────────────────────────────────────────────────
 RAGAMUFFIN_QDRANT_COLLECTION=ragamuffin
-RAGAMUFFIN_FACTS_COLLECTION=ragamuffin_facts
+RAGAMUFFIN_FACTS_COLLECTION=memory.facts
 RAGAMUFFIN_FACTS_VECTOR_SIZE=4
 
 # ── Optional — Watcher ────────────────────────────────────────────────────────
@@ -1769,7 +1769,7 @@ RAGAMUFFIN_LOG_LEVEL=info
 | `RAGAMUFFIN_WATCH_INTERVAL` | no | `60s` | Poll interval for file changes |
 | `RAGAMUFFIN_WATCHER_MODE` | no | `poll` | `poll` or `inotify` |
 | `RAGAMUFFIN_QDRANT_COLLECTION` | no | `ragamuffin` | Chunk/document Qdrant collection name |
-| `RAGAMUFFIN_FACTS_COLLECTION` | no | `ragamuffin_facts` | Structured facts Qdrant collection name |
+| `RAGAMUFFIN_FACTS_COLLECTION` | no | `memory.facts` | Structured facts Qdrant collection name |
 | `RAGAMUFFIN_FACTS_VECTOR_SIZE` | no | falls back to `EMBEDDING_DIMS` → `1536` | Fact point vector dimension. If unset, uses `EMBEDDING_DIMS` (default 1536). Must match existing collection dimension. |
 | `RAGAMUFFIN_EMBEDDING_PROVIDER` | no | `openai` | Provider identifier |
 | `RAGAMUFFIN_EMBEDDING_MODEL` | no | `text-embedding-3-small` | Model name |

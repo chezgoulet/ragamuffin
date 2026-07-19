@@ -296,7 +296,7 @@ RESP=$(curl -sf -X POST "$BASE/mcp" \
 assert_status "MCP tools/list returns 200" "0" "$RC" "$RESP"
 
 # Verify all 4 tools are in the response
-for tool in ragamuffin_recall ragamuffin_ask ragamuffin_draft ragamuffin_audit; do
+for tool in memory.recall memory.ask memory.draft memory.audit; do
   if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); tools=[t['name'] for t in d.get('result',{}).get('tools',[])]; sys.exit(0 if '$tool' in tools else 1)" 2>/dev/null; then
     green "MCP tool: $tool"
   else
@@ -313,7 +313,7 @@ assert_field "MCP unknown method" "code" "-32601" "$RESP"
 # MCP recall with detail=l0 — no text
 MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l0"}}}' 2>&1) && RC=0 || RC=$?
+  -d '{"jsonrpc":"2.0","id":100,"method":"tools/call","params":{"name":"memory.recall","arguments":{"query":"test","top_k":1,"detail":"l0"}}}' 2>&1) && RC=0 || RC=$?
 if [ "$RC" = "0" ]; then
   has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
   if [ "$has_text" = "no" ]; then green "MCP recall detail=l0 no text"; else red "MCP recall detail=l0" "text field present: $has_text"; fi
@@ -322,7 +322,7 @@ fi
 # MCP recall with detail=l1 — first_paragraph present, no text
 MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1,"detail":"l1"}}}' 2>&1) && RC=0 || RC=$?
+  -d '{"jsonrpc":"2.0","id":101,"method":"tools/call","params":{"name":"memory.recall","arguments":{"query":"test","top_k":1,"detail":"l1"}}}' 2>&1) && RC=0 || RC=$?
 if [ "$RC" = "0" ]; then
   has_text=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'text' in res else 'no')" 2>/dev/null)
   has_fp=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print('yes' if 'first_paragraph' in res else 'no')" 2>/dev/null)
@@ -333,13 +333,13 @@ fi
 # MCP get_chunk — call recall to get a chunk_id, then retrieve it
 MCP_RESULT=$(curl -sf -X POST "$BASE/mcp" \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"test","top_k":1}}}' 2>&1) && RC=0 || RC=$?
+  -d '{"jsonrpc":"2.0","id":102,"method":"tools/call","params":{"name":"memory.recall","arguments":{"query":"test","top_k":1}}}' 2>&1) && RC=0 || RC=$?
 if [ "$RC" = "0" ]; then
   CID_MCP=$(echo "$MCP_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); res=o.get('results',[{}])[0]; print(res.get('chunk_id',''))" 2>/dev/null || echo "")
   if [ -n "$CID_MCP" ]; then
     GET_RESULT=$(curl -sf -X POST "$BASE/mcp" \
       -H 'Content-Type: application/json' \
-      -d "{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"ragamuffin_get_chunk\",\"arguments\":{\"chunk_id\":\"$CID_MCP\"}}}" 2>&1) && RC2=0 || RC2=$?
+      -d "{\"jsonrpc\":\"2.0\",\"id\":103,\"method\":\"tools/call\",\"params\":{\"name\":\"memory.get_chunk\",\"arguments\":{\"chunk_id\":\"$CID_MCP\"}}}" 2>&1) && RC2=0 || RC2=$?
     if [ "$RC2" = "0" ]; then
       has_src=$(echo "$GET_RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}).get('content',[{}])[0]; t=r.get('text',''); o=json.loads(t); print('yes' if 'source_file' in o else 'no')" 2>/dev/null)
       if [ "$has_src" = "yes" ]; then

@@ -77,9 +77,9 @@ describe("pluginEntry (MCP)", () => {
     mock.method(globalThis, "fetch", () =>
       jsonRpcResponse({
         tools: [
-          { name: "ragamuffin_recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
-          { name: "ragamuffin_fact_put", description: "Write fact", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
-          { name: "ragamuffin_fact_delete", description: "Delete fact", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
+          { name: "memory.recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+          { name: "memory.fact_put", description: "Write fact", inputSchema: { type: "object", properties: { key: { type: "string" }, value: { type: "string" } }, required: ["key", "value"] } },
+          { name: "memory.fact_delete", description: "Delete fact", inputSchema: { type: "object", properties: { key: { type: "string" } }, required: ["key"] } },
         ],
       }),
     );
@@ -99,9 +99,9 @@ describe("pluginEntry (MCP)", () => {
     const tools = api._tools();
     assert.equal(tools.length, 3);
     const names = tools.map((t) => t.meta.name);
-    assert.ok(names.includes("ragamuffin_recall"));
-    assert.ok(names.includes("ragamuffin_fact_put"));
-    assert.ok(names.includes("ragamuffin_fact_delete"));
+    assert.ok(names.includes("memory.recall"));
+    assert.ok(names.includes("memory.fact_put"));
+    assert.ok(names.includes("memory.fact_delete"));
   });
 
   it("registers before_prompt_build hook", () => {
@@ -141,7 +141,7 @@ describe("pluginEntry (MCP)", () => {
       if (svc.start) await svc.start();
 
       const tools = api._tools();
-      const recallTool = tools.find((t) => t.meta.name === "ragamuffin_recall");
+      const recallTool = tools.find((t) => t.meta.name === "memory.recall");
       assert.ok(recallTool);
 
       // Override fetch for this specific test
@@ -162,7 +162,7 @@ describe("pluginEntry (MCP)", () => {
       if (svc.start) await svc.start();
 
       const tools = api._tools();
-      const recallTool = tools.find((t) => t.meta.name === "ragamuffin_recall");
+      const recallTool = tools.find((t) => t.meta.name === "memory.recall");
 
       mock.reset();
       mock.method(globalThis, "fetch", () =>

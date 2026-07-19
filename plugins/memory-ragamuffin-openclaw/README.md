@@ -52,16 +52,16 @@ Config values take precedence over env vars.
 ## Tools
 
 Dynamically discovered from the MCP server on startup. Typically includes:
-- `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_store`, `ragamuffin_hybrid_search`
-- `ragamuffin_fact_get`, `ragamuffin_fact_put`, `ragamuffin_fact_list`, `ragamuffin_fact_delete`
-- `ragamuffin_fact_graph`, `ragamuffin_fact_history`, `ragamuffin_fact_provenance`
-- `ragamuffin_review`, `ragamuffin_verify`, `ragamuffin_context_bundle`, `ragamuffin_dialectic`
-- `ragamuffin_peer_list`, `ragamuffin_briefing`, `ragamuffin_changes`
-- `ragamuffin_contradictions`, `ragamuffin_links`, `ragamuffin_draft`, `ragamuffin_audit`
-- `ragamuffin_graph_entity`, `ragamuffin_graph_edges`, `ragamuffin_graph_communities`
-- `ragamuffin_stats`, `ragamuffin_status`
-- `ragamuffin_session_create`, `ragamuffin_session_get`, `ragamuffin_session_list`
-- `ragamuffin_turn_append`, `ragamuffin_get_chunk`, `ragamuffin_facts`
+- `memory.recall`, `memory.ask`, `memory.store`, `memory.hybrid_search`
+- `memory.fact_get`, `memory.fact_put`, `memory.fact_list`, `memory.fact_delete`
+- `memory.fact_graph`, `memory.fact_history`, `memory.fact_provenance`
+- `memory.review`, `memory.verify`, `memory.context_bundle`, `memory.dialectic`
+- `memory.peer_list`, `memory.briefing`, `memory.changes`
+- `memory.contradictions`, `memory.links`, `memory.draft`, `memory.audit`
+- `memory.graph_entity`, `memory.graph_edges`, `memory.graph_communities`
+- `memory.stats`, `memory.status`
+- `memory.session_create`, `memory.session_get`, `memory.session_list`
+- `memory.turn_append`, `memory.get_chunk`, `memory.facts`
 
 Run `ragamuffin tools` via the OpenClaw CLI to see the full live list (typically ~33 tools).
 
@@ -69,8 +69,8 @@ Run `ragamuffin tools` via the OpenClaw CLI to see the full live list (typically
 
 | Hook | Condition | Behavior |
 |------|-----------|----------|
-| `before_prompt_build` | `autoRecall: true` | Injects relevant memories as XML context via MCP `ragamuffin_recall` |
-| `agent_end` | `autoCapture: true` | Stores important user statements via MCP `ragamuffin_fact_put` |
+| `before_prompt_build` | `autoRecall: true` | Injects relevant memories as XML context via MCP `memory.recall` |
+| `agent_end` | `autoCapture: true` | Stores important user statements via MCP `memory.fact_put` |
 
 ## Fail-Open
 

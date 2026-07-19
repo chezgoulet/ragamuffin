@@ -116,7 +116,7 @@ export function extractUserText(messages) {
             texts.push(block.text);
           }
         }
-        if (texts.length > 0) return texts.join(" ").trim();
+        if (texts.length > 0) return texts.join("").trim();
       }
     }
   }
@@ -133,7 +133,7 @@ export function truncate(str, maxChars) {
 
 /** Convert an MCP tool definition to a human-readable label. */
 function toolLabel(name) {
-  return name.replace(/^ragamuffin_/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return name.replace(/^memory./, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 // ---------------------------------------------------------------------------
@@ -219,7 +219,7 @@ export default function pluginEntry(api) {
       try {
         const query = truncate(extractUserText(event.messages) || event.prompt, recallMaxChars);
         const vault = resolveVaultName();
-        const result = await mcp.call("ragamuffin_recall", {
+        const result = await mcp.call("memory.recall", {
           query,
           vault,
           top_k: recallLimit,
@@ -283,7 +283,7 @@ export default function pluginEntry(api) {
           const key = `auto/${msg.role}/${Date.now()}/${Math.random().toString(36).slice(2, 8)}`;
 
           try {
-            await mcp.call("ragamuffin_fact_put", {
+            await mcp.call("memory.fact_put", {
               key,
               value: text,
               vault,
@@ -318,7 +318,7 @@ export default function pluginEntry(api) {
         .option("--threshold <n>", "Min score threshold", "0.3")
         .action(async (query, opts) => {
           const vault = opts.vault || resolveVaultName();
-          const result = await mcp.call("ragamuffin_recall", {
+          const result = await mcp.call("memory.recall", {
             query,
             vault,
             top_k: parseInt(opts.limit, 10) || 5,
@@ -337,7 +337,7 @@ export default function pluginEntry(api) {
         .action(async (key, value, opts) => {
           const vault = opts.vault || resolveVaultName();
           const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()) : undefined;
-          const result = await mcp.call("ragamuffin_fact_put", { key, value, vault, tags });
+          const result = await mcp.call("memory.fact_put", { key, value, vault, tags });
           console.log(JSON.stringify(result, null, 2));
         });
 

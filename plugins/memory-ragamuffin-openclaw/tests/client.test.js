@@ -100,7 +100,7 @@ describe("MCPClient", () => {
 
   describe("listTools", () => {
     it("returns tools from server and caches them", async () => {
-      const toolList = [{ name: "ragamuffin_recall", description: "Search" }];
+      const toolList = [{ name: "memory.recall", description: "Search" }];
       let callCount = 0;
       mockFetchHandler((url, opts) => {
         callCount++;
@@ -118,7 +118,7 @@ describe("MCPClient", () => {
 
       const t1 = await client.listTools();
       assert.equal(t1.length, 1);
-      assert.equal(t1[0].name, "ragamuffin_recall");
+      assert.equal(t1[0].name, "memory.recall");
       // Second call uses cache
       const t2 = await client.listTools();
       assert.equal(callCount, 1); // no extra fetch
@@ -142,9 +142,9 @@ describe("MCPClient", () => {
         });
       });
 
-      const result = await client.call("ragamuffin_recall", { query: "test", vault: "agent::dev" });
+      const result = await client.call("memory.recall", { query: "test", vault: "agent::dev" });
       assert.equal(capturedBody.method, "tools/call");
-      assert.equal(capturedBody.params.name, "ragamuffin_recall");
+      assert.equal(capturedBody.params.name, "memory.recall");
       assert.equal(capturedBody.params.arguments.query, "test");
       assert.ok(result.content);
     });
@@ -152,7 +152,7 @@ describe("MCPClient", () => {
     it("throws on MCP error response", async () => {
       mockRespond(null, { message: "query is required", code: -32602 });
       await assert.rejects(
-        () => client.call("ragamuffin_recall", {}),
+        () => client.call("memory.recall", {}),
         /query is required/,
       );
     });
@@ -160,7 +160,7 @@ describe("MCPClient", () => {
     it("throws on network error", async () => {
       mockFetchReject(new Error("fetch failed"));
       await assert.rejects(
-        () => client.call("ragamuffin_recall", { query: "test" }),
+        () => client.call("memory.recall", { query: "test" }),
         /fetch failed/,
       );
     });
@@ -202,7 +202,7 @@ describe("MCPClient", () => {
         });
       });
 
-      await authed.call("ragamuffin_recall", { query: "test" });
+      await authed.call("memory.recall", { query: "test" });
       assert.equal(capturedHeaders["Authorization"], "Bearer sekret");
     });
 
@@ -218,7 +218,7 @@ describe("MCPClient", () => {
         });
       });
 
-      await client.call("ragamuffin_recall", { query: "test" });
+      await client.call("memory.recall", { query: "test" });
       assert.equal(capturedHeaders["Authorization"], undefined);
     });
   });
