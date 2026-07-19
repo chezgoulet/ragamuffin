@@ -139,6 +139,118 @@ func TestLexicalIndexEmpty(t *testing.T) {
 	}
 }
 
+func TestFuseWeightedPreservesTopItems(t *testing.T) {
+	// Weighted heavily toward list A: item 'a' from A at rank 1 should dominate.
+	a := []string{"a", "c"}
+	b := []string{"b", "a"}
+	got := FuseWeighted([][]string{a, b}, []float64{0.9, 0.1}, 60)
+	if len(got) == 0 || got[0].ID != "a" {
+		t.Errorf("expected 'a' first with 0.9 weight, got %+v", got)
+	}
+}
+
+func TestFuseWeightedEqualWeight(t *testing.T) {
+	a := []string{"x", "y"}
+	b := []string{"y", "z"}
+	got := FuseWeighted([][]string{a, b}, []float64{0.5, 0.5}, 60)
+	// x: 1/61*0.5, y: 1/62*0.5 + 1/61*0.5, z: 1/62*0.5
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(got))
+	}
+	if got[0].ID != "y" {
+		t.Errorf("expected 'y' first (in both lists), got %q", got[0].ID)
+	}
+}
+
+func TestFuseWeightedMismatchedLengths(t *testing.T) {
+	// When lengths don't match, fall back to standard Fuse.
+	a := []string{"a", "b"}
+	b := []string{"c", "d"}
+	got := FuseWeighted([][]string{a, b}, []float64{1.0}, 60)
+	if len(got) != 4 {
+		t.Errorf("fallback should fuse all, got %d results", len(got))
+	}
+}
+
+func TestFuseAdaptiveEqualMeans(t *testing.T) {
+	// Both lists have similar mean scores → 50/50 weighting.
+	dense := []RankedID{{ID: "a", Score: 0.9}, {ID: "b", Score: 0.5}, {ID: "c", Score: 0.3}}
+	lexical := []RankedID{{ID: "a", Score: 0.8}, {ID: "d", Score: 0.4}, {ID: "c", Score: 0.2}}
+	got := FuseAdaptive(dense, lexical, 60)
+	if len(got) == 0 {
+		t.Fatal("expected results")
+	}
+	// a should be first (in both lists).
+	if got[0].ID != "a" {
+		t.Errorf("expected 'a' first, got %q", got[0].ID)
+	}
+}
+
+func TestFuseAdaptiveLowOverlap(t *testing.T) {
+	// No overlap → weight by length (3:2 = 60/40 dense).
+	dense := []RankedID{{ID: "a", Score: 0.95}, {ID: "b", Score: 0.90}, {ID: "c", Score: 0.85}}
+	lexical := []RankedID{{ID: "d", Score: 0.15}, {ID: "e", Score: 0.10}}
+	got := FuseAdaptive(dense, lexical, 60)
+	if len(got) == 0 {
+		t.Fatal("expected results")
+	}
+	// With 60/40 weighting, a at rank 1 gets 0.6/61 + 0 = ~0.0098,
+	// d at rank 1 gets 0.4/61 = ~0.0066, so a > d.
+	if got[0].ID != "a" {
+		t.Errorf("expected 'a' first, got %q", got[0].ID)
+	}
+}
+
+func TestFuseAdaptiveHighOverlap(t *testing.T) {
+	// 50% overlap → 50/50 weighting.
+	dense := []RankedID{{ID: "a", Score: 0.9}, {ID: "b", Score: 0.8}}
+	lexical := []RankedID{{ID: "a", Score: 0.7}, {ID: "c", Score: 0.6}}
+	got := FuseAdaptive(dense, lexical, 60)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(got))
+	}
+	// a appears in both → RRF sum ~= 1/61 + 1/61 = ~0.0328
+	if got[0].ID != "a" {
+		t.Errorf("expected 'a' first, got %q", got[0].ID)
+	}
+}
+
+func TestFuseAdaptiveEmptyLists(t *testing.T) {
+	got := FuseAdaptive(nil, []RankedID{{ID: "a", Score: 1.0}}, 60)
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("single non-empty list should return its items, got %+v", got)
+	}
+}
+
+func TestFuseAdaptiveEmptyBoth(t *testing.T) {
+	got := FuseAdaptive(nil, nil, 60)
+	if len(got) != 0 {
+		t.Errorf("both empty should return empty, got %+v", got)
+	}
+}
+
+func TestOverlapRatio(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b []string
+		want float64
+	}{
+		{"both empty", nil, nil, 0},
+		{"one empty", []string{"a"}, nil, 0},
+		{"no overlap", []string{"a", "b"}, []string{"c", "d"}, 0},
+		{"partial", []string{"a", "b", "c"}, []string{"b", "d"}, 0.5},
+		{"full", []string{"a", "b"}, []string{"a", "b"}, 1.0},
+		{"subset", []string{"a", "b", "c"}, []string{"a"}, 1.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := overlapRatio(tt.a, tt.b); got != tt.want {
+				t.Errorf("overlapRatio() = %f, want %f", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestLexicalIndexLimit(t *testing.T) {
 	idx := NewLexicalIndex()
 	idx.Build([]Doc{

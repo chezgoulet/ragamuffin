@@ -13,6 +13,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	pb "github.com/qdrant/go-client/qdrant"
 
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
@@ -204,7 +205,7 @@ func (s *Server) mcpToolsForProfile(profile string) []mcp.ToolDefinition {
 func (s *Server) mcpTools() []mcp.ToolDefinition {
 	return []mcp.ToolDefinition{
 		s.toolDef("recall",
-			"Search your knowledge base before starting work on any topic. Use this to check what's already known, find prior decisions, or locate relevant documentation. Returns ranked text chunks with source files and similarity scores.",
+			"Search your knowledge base before starting work on any topic. Use this to check what's already known, find prior decisions, or locate relevant documentation. Returns ranked text chunks with source files, similarity scores, and a query_type field (semantic/temporal/causal/entity/lookup).",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -619,8 +620,9 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 	}
 
 	return map[string]interface{}{
-		"results":   out,
-		"top_score": topScore,
+		"results":    out,
+		"top_score":  topScore,
+		"query_type": string(retrieval.ClassifyQuery(query)),
 	}, nil
 }
 

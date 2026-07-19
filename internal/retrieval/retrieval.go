@@ -367,6 +367,109 @@ func Hybrid(dense, lexical []string, k int) []RankedID {
 	return Fuse([]([]string){dense, lexical}, k)
 }
 
+// FuseWeighted is like Fuse but applies per-list weights to the reciprocal-rank
+// contribution. Lists and weights must have the same length. When all weights
+// are 1.0 the result is identical to Fuse. Weights are normalized to sum to 1.0
+// internally so they function as relative importance, not absolute scales.
+func FuseWeighted(lists [][]string, weights []float64, k int) []RankedID {
+	if len(lists) != len(weights) {
+		return Fuse(lists, k)
+	}
+	if k <= 0 {
+		k = 60
+	}
+
+	// Normalize weights to sum to 1.0.
+	weightSum := 0.0
+	for _, w := range weights {
+		weightSum += w
+	}
+	normalized := make([]float64, len(weights))
+	if weightSum > 0 {
+		for i, w := range weights {
+			normalized[i] = w / weightSum
+		}
+	} else {
+		for i := range weights {
+			normalized[i] = 1.0 / float64(len(weights))
+		}
+	}
+
+	scores := make(map[string]float32)
+	for listIdx, list := range lists {
+		w := normalized[listIdx]
+		for rank, id := range list {
+			scores[id] += float32(w) / float32(k+rank+1)
+		}
+	}
+	out := make([]RankedID, 0, len(scores))
+	for id, s := range scores {
+		out = append(out, RankedID{ID: id, Score: s})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
+	return out
+}
+
+// FuseAdaptive fuses two ranked lists using adaptive weights based on their
+// rank overlap. When the two lists share few items (overlap ratio < 0.3),
+// each list gets weight proportional to its length (longer list = more
+// confident). Otherwise both get 0.5 (standard RRF). dense and lexical carry
+// their retriever's raw scores; scores are used only for tiebreaking, not for
+// weight computation (since dense cosine and BM25 are on different scales).
+func FuseAdaptive(dense, lexical []RankedID, k int) []RankedID {
+	if k <= 0 {
+		k = 60
+	}
+
+	denseIDs := make([]string, len(dense))
+	for i, r := range dense {
+		denseIDs[i] = r.ID
+	}
+	lexicalIDs := make([]string, len(lexical))
+	for i, r := range lexical {
+		lexicalIDs[i] = r.ID
+	}
+
+	denseWeight := 0.5
+	lexicalWeight := 0.5
+
+	overlap := overlapRatio(denseIDs, lexicalIDs)
+	if overlap < 0.3 {
+		total := float64(len(dense) + len(lexical))
+		if total > 0 {
+			denseWeight = float64(len(dense)) / total
+			lexicalWeight = float64(len(lexical)) / total
+		}
+	}
+
+	return FuseWeighted([][]string{denseIDs, lexicalIDs}, []float64{denseWeight, lexicalWeight}, k)
+}
+
+// overlapRatio returns the fraction of items in the smaller list that also
+// appear in the larger list. 0 if either list is empty.
+func overlapRatio(a, b []string) float64 {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	// Build a set from the larger list for O(min(m,n)) lookup.
+	large := a
+	small := b
+	if len(b) > len(a) {
+		large, small = b, a
+	}
+	set := make(map[string]struct{}, len(large))
+	for _, id := range large {
+		set[id] = struct{}{}
+	}
+	shared := 0
+	for _, id := range small {
+		if _, ok := set[id]; ok {
+			shared++
+		}
+	}
+	return float64(shared) / float64(len(small))
+}
+
 // tokenizeText lowercases, splits on non-alphanumeric boundaries, drops
 // stopwords and single-character tokens.
 func tokenizeText(text string, stopwords map[string]struct{}) []string {
