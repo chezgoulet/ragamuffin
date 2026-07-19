@@ -60,6 +60,7 @@ func minimalConfig() *config.Config {
 		FactsCollection:     "test_facts",
 		FactsVectorSize:     4,
 		AutoProvisionVaults: false,
+		MCPToolPrefix:       "memory.",
 	}
 }
 
@@ -70,38 +71,38 @@ func TestMCPTools_Definitions(t *testing.T) {
 	tools := srv.mcpTools()
 
 	expectedNames := []string{
-		"ragamuffin_recall",
-		"ragamuffin_ask",
-		"ragamuffin_store",
-		"ragamuffin_draft",
-		"ragamuffin_fact_get",
-		"ragamuffin_fact_put",
-		"ragamuffin_fact_list",
-		"ragamuffin_fact_delete",
-		"ragamuffin_fact_graph",
-		"ragamuffin_fact_history",
-		"ragamuffin_fact_provenance",
-		"ragamuffin_review",
-		"ragamuffin_hybrid_search",
-		"ragamuffin_verify",
-		"ragamuffin_context_bundle",
-		"ragamuffin_dialectic",
-		"ragamuffin_peer_list",
-		"ragamuffin_briefing",
-		"ragamuffin_changes",
-		"ragamuffin_contradictions",
-		"ragamuffin_links",
-		"ragamuffin_graph_entity",
-		"ragamuffin_graph_edges",
-		"ragamuffin_graph_communities",
-		"ragamuffin_audit",
-		"ragamuffin_stats",
-		"ragamuffin_status",
-		"ragamuffin_session_create",
-		"ragamuffin_session_get",
-		"ragamuffin_session_list",
-		"ragamuffin_get_chunk",
-		"ragamuffin_turn_append",
+		"memory.recall",
+		"memory.ask",
+		"memory.store",
+		"memory.draft",
+		"memory.fact_get",
+		"memory.fact_put",
+		"memory.fact_list",
+		"memory.fact_delete",
+		"memory.fact_graph",
+		"memory.fact_history",
+		"memory.fact_provenance",
+		"memory.review",
+		"memory.hybrid_search",
+		"memory.verify",
+		"memory.context_bundle",
+		"memory.dialectic",
+		"memory.peer_list",
+		"memory.briefing",
+		"memory.changes",
+		"memory.contradictions",
+		"memory.links",
+		"memory.graph_entity",
+		"memory.graph_edges",
+		"memory.graph_communities",
+		"memory.audit",
+		"memory.stats",
+		"memory.status",
+		"memory.session_create",
+		"memory.session_get",
+		"memory.session_list",
+		"memory.get_chunk",
+		"memory.turn_append",
 	}
 
 	if len(tools) != len(expectedNames) {
@@ -163,39 +164,38 @@ func TestMCPDispatch_RoutesCorrectly(t *testing.T) {
 		wantErr  bool
 		errMsg   string
 	}{
-		{"ragamuffin_recall", true, "query is required"},
-		{"ragamuffin_ask", true, "query is required"},
-		{"ragamuffin_store", true, "content is required"},
-		{"ragamuffin_draft", true, "title is required"},
-		{"ragamuffin_facts", true, "operation is required: list or upsert"},
-		{"ragamuffin_fact_get", true, "key is required"},
-		{"ragamuffin_fact_put", true, "both key and value are required"},
-		{"ragamuffin_fact_list", false, ""},
-		{"ragamuffin_fact_delete", true, "key is required"},
-		{"ragamuffin_fact_graph", true, "key is required"},
-		{"ragamuffin_fact_history", true, "key is required"},
-		{"ragamuffin_fact_provenance", true, "key is required"},
-		{"ragamuffin_review", false, ""},
-		{"ragamuffin_hybrid_search", true, "query, key, or prefix is required"},
-		{"ragamuffin_verify", true, "fact is required"},
-		{"ragamuffin_context_bundle", false, ""},
-		{"ragamuffin_dialectic", false, ""},
-		{"ragamuffin_peer_list", false, ""},
-		{"ragamuffin_briefing", false, ""},
-		{"ragamuffin_changes", false, ""},
-		{"ragamuffin_contradictions", false, ""},
-		{"ragamuffin_links", false, ""},
-		{"ragamuffin_graph_entity", true, "entity_id is required"},
-		{"ragamuffin_graph_edges", true, "graph store not configured"},
-		{"ragamuffin_graph_communities", true, "graph store not configured"},
-		{"ragamuffin_audit", false, ""},
-		{"ragamuffin_stats", false, ""},
-		{"ragamuffin_status", false, ""},
-		{"ragamuffin_session_create", true, "agent_id is required"},
-		{"ragamuffin_session_get", true, "session_id is required"},
-		{"ragamuffin_session_list", false, ""},
-		{"ragamuffin_get_chunk", true, "chunk_id is required"},
-		{"ragamuffin_turn_append", true, "session_id is required"},
+		{"memory.recall", true, "query is required"},
+		{"memory.ask", true, "query is required"},
+		{"memory.store", true, "content is required"},
+		{"memory.draft", true, "title is required"},
+		{"memory.fact_get", true, "key is required"},
+		{"memory.fact_put", true, "both key and value are required"},
+		{"memory.fact_list", false, ""},
+		{"memory.fact_delete", true, "key is required"},
+		{"memory.fact_graph", true, "key is required"},
+		{"memory.fact_history", true, "key is required"},
+		{"memory.fact_provenance", true, "key is required"},
+		{"memory.review", false, ""},
+		{"memory.hybrid_search", true, "query, key, or prefix is required"},
+		{"memory.verify", true, "fact is required"},
+		{"memory.context_bundle", false, ""},
+		{"memory.dialectic", false, ""},
+		{"memory.peer_list", false, ""},
+		{"memory.briefing", false, ""},
+		{"memory.changes", false, ""},
+		{"memory.contradictions", false, ""},
+		{"memory.links", false, ""},
+		{"memory.graph_entity", true, "entity_id is required"},
+		{"memory.graph_edges", true, "graph store not configured"},
+		{"memory.graph_communities", true, "graph store not configured"},
+		{"memory.audit", false, ""},
+		{"memory.stats", false, ""},
+		{"memory.status", false, ""},
+		{"memory.session_create", true, "agent_id is required"},
+		{"memory.session_get", true, "session_id is required"},
+		{"memory.session_list", false, ""},
+		{"memory.get_chunk", true, "chunk_id is required"},
+		{"memory.turn_append", true, "session_id is required"},
 	}
 
 	for _, tt := range tests {
@@ -266,7 +266,7 @@ func TestMCPDispatch_ScopeDenied(t *testing.T) {
 	})
 
 	// Try to mcpRecall against "test-vault" — should be denied by scope
-	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+	_, err := srv.mcpDispatch(ctx, "memory.recall", map[string]interface{}{
 		"query": "test",
 		"vault": "test-vault",
 	})
@@ -290,7 +290,7 @@ func TestMCPDispatch_ScopeAllowed(t *testing.T) {
 	// The test-vault exists (added in newMCPTestServer), so this should
 	// proceed past the scope check to the actual handler (which will fail
 	// on missing query field). We just want to confirm no scope denial.
-	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+	_, err := srv.mcpDispatch(ctx, "memory.recall", map[string]interface{}{
 		"query": "test",
 		"vault": "test-vault",
 	})
@@ -309,7 +309,7 @@ func TestMCPDispatch_UnscopedClaimsAlwaysAccess(t *testing.T) {
 		// Vaults is nil = unrestricted
 	})
 
-	_, err := srv.mcpDispatch(ctx, "ragamuffin_recall", map[string]interface{}{
+	_, err := srv.mcpDispatch(ctx, "memory.recall", map[string]interface{}{
 		"query": "test",
 		"vault": "test-vault",
 	})
@@ -322,7 +322,7 @@ func TestMCPDispatch_UnscopedClaimsAlwaysAccess(t *testing.T) {
 
 func TestMCPRecall_MissingQuery(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_recall", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.recall", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing query")
 	}
@@ -333,7 +333,7 @@ func TestMCPRecall_MissingQuery(t *testing.T) {
 
 func TestMCPRecall_InvalidDetail(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_recall", map[string]interface{}{
+	_, err := srv.mcpDispatch(context.Background(), "memory.recall", map[string]interface{}{
 		"query":  "test",
 		"detail": "l3",
 	})
@@ -349,7 +349,7 @@ func TestMCPRecall_InvalidDetail(t *testing.T) {
 
 func TestMCPAsk_MissingQuery(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_ask", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.ask", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing query")
 	}
@@ -360,7 +360,7 @@ func TestMCPAsk_MissingQuery(t *testing.T) {
 
 func TestMCPAsk_DefaultMode(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_ask", map[string]interface{}{
+	_, err := srv.mcpDispatch(context.Background(), "memory.ask", map[string]interface{}{
 		"query": "test question",
 	})
 	if err == nil {
@@ -389,57 +389,11 @@ func TestMCPStore_ArgsPassThrough(t *testing.T) {
 }
 
 // ── Adapter: mcpFacts ─────────────────────────────────────────────────────────
-
-func TestMCPFacts_MissingOperation(t *testing.T) {
-	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_facts", map[string]interface{}{})
-	if err == nil {
-		t.Fatal("expected error for missing operation")
-	}
-	if err.Error() != "operation is required: list or upsert" {
-		t.Errorf("expected operation validation error, got %q", err.Error())
-	}
-}
-
-func TestMCPFacts_InvalidOperation(t *testing.T) {
-	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_facts", map[string]interface{}{
-		"operation": "delete",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid operation")
-	}
-	if err.Error() != `unknown operation: "delete" (expected list or upsert)` {
-		t.Errorf("expected operation validation error, got %q", err.Error())
-	}
-}
-
-func TestMCPFacts_List_DefaultLimit(t *testing.T) {
-	srv := newMCPTestServer(t)
-	result, err := srv.mcpDispatch(context.Background(), "ragamuffin_facts", map[string]interface{}{
-		"operation": "list",
-	})
-	if err != nil {
-		if err.Error() == "limit is required" {
-			t.Error("limit should default to 100 without argument")
-		}
-		return
-	}
-	resp, ok := result.(map[string]interface{})
-	if !ok {
-		t.Fatal("expected map result")
-	}
-	facts, _ := resp["facts"].([]interface{})
-	if len(facts) != 0 {
-		t.Errorf("expected empty facts list, got %d facts", len(facts))
-	}
-}
-
 // ── Adapter: mcpAudit ─────────────────────────────────────────────────────────
 
 func TestMCPAudit_SucceedsWithDefaults(t *testing.T) {
 	srv := newMCPTestServer(t)
-	result, err := srv.mcpDispatch(context.Background(), "ragamuffin_audit", map[string]interface{}{})
+	result, err := srv.mcpDispatch(context.Background(), "memory.audit", map[string]interface{}{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -459,7 +413,7 @@ func TestMCPAudit_SucceedsWithDefaults(t *testing.T) {
 
 func TestMCPGraphEntity_NoEntityID(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_entity", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.graph_entity", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error — entity_id is required")
 	}
@@ -467,7 +421,7 @@ func TestMCPGraphEntity_NoEntityID(t *testing.T) {
 
 func TestMCPGraphEdges_NoGraphStore(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_edges", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.graph_edges", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error — graph store not configured")
 	}
@@ -475,7 +429,7 @@ func TestMCPGraphEdges_NoGraphStore(t *testing.T) {
 
 func TestMCPGraphCommunities_NoGraphStore(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_graph_communities", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.graph_communities", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error — graph store not configured")
 	}
@@ -485,7 +439,7 @@ func TestMCPGraphCommunities_NoGraphStore(t *testing.T) {
 
 func TestMCPDraft_ArgsPassThrough(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_draft", map[string]interface{}{
+	_, err := srv.mcpDispatch(context.Background(), "memory.draft", map[string]interface{}{
 		"title":       "Test Doc",
 		"content":     "Hello world",
 		"target_path": "test.md",
@@ -503,7 +457,7 @@ func TestMCPDraft_ArgsPassThrough(t *testing.T) {
 
 func TestMCPSessionCreate_MissingArgs(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_session_create", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.session_create", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing args")
 	}
@@ -516,7 +470,7 @@ func TestMCPSessionCreate_MissingArgs(t *testing.T) {
 
 func TestMCPSessionGet_MissingSessionID(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_session_get", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.session_get", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing session_id")
 	}
@@ -549,7 +503,7 @@ func TestMCPTurnAppend_MissingRequired(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := srv.mcpDispatch(context.Background(), "ragamuffin_turn_append", tt.args)
+			_, err := srv.mcpDispatch(context.Background(), "memory.turn_append", tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -564,7 +518,7 @@ func TestMCPTurnAppend_MissingRequired(t *testing.T) {
 
 func TestMCPGetChunk_MissingChunkID(t *testing.T) {
 	srv := newMCPTestServer(t)
-	_, err := srv.mcpDispatch(context.Background(), "ragamuffin_get_chunk", map[string]interface{}{})
+	_, err := srv.mcpDispatch(context.Background(), "memory.get_chunk", map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected error for missing chunk_id")
 	}
