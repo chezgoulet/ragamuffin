@@ -43,29 +43,54 @@ var ln2 = math.Ln2
 // It reuses the same signals as computeImportance so decay and importance stay
 // consistent.
 func stabilityMultiplier(payload map[string]*qdrant.Value) float64 {
-	accessCount := qutil.GetPayloadIntValue(payload, "access_count")
-	// Diminishing returns: log growth, ~+1 per order of magnitude of accesses.
-	accessBoost := math.Log1p(float64(accessCount)) // 0 at 0, ~2.4 at 10, ~4.6 at 100
-
-	confirmations := qutil.GetPayloadIntValue(payload, "confirmation_count")
-	confirmBoost := math.Log1p(float64(confirmations)) * 1.5
-
-	confidence := normalizeConfidence(qutil.GetPayloadFloatValue(payload, "confidence"))
-	// Confidence in [0,1] contributes up to ~2x on its own.
-	confidenceBoost := confidence * 2.0
-
-	// A configured TTL signals intended durability; long TTLs add stability.
-	ttlDays := qutil.GetPayloadIntValue(payload, "ttl_days")
-	ttlBoost := 0.0
-	if ttlDays > 0 {
-		ttlBoost = math.Min(float64(ttlDays)/DefaultHalfLifeDays, 3.0)
-	}
-
-	mult := 1.0 + accessBoost + confirmBoost + confidenceBoost + ttlBoost
-	if mult < 1.0 {
-		mult = 1.0
-	}
+	mult := 1.0
+	mult += sourceTypeStability(payload)
+	mult += accessStability(payload)
+	mult += confirmStability(payload)
+	mult += confidenceStability(payload)
+	mult += ttlStability(payload)
 	return math.Min(mult, maxStabilityMultiplier)
+}
+
+// sourceTypeStability returns the stability factor from source type.
+// Schema facts decay slowest, consolidation facts slower, episodic fastest.
+func sourceTypeStability(payload map[string]*qdrant.Value) float64 {
+	st := qutil.GetPayloadStringValue(payload, "source_type")
+	switch st {
+	case "schema":
+		return 7.0 // slowest decay — extracted principles
+	case "consolidation":
+		return 3.0 // moderate — session gists
+	default:
+		return 0 // episodic — base rate
+	}
+}
+
+// accessStability returns boost from access_count log-diminished.
+func accessStability(payload map[string]*qdrant.Value) float64 {
+	accessCount := qutil.GetPayloadIntValue(payload, "access_count")
+	return math.Log1p(float64(accessCount))
+}
+
+// confirmStability returns boost from confirmation_count.
+func confirmStability(payload map[string]*qdrant.Value) float64 {
+	confirmations := qutil.GetPayloadIntValue(payload, "confirmation_count")
+	return math.Log1p(float64(confirmations)) * 1.5
+}
+
+// confidenceStability returns boost from confidence.
+func confidenceStability(payload map[string]*qdrant.Value) float64 {
+	confidence := normalizeConfidence(qutil.GetPayloadFloatValue(payload, "confidence"))
+	return confidence * 2.0
+}
+
+// ttlStability returns boost from a configured TTL.
+func ttlStability(payload map[string]*qdrant.Value) float64 {
+	ttlDays := qutil.GetPayloadIntValue(payload, "ttl_days")
+	if ttlDays > 0 {
+		return math.Min(float64(ttlDays)/DefaultHalfLifeDays, 3.0)
+	}
+	return 0
 }
 
 // normalizeConfidence maps a raw confidence value (0-1 float or 1-10 integer
