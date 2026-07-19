@@ -23,16 +23,17 @@ type CloudEvent struct {
 
 // Event types Ragamuffin emits.
 const (
-	TypeFileChanged     = "vault.file.changed"
-	TypeFileDeleted     = "vault.file.deleted"
-	TypeCollectionIndex = "vault.collection.reindexed"
-	TypeServerStarted   = "ragamuffin.started"
-	TypeServerHealthy   = "ragamuffin.healthy"
-	TypeFactCreated     = "fact.created"
-	TypeFactFlagged     = "fact.flagged"
-	TypeFactReviewed    = "fact.reviewed"
-	TypePrunerComplete  = "pruner.scan.complete"
-	TypeQueryProcessed  = "query.processed"
+	TypeFileChanged        = "vault.file.changed"
+	TypeFileDeleted        = "vault.file.deleted"
+	TypeCollectionIndex    = "vault.collection.reindexed"
+	TypeServerStarted      = "ragamuffin.started"
+	TypeServerHealthy      = "ragamuffin.healthy"
+	TypeFactCreated        = "fact.created"
+	TypeFactFlagged        = "fact.flagged"
+	TypeFactReviewed       = "fact.reviewed"
+	TypePrunerComplete     = "pruner.scan.complete"
+	TypeQueryProcessed     = "query.processed"
+	TypeFactReconsolidated = "fact.reconsolidated"
 
 	TypeGraphCommunityDetected = "graph.community.detected"
 )
@@ -101,6 +102,17 @@ type ServerStartedData struct {
 	GoVersion string `json:"go_version"`
 	Host      string `json:"host"`
 	Port      string `json:"port"`
+}
+
+// FactReconsolidatedData is the payload for fact.reconsolidated (B6).
+type FactReconsolidatedData struct {
+	Key            string  `json:"key"`
+	PE             float64 `json:"pe"`
+	Classification string  `json:"classification"`
+	OldValue       string  `json:"old_value"`
+	NewValue       string  `json:"new_value"`
+	Vault          string  `json:"vault,omitempty"`
+	DryRun         bool    `json:"dry_run"`
 }
 
 // QueryProcessedData is the payload for query.processed (#802).

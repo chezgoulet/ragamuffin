@@ -15,6 +15,7 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/retrieval"
@@ -1404,6 +1405,39 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		created = true
 	}
 
+	// Prediction-error reconsolidation (B6): compute how much the new value
+	// differs from the existing one. Always emits a CloudEvent; side effects
+	// (auto-confirm, flag for review) only happen when dry-run is off.
+	var oldValue string
+	var pe float64
+	var peClassification string
+	var peEmitted bool
+	if exists {
+		oldValue = s.fetchExistingFactValue(ctx, key)
+		pe = computePE(oldValue, value)
+		peClassification = classifyPE(pe, PEThresholds{
+			Reinforce: s.cfg.PEReinforceThreshold,
+			Minor:     s.cfg.PEMinorThreshold,
+			Major:     s.cfg.PEMajorThreshold,
+		})
+		vault := vaultFromContext(ctx)
+		if s.emitter != nil {
+			s.emitter.Emit(events.TypeFactReconsolidated, events.FactReconsolidatedData{
+				Key:            key,
+				PE:             pe,
+				Classification: peClassification,
+				OldValue:       oldValue,
+				NewValue:       value,
+				Vault:          vault,
+				DryRun:         s.cfg.PEDryRun,
+			})
+			peEmitted = true
+		}
+		s.log(ctx).Info("prediction error computed",
+			"key", key, "pe", pe, "classification", peClassification,
+			"dry_run", s.cfg.PEDryRun, "vault", vault)
+	}
+
 	// Build the fact payload (mirrors handleFactsPost's lifecycle field preservation)
 	now := time.Now().UTC().Format(time.RFC3339)
 	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
@@ -1443,6 +1477,20 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 	}
 	if confirmationCount <= 0 {
 		confirmationCount = 1
+	}
+
+	// Non-dry-run PE side effects: auto-confirm on reinforcement,
+	// flag for review on major-update.
+	if peEmitted && !s.cfg.PEDryRun {
+		switch peClassification {
+		case PEReinforcement:
+			confirmationCount++
+			lastConfirmedAt = now
+			s.log(ctx).Info("pe auto-confirm", "key", key, "confirmation_count", confirmationCount)
+		case PEMajorUpdate:
+			status = "needs_review"
+			s.log(ctx).Info("pe flagged for review", "key", key)
+		}
 	}
 
 	if confidence < 0 || confidence > 1.0 {

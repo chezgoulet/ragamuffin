@@ -183,6 +183,17 @@ type Config struct {
 	ReconsolidationEnabled bool
 	ReconsolidationWindow  time.Duration // default 30m when enabled
 
+	// Prediction-error reconsolidation (B6). When a fact is updated, computes
+	// the prediction error between the old and new values using normalized
+	// Levenshtein distance. In dry-run mode (default) PE is logged and emitted
+	// as a CloudEvent but no side effects occur. With dry-run off, low-PE
+	// updates auto-confirm and high-PE updates flag for review.
+	PEDryRun             bool
+	PEReinforceThreshold float64 // below this → reinforcement (default 0.1)
+	PEMinorThreshold     float64 // below this → minor-update (default 0.4)
+	PEMajorThreshold     float64 // below this → major-update (default 0.7)
+	// Above PEMajorThreshold → new-learning
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
@@ -441,6 +452,17 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_RECONSOLIDATION_WINDOW must be positive when reconsolidation is enabled")
 	}
 
+	// PE thresholds must be monotonic: 0 ≤ reinforce < minor < major ≤ 1.
+	if c.PEReinforceThreshold < 0 || c.PEReinforceThreshold >= c.PEMinorThreshold {
+		errs = append(errs, "RAGAMUFFIN_PE_REINFORCE_THRESHOLD must be >= 0 and < PE_MINOR_THRESHOLD")
+	}
+	if c.PEMinorThreshold >= c.PEMajorThreshold {
+		errs = append(errs, "RAGAMUFFIN_PE_MINOR_THRESHOLD must be < PE_MAJOR_THRESHOLD")
+	}
+	if c.PEMajorThreshold > 1.0 {
+		errs = append(errs, "RAGAMUFFIN_PE_MAJOR_THRESHOLD must be <= 1.0")
+	}
+
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
 	case "none", "api_key", "jwt", "oidc":
@@ -603,6 +625,11 @@ func Load() (*Config, error) {
 
 		ReconsolidationEnabled: envBool("RAGAMUFFIN_RECONSOLIDATION_ENABLED"),
 		ReconsolidationWindow:  envDuration("RAGAMUFFIN_RECONSOLIDATION_WINDOW", 30*time.Minute),
+
+		PEDryRun:             envOrDefault("RAGAMUFFIN_PE_DRY_RUN", "true") == "true",
+		PEReinforceThreshold: envFloat("RAGAMUFFIN_PE_REINFORCE_THRESHOLD", 0.1),
+		PEMinorThreshold:     envFloat("RAGAMUFFIN_PE_MINOR_THRESHOLD", 0.4),
+		PEMajorThreshold:     envFloat("RAGAMUFFIN_PE_MAJOR_THRESHOLD", 0.7),
 
 		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
