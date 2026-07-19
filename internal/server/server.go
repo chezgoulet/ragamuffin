@@ -382,7 +382,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/snapshot", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/snapshot", s.handleSnapshot))))
 
 	// MCP bolt-on
-	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
+	s.mcpHandler = mcp.New(s.mcpToolsForProfile(s.cfg.MCPProfile), s.mcpDispatch, s.logger, Version)
 	s.mcpHandler.SetNotificationHandler(context.Background(), func(ctx context.Context, method string, params json.RawMessage) error {
 		switch method {
 		case "notifications/session_end":
