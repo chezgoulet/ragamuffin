@@ -53,9 +53,21 @@ func hasTemporalSignal(lq string) bool {
 		"this week", "this month", "this year",
 		"recent", "recently", "past", "upcoming",
 		"schedule", "timeline", "deadline",
+		"ago", "since", "before", "after",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lq, kw) {
+			return true
+		}
+	}
+
+	// Day-of-week names
+	days := []string{
+		"monday", "tuesday", "wednesday", "thursday",
+		"friday", "saturday", "sunday",
+	}
+	for _, d := range days {
+		if strings.Contains(lq, d) {
 			return true
 		}
 	}
@@ -64,9 +76,18 @@ func hasTemporalSignal(lq string) bool {
 	months := []string{
 		"january", "february", "march", "april", "may", "june",
 		"july", "august", "september", "october", "november", "december",
+		"jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
 	}
 	for _, m := range months {
 		if strings.Contains(lq, m) {
+			return true
+		}
+	}
+
+	// "planned" and "quarter" are common in business temporal queries
+	more := []string{"planned", "quarter"}
+	for _, w := range more {
+		if strings.Contains(lq, w) {
 			return true
 		}
 	}
@@ -81,6 +102,8 @@ func hasCausalSignal(lq string) bool {
 		"reason", "reasons", "result", "results", "resulted",
 		"led to", "lead to", "leads to",
 		"impact", "effect", "affect", "consequence",
+		"due to", "therefore", "consequently", "hence",
+		"as a result",
 	}
 	for _, kw := range keywords {
 		if strings.Contains(lq, kw) {
@@ -111,9 +134,20 @@ func hasEntitySignal(q, lq string) bool {
 			continue
 		}
 		if len(w) >= 2 && unicode.IsUpper(rune(w[0])) {
-			// Skip common sentence-start patterns that aren't entities
+			// Skip common words that aren't entities
 			lower := strings.ToLower(w)
-			if lower == "the" || lower == "a" || lower == "an" || lower == "this" || lower == "that" {
+			skipWords := map[string]bool{
+				"the": true, "a": true, "an": true,
+				"this": true, "that": true, "these": true, "those": true,
+				"is": true, "are": true, "was": true, "were": true,
+				"do": true, "does": true, "did": true,
+				"can": true, "could": true, "will": true, "would": true,
+				"should": true, "may": true, "might": true, "must": true,
+				"my": true, "our": true, "your": true, "its": true, "their": true,
+				"me": true, "we": true, "he": true, "she": true, "it": true,
+				"they": true, "us": true, "him": true, "her": true, "them": true,
+			}
+			if skipWords[lower] {
 				continue
 			}
 			return true
@@ -132,7 +166,14 @@ func hasLookupSignal(lq string) bool {
 		after = strings.TrimPrefix(after, "what are ")
 		after = strings.TrimSpace(after)
 		// Check for article + abstract adjective markers
-		abstractPrefixes := []string{"a ", "an ", "the best", "the proper", "the correct", "the right", "the most"}
+		abstractPrefixes := []string{
+			"a ", "an ",
+			"the best", "the proper", "the correct", "the right", "the most",
+			"the difference", "the purpose", "the meaning", "the relationship",
+			"the recommended", "the ideal", "the standard", "the fastest",
+			"the safest", "the key", "the common", "the preferred", "the optimal",
+			"the main", "the primary", "the typical", "the usual", "the expected",
+		}
 		for _, ap := range abstractPrefixes {
 			if strings.HasPrefix(after, ap) {
 				return false

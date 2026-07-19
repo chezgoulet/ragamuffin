@@ -414,8 +414,9 @@ func FuseWeighted(lists [][]string, weights []float64, k int) []RankedID {
 // rank overlap. When the two lists share few items (overlap ratio < 0.3),
 // each list gets weight proportional to its length (longer list = more
 // confident). Otherwise both get 0.5 (standard RRF). dense and lexical carry
-// their retriever's raw scores; scores are used only for tiebreaking, not for
-// weight computation (since dense cosine and BM25 are on different scales).
+// their retriever's raw scores; scores are passed through for metadata but not
+// used in weight computation (since dense cosine and BM25 are on different
+// scales). Weights are determined by rank overlap, not by scores.
 func FuseAdaptive(dense, lexical []RankedID, k int) []RankedID {
 	if k <= 0 {
 		k = 60

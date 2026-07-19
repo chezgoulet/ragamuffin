@@ -233,9 +233,9 @@ func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb
 }
 
 // hybridRecall fuses dense semantic + lexical BM25 results via adaptive-weight
-// Reciprocal Rank Fusion. When the mean score delta between retrievers exceeds
-// 0.3 the stronger retriever gets 0.7 weight (vs 0.5/0.5 otherwise), improving
-// precision when one ranker is clearly more confident. Cormack et al., SIGIR 2009.
+// Reciprocal Rank Fusion. When the two rankers have low rank overlap (ratio
+// < 0.3), each gets weight proportional to its length; otherwise both get
+// 0.5 (standard RRF). Cormack et al., SIGIR 2009.
 func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	vault := vaultFromContext(ctx)
 	if vault == "" {

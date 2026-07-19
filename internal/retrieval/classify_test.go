@@ -1,6 +1,7 @@
 package retrieval
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -101,6 +102,10 @@ func TestClassifyQuerySemantic(t *testing.T) {
 	}{
 		{"how does the authentication flow work", QuerySemantic},
 		{"what is the best practice for error handling", QuerySemantic},
+		{"what is the difference between postgres and mysql", QuerySemantic},
+		{"what is the purpose of the config file", QuerySemantic},
+		{"what is the recommended approach for error handling", QuerySemantic},
+		{"how can we improve the pipeline", QuerySemantic},
 		{"explain the architecture", QuerySemantic},
 		{"", QuerySemantic},
 	}
@@ -110,6 +115,22 @@ func TestClassifyQuerySemantic(t *testing.T) {
 				t.Errorf("ClassifyQuery(%q) = %q, want %q", tt.query, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestClassifyQueryAllUppercase(t *testing.T) {
+	if got := ClassifyQuery("WHEN WAS THE DEPLOYMENT"); got != QueryTemporal {
+		t.Errorf("uppercase temporal: got %q, want %q", got, QueryTemporal)
+	}
+}
+
+func TestClassifyQueryLongQuery(t *testing.T) {
+	// Build a long query that still classifies based on its first keyword.
+	base := "when did we migrate"
+	padding := strings.Repeat(" x ", 10000)
+	got := ClassifyQuery(base + padding)
+	if got != QueryTemporal {
+		t.Errorf("long query with temporal signal: got %q, want %q", got, QueryTemporal)
 	}
 }
 

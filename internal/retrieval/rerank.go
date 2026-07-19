@@ -115,6 +115,10 @@ func snippet(s string) string {
 // The fetchMultiplier (default 2.0) governs the top_k × N window used:
 // we request top_k × fetchMultiplier results, apply the boost, then keep top_k.
 // A nil accessCounts map or empty results returns the input unchanged.
+//
+// Forward-declared utility: AccessBoost requires payload access for access_count
+// which the current recall pipeline doesn't expose. Integration into the
+// pipeline (wiring in doRecall or rerankIfRequested) is deferred to a follow-up.
 func AccessBoost(ranked []RankedID, accessCounts map[string]int64, topK int, fetchMultiplier float64) []RankedID {
 	if len(ranked) == 0 || len(accessCounts) == 0 {
 		return ranked
@@ -130,7 +134,7 @@ func AccessBoost(ranked []RankedID, accessCounts map[string]int64, topK int, fet
 	for i, r := range ranked[:fetchWindow] {
 		boost := 0.0
 		if count, ok := accessCounts[r.ID]; ok && count > 0 {
-			// Logarithmic boost: ~+0.3 at 1 access, ~+1.0 at 10, ~+2.0 at 100
+			// Logarithmic boost: ~+0.21 at 1 access, ~+0.72 at 10, ~+1.38 at 100
 			boost = math.Log1p(float64(count)) * 0.3
 		}
 		boosted[i] = RankedID{ID: r.ID, Score: max(r.Score, r.Score+float32(boost))}

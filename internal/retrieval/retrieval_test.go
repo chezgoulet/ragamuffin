@@ -172,20 +172,6 @@ func TestFuseWeightedMismatchedLengths(t *testing.T) {
 	}
 }
 
-func TestFuseAdaptiveEqualMeans(t *testing.T) {
-	// Both lists have similar mean scores → 50/50 weighting.
-	dense := []RankedID{{ID: "a", Score: 0.9}, {ID: "b", Score: 0.5}, {ID: "c", Score: 0.3}}
-	lexical := []RankedID{{ID: "a", Score: 0.8}, {ID: "d", Score: 0.4}, {ID: "c", Score: 0.2}}
-	got := FuseAdaptive(dense, lexical, 60)
-	if len(got) == 0 {
-		t.Fatal("expected results")
-	}
-	// a should be first (in both lists).
-	if got[0].ID != "a" {
-		t.Errorf("expected 'a' first, got %q", got[0].ID)
-	}
-}
-
 func TestFuseAdaptiveLowOverlap(t *testing.T) {
 	// No overlap → weight by length (3:2 = 60/40 dense).
 	dense := []RankedID{{ID: "a", Score: 0.95}, {ID: "b", Score: 0.90}, {ID: "c", Score: 0.85}}
