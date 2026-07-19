@@ -232,9 +232,10 @@ func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb
 	return s.recallByIDs(ctx, ranked, req, filter)
 }
 
-// hybridRecall fuses dense semantic + lexical BM25 results via Reciprocal Rank
-// Fusion (RRF). The two rankers produce heterogeneous scores (cosine vs BM25),
-// which RRF reconciles without calibration (Cormack et al., SIGIR 2009).
+// hybridRecall fuses dense semantic + lexical BM25 results via adaptive-weight
+// Reciprocal Rank Fusion. When the two rankers have low rank overlap (ratio
+// < 0.3), each gets weight proportional to its length; otherwise both get
+// 0.5 (standard RRF). Cormack et al., SIGIR 2009.
 func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	vault := vaultFromContext(ctx)
 	if vault == "" {
@@ -245,22 +246,18 @@ func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []f
 	if err != nil {
 		return nil, 0, fmt.Errorf("dense search failed: %w", err)
 	}
-	denseIDs := make([]string, 0, len(denseResults))
+	denseRanked := make([]retrieval.RankedID, 0, len(denseResults))
 	for _, r := range denseResults {
-		denseIDs = append(denseIDs, r.Id.GetUuid())
+		denseRanked = append(denseRanked, retrieval.RankedID{ID: r.Id.GetUuid(), Score: r.Score})
 	}
 
-	var lexicalIDs []string
+	var lexicalRanked []retrieval.RankedID
 	if idx := s.lexicalIndexFor(ctx, vault); idx != nil && idx.Size() > 0 {
-		ranked := idx.Search(req.Query, req.TopK*2)
-		for _, r := range ranked {
-			lexicalIDs = append(lexicalIDs, r.ID)
-		}
+		lexicalRanked = idx.Search(req.Query, req.TopK*2)
 	}
 
-	fused := retrieval.Hybrid(denseIDs, lexicalIDs, 60)
+	fused := retrieval.FuseAdaptive(denseRanked, lexicalRanked, 60)
 	if len(fused) == 0 {
-		// Degenerate: dense only.
 		return mapDenseResults(denseResults, req.Detail), topScoreOf(denseResults), nil
 	}
 	if len(fused) > req.TopK {
