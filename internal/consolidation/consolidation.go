@@ -61,30 +61,28 @@ type Emitter interface {
 
 // Config controls the consolidation worker.
 type Config struct {
-	Enabled           bool
-	Interval          time.Duration
-	IdleWindow        time.Duration
-	BatchSize         int
-	InterleaveRatio   float64
-	TurnLimit         int
-	GistTTLDays       int
-	SchemaThreshold   int
-	SchemaSimilarity  float64
-	ReplayAccessBoost float64
+	Enabled          bool
+	Interval         time.Duration
+	IdleWindow       time.Duration
+	BatchSize        int
+	InterleaveRatio  float64
+	TurnLimit        int
+	GistTTLDays      int
+	SchemaThreshold  int
+	SchemaSimilarity float64
 }
 
 // DefaultConfig returns sane defaults (still off unless Enabled is set).
 func DefaultConfig() Config {
 	return Config{
-		Interval:          6 * time.Hour,
-		IdleWindow:        30 * time.Minute,
-		BatchSize:         20,
-		InterleaveRatio:   0.3,
-		TurnLimit:         50,
-		GistTTLDays:       365,
-		SchemaThreshold:   3,
-		SchemaSimilarity:  0.8,
-		ReplayAccessBoost: 1.0,
+		Interval:         6 * time.Hour,
+		IdleWindow:       30 * time.Minute,
+		BatchSize:        20,
+		InterleaveRatio:  0.3,
+		TurnLimit:        50,
+		GistTTLDays:      365,
+		SchemaThreshold:  3,
+		SchemaSimilarity: 0.8,
 	}
 }
 
@@ -147,9 +145,6 @@ func New(cfg Config, sessions SessionSource, lm llm.Synthesizer, embedder embedd
 	}
 	if cfg.SchemaSimilarity <= 0 || cfg.SchemaSimilarity > 1 {
 		cfg.SchemaSimilarity = 0.8
-	}
-	if cfg.ReplayAccessBoost < 0 {
-		cfg.ReplayAccessBoost = 0
 	}
 	return &Consolidator{
 		cfg:      cfg,
@@ -409,11 +404,8 @@ func (c *Consolidator) extractSchemas(ctx context.Context, vault string) (int, e
 				},
 			},
 			{
-				ConditionOneOf: &pb.Condition_Field{
-					Field: &pb.FieldCondition{
-						Key:   "schema_parent",
-						Match: &pb.Match{MatchValue: &pb.Match_Keyword{Keyword: ""}},
-					},
+				ConditionOneOf: &pb.Condition_IsNull{
+					IsNull: &pb.IsNullCondition{Key: "schema_parent"},
 				},
 			},
 		},
@@ -494,8 +486,8 @@ func (c *Consolidator) extractSchemas(ctx context.Context, vault string) (int, e
 			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, v))
 		}
 		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
 		principle, serr := c.llm.Synthesize(cctx, sb.String(), "")
+		cancel()
 		if serr != nil {
 			c.logger.Debug("schema LLM failed", "error", serr)
 			continue
@@ -599,8 +591,7 @@ func scheduleReplay(pool []Session, n int, interleaveRatio float64) []Session {
 	return out
 }
 
-// replayImportance scores session replay priority using turn count, recency,
-// and access count (when ReplayAccessBoost > 0).
+// replayImportance scores session replay priority using turn count and recency.
 func replayImportance(s Session) float64 {
 	score := float64(s.TurnCount)
 	if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err == nil {
