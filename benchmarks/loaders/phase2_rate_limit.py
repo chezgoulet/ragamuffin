@@ -42,7 +42,7 @@ def _raw_request(
     """
     hdrs = {
         "Content-Type": "application/json",
-        "User-Agent": "RagamuffinBenchmark/0.9",
+        "User-Agent": "RagamuffinBenchmark/0.10",
     }
     if headers:
         hdrs.update(headers)

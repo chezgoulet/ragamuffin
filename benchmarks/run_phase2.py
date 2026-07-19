@@ -192,7 +192,7 @@ def main():
 
     out_path = (
         args.output
-        or f"benchmarks/results/v0.9.0-rc.2/phase2_{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.json"
+        or f"benchmarks/results/v0.10.0-rc.1/phase2_{time.strftime('%Y%m%dT%H%M%S', time.gmtime())}.json"
     )
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "w") as f:
