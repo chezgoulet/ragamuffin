@@ -9,6 +9,7 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
 )
@@ -56,6 +57,10 @@ type reviewStatsResponse struct {
 	BySourceType     map[string]int `json:"by_source_type"`
 	OldestItem       string         `json:"oldest_item,omitempty"`
 	AvgPendingDays   float64        `json:"avg_pending_days,omitempty"`
+	// AvgAccessibility is the mean soft-decay accessibility across the scanned
+	// facts, reported only when decay is enabled (B1). A falling value over
+	// time makes memory fade observable.
+	AvgAccessibility *float64 `json:"avg_accessibility,omitempty"`
 }
 
 // ── GET /v1/review ────────────────────────────────────────────────────────────
@@ -64,7 +69,7 @@ func (s *Server) handleReviewGet(w http.ResponseWriter, r *http.Request) {
 	reasonFilter := r.URL.Query().Get("reason")
 	tag := r.URL.Query().Get("tag")
 	sourceType := r.URL.Query().Get("source_type")
-	minConfidenceStr := r.URL.Query().Get("min_confidence")
+	minConfidenceStr := r.URL.Query().Get("max_confidence")
 
 	limit := 50
 	if l := r.URL.Query().Get("limit"); l != "" {
@@ -346,6 +351,9 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 
 	case "supersede":
 		payload["status"] = qutil.Nv("superseded")
+		// Reconsolidation-on-recall (B5): a supersede within the recall window
+		// is recorded as a reconsolidation of the just-recalled memory.
+		s.applyReconsolidationV(payload, time.Now().UTC())
 		if req.NewKey != "" {
 			payload["supersedes"] = qutil.Nv(req.NewKey)
 		}
@@ -392,12 +400,15 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 					s.log(r.Context()).Error("failed to record review resolution", "error", err)
 				}
 			}
-			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey))
+			writeJSON(w, 200, pointToFactResponse(newPoint.GetPayload(), req.NewKey, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays))
 			return
 		}
 
 	case "reject":
 		payload["status"] = qutil.Nv("rejected")
+		// Reconsolidation-on-recall (B5): a reject within the recall window is
+		// also a reconsolidation event (the memory was labile when discarded).
+		s.applyReconsolidationV(payload, time.Now().UTC())
 
 	case "reclassify":
 		// Set status to active (reclassification is a resolution action)
@@ -471,7 +482,7 @@ func (s *Server) handleReviewPost(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := pointToFactResponse(payload, key)
+	resp := pointToFactResponse(payload, key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
@@ -576,6 +587,7 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 	var totalPendingDays float64
 	var oldestTime time.Time
 	var pointCount int
+	var totalAccessibility float64
 
 	for {
 		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), filter, pageSize, scrollOffset)
@@ -630,6 +642,10 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 					totalPendingDays += now.Sub(ct).Hours() / 24
 				}
 			}
+
+			if s.cfg.DecayEnabled {
+				totalAccessibility += pruner.Accessibility(payload, now, s.cfg.DecayHalfLifeDays)
+			}
 		}
 
 		pointCount += len(points)
@@ -647,6 +663,10 @@ func (s *Server) handleReviewStats(w http.ResponseWriter, r *http.Request) {
 	}
 	if pointCount > 0 {
 		stats.AvgPendingDays = totalPendingDays / float64(pointCount)
+		if s.cfg.DecayEnabled {
+			avg := totalAccessibility / float64(pointCount)
+			stats.AvgAccessibility = &avg
+		}
 	}
 
 	writeJSON(w, 200, stats)

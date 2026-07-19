@@ -1,19 +1,17 @@
 # TOOLS.md — Tool Access for Ragamuffin-Powered Agent
 
-## Required tool access
+## MCP integration (recommended)
 
-The agent needs these OpenClaw tools to use Ragamuffin effectively:
+The most capable way to connect is through Ragamuffin's **MCP endpoint**
+at `http://ragamuffin:8000/mcp`. The `memory-ragamuffin-openclaw` plugin
+dynamically discovers all 33 tools and registers them automatically.
 
-| Tool | Why |
-|---|---|
-| `exec` | Run curl commands against Ragamuffin API |
-| `web_fetch` | Alternative HTTP calls (read/recall) |
-| `read` / `write` / `edit` | Manage local files, personality, logs |
-| `memory_search` / `memory_get` | OpenClaw's built-in memory (complement to Ragamuffin) |
+If your harness does not support MCP, the REST API is also available via
+`exec` + `curl` (see below).
 
 ## Using exec for Ragamuffin calls
 
-The primary integration path is `exec` + `curl`. All Ragamuffin API
+The alternative integration path is `exec` + `curl`. All Ragamuffin API
 endpoints are accessible via HTTP. Example:
 
 ```bash

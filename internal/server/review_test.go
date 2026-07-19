@@ -332,7 +332,7 @@ func TestReviewGet_SourceTypeFilter(t *testing.T) {
 	}
 }
 
-func TestReviewGet_MinConfidenceFilter(t *testing.T) {
+func TestReviewGet_MaxConfidenceFilter(t *testing.T) {
 	store := &reviewMockStore{collection: "test_facts"}
 	store.points = []*qdrant.RetrievedPoint{
 		makeNeedsReviewPoint("p1", "high", "high-val", map[string]any{
@@ -342,10 +342,9 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 			"confidence": float64(0.1),
 		}),
 	}
-	// Set a scrollFilteredFn that respects pagination offset and applies min_confidence filter
 	store.scrollFilteredFn = func(ctx context.Context, collection string, filter *qdrant.Filter, limit uint32, offset string) ([]*qdrant.RetrievedPoint, error) {
 		if offset != "" {
-			return nil, nil // end of pagination
+			return nil, nil
 		}
 		store.mu.Lock()
 		defer store.mu.Unlock()
@@ -355,7 +354,6 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 			if status, _ := qutil.GetPayloadString(p.GetPayload(), "status"); status != "needs_review" {
 				continue
 			}
-			// Apply min_confidence filter if present
 			if filter != nil && len(filter.Must) > 0 {
 				for _, cond := range filter.Must {
 					if fc := cond.GetField(); fc != nil && fc.Key == "confidence" {
@@ -373,16 +371,14 @@ func TestReviewGet_MinConfidenceFilter(t *testing.T) {
 	}
 	srv := newReviewServer(store)
 
-	req := httptest.NewRequest("GET", "/v1/review?min_confidence=0.5", nil)
+	req := httptest.NewRequest("GET", "/v1/review?max_confidence=0.5", nil)
 	w := httptest.NewRecorder()
 	srv.handleReviewGet(w, req)
 
 	var resp map[string]any
 	json.NewDecoder(w.Body).Decode(&resp)
 	entries := resp["entries"].([]any)
-	// Both are needs_review, min_confidence filter finds conf < 0.5, so only low should match
-	// Wait, actually min_confidence filter uses Lt — it finds facts WHERE confidence < min_confidence
-	// So with min_confidence=0.5, it finds facts with confidence < 0.5 → only "low" at 0.1
+	// With max_confidence=0.5, returns facts where confidence < 0.5 → only "low" at 0.1.
 	if len(entries) != 1 {
 		t.Errorf("expected 1 entry (confidence < 0.5), got %d", len(entries))
 	}

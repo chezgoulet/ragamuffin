@@ -380,7 +380,13 @@ def run_qa(
         target_vault = vault_resolver(text, gt, qt, conv_id) if vault_resolver else vault
 
         try:
-            resp = client.ask(text, target_vault, mode=cfg.ask_mode)
+            resp = client.ask(
+                text,
+                target_vault,
+                mode=cfg.ask_mode,
+                rewrite=cfg.rewrite,
+                rerank=cfg.rerank,
+            )
             answer = resp.get("answer", resp.get("response", ""))
             errors_consecutive = 0
         except Exception as e:

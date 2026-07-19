@@ -9,16 +9,19 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/consolidation"
 	"github.com/chezgoulet/ragamuffin/internal/embeddedstore"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
+	"github.com/chezgoulet/ragamuffin/internal/graph"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -42,6 +45,7 @@ func main() {
 	reporter := logging.New(logging.Config{
 		TelegramBotToken: cfg.ErrorTrackingTelegramBotToken,
 		TelegramChatID:   cfg.ErrorTrackingTelegramChatID,
+		Level:            slogLevel(cfg.LogLevel),
 	})
 	logger := slog.New(reporter.Handler())
 	slog.SetDefault(logger)
@@ -161,6 +165,23 @@ func main() {
 
 	logger.Info("log store ready", "path", logPath)
 
+	// ── Initialize temporal knowledge graph (optional, B2) ────────────────────
+	var graphStore *graph.Store
+	if cfg.GraphEnabled {
+		graphPath := cfg.GraphPath
+		if graphPath == "" {
+			graphPath = filepath.Join(filepath.Dir(logPath), "graph.db")
+		}
+		graphStore, err = graph.Open(graphPath)
+		if err != nil {
+			logger.Error("failed to open temporal graph", "error", err)
+			os.Exit(1)
+		}
+		graphStore.SetLogger(logger.With("component", "graph"))
+		defer graphStore.Close()
+		logger.Info("temporal graph ready", "path", graphPath)
+	}
+
 	// ── Initialize event emitter + SSE broker (optional) ─────────────────────
 	eventBroker := events.NewBroker()
 	emitterSource := cfg.VaultPath
@@ -181,6 +202,16 @@ func main() {
 	var prunerEventChs []<-chan watcher.Event
 	var driverCancelFuncs []context.CancelFunc
 	var drivers []ingress.IngressDriver // all IngressDriver instances (for fan-in + lifecycle)
+
+	// Consolidation worker lifecycle. Declared at outer scope so the signal
+	// handler can stop the worker and wait for any in-flight sweep to finish
+	// before dependencies (logStore, factsQc) are closed.
+	cancelCons := func() {}
+	var consWG sync.WaitGroup
+
+	// Logstore prune worker lifecycle. Cancelled in the signal handler before
+	// logStore.Close() to prevent a concurrent SQL query during shutdown.
+	cancelPrune := func() {}
 	var initialDoneChs []chan struct{}
 
 	// Shared driver config
@@ -201,10 +232,6 @@ func main() {
 			vlog := logger.With("vault", name)
 
 			drv, err := newVaultDriver(ctx, cfg, collectionName, vc.Path, chunkVectorSize, watchInterval, vlog)
-			if err != nil {
-				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
-				os.Exit(1)
-			}
 			if err != nil {
 				logger.Error("failed to create file watcher driver", "vault", name, "error", err)
 				os.Exit(1)
@@ -277,10 +304,6 @@ func main() {
 	} else {
 		// Single-tenant: one driver, one indexer
 		drv, err := newVaultDriver(ctx, cfg, cfg.QdrantCollection, cfg.VaultPath, chunkVectorSize, watchInterval, logger)
-		if err != nil {
-			logger.Error("failed to create file watcher driver", "error", err)
-			os.Exit(1)
-		}
 		if err != nil {
 			logger.Error("failed to create file watcher driver", "error", err)
 			os.Exit(1)
@@ -400,10 +423,10 @@ func main() {
 	// ── Logstore periodic pruning ────────────────────────────────────────────
 	if cfg.LogstoreMaxRows > 0 {
 		// Run prune immediately, then every hour
+		var ctxPrune context.Context
+		ctxPrune, cancelPrune = context.WithCancel(context.Background())
 		go func() {
-			ctxPrune, cancelPrune := context.WithCancel(context.Background())
 			defer cancelPrune()
-
 			// Initial prune at startup
 			if deleted, err := logStore.Prune(ctxPrune, cfg.LogstoreMaxRows); err != nil {
 				logger.Warn("logstore initial prune failed", "error", err)
@@ -517,6 +540,40 @@ func main() {
 
 	srv := server.New(cfg, qc, factsQc, ec, lm, idxManager, gp, rl, nil, logStore, p, emitter, eventBroker, logger, ext, apiDriver)
 
+	// Attach the temporal graph. The extractor is nil without an LLM; ingest
+	// then returns 503 while read endpoints keep working.
+	if graphStore != nil {
+		var graphExt *graph.Extractor
+		if lm != nil {
+			graphExt = graph.NewExtractor(graphStore, lm, logger)
+		}
+		srv.SetGraph(graphStore, graphExt)
+	}
+
+	// ── Sleep-time consolidation worker (B3, optional) ────────────────────────
+	if cfg.ConsolidationEnabled {
+		consCfg := consolidation.Config{
+			Enabled:         true,
+			Interval:        cfg.ConsolidationInterval,
+			IdleWindow:      cfg.ConsolidationIdleWindow,
+			BatchSize:       cfg.ConsolidationBatchSize,
+			InterleaveRatio: cfg.ConsolidationInterleaveRatio,
+			TurnLimit:       cfg.ConsolidationTurnLimit,
+			GistTTLDays:     cfg.ConsolidationGistTTLDays,
+		}
+		vaultNames := func() []string { return idxManager.VaultNames() }
+		cons := consolidation.New(consCfg, server.NewLogstoreSessionSource(logStore), lm, ec, factsQc, emitter, vaultNames, logger)
+		srv.SetConsolidator(cons)
+		var ctxCons context.Context
+		ctxCons, cancelCons = context.WithCancel(context.Background())
+		consWG.Add(1)
+		go func() {
+			defer consWG.Done()
+			cons.Run(ctxCons)
+		}()
+		logger.Info("consolidation worker started", "interval", cfg.ConsolidationInterval.String())
+	}
+
 	// ── Snapshot restore detection ───────────────────────────────────────
 	ctxCheck, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
 	restoreDetected, affected, err := srv.RestoreConsistencyCheck(ctxCheck, cfg.RestoreMismatchThreshold)
@@ -557,12 +614,20 @@ func main() {
 		// 0. Cancel server background goroutines first (#420)
 		srv.Shutdown()
 
-		// 1. Flush SQLite pending writes
+		// 0.5 Stop the consolidation worker and wait for any in-flight sweep to
+		// finish before closing logStore/factsQc it reads and writes.
+		cancelCons()
+		consWG.Wait()
+
+		// 0.6 Cancel the logstore prune worker so it doesn't race with Close.
+		cancelPrune()
+
+		// 1. Flush SQLite pending writes. The deferred logStore.Close() from
+		// main handles closing; signal handler only flushes.
 		if logStore != nil {
 			if err := logStore.Flush(); err != nil {
 				logger.Warn("logstore flush failed", "error", err)
 			}
-			logStore.Close()
 		}
 
 		// 2. Cancel all indexers (stopping in-flight indexing)
@@ -598,8 +663,8 @@ func main() {
 	logger.Info("shutdown complete")
 }
 
-func slogLevel() slog.Level {
-	switch os.Getenv("RAGAMUFFIN_LOG_LEVEL") {
+func slogLevel(s string) slog.Level {
+	switch s {
 	case "debug":
 		return slog.LevelDebug
 	case "warn":

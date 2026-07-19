@@ -116,6 +116,21 @@ type Config struct {
 	RateLimitIngest   int
 	RateLimitReview   int
 
+	// Retrieval — hybrid dense + lexical (BM25) recall via RRF.
+	// RecallMode: "dense" (default, unchanged behavior), "sparse" (lexical
+	// only), or "hybrid" (fuse both via Reciprocal Rank Fusion).
+	RecallMode    string
+	SparseEnabled bool // when true, lexical BM25 index is built per vault
+
+	// RetrievalRewrite selects an LLM query-rewriting strategy applied before
+	// embedding: "off" (default), "hyde", "stepback", or "multiquery". No-op
+	// unless an LLM is configured. See internal/retrieval/rewrite.go.
+	RetrievalRewrite string
+	// RerankEnabled turns on listwise LLM reranking (RankGPT) of the fused
+	// top-k when the request opts in. No-op unless an LLM is configured.
+	// This is the server-side allow flag; requests still pass rerank=true.
+	RerankEnabled bool
+
 	// Pruner configuration
 	PrunerEnabled                bool
 	PrunerStaleInterval          time.Duration
@@ -143,9 +158,45 @@ type Config struct {
 	ProceduralMinSteps       int
 	ProceduralDedupThreshold float64
 
+	// Sleep-time consolidation (B3): idle-aware worker that replays sessions
+	// into durable gist facts. Off by default; never on the query path.
+	ConsolidationEnabled         bool
+	ConsolidationInterval        time.Duration
+	ConsolidationIdleWindow      time.Duration
+	ConsolidationBatchSize       int
+	ConsolidationInterleaveRatio float64
+	ConsolidationTurnLimit       int
+	ConsolidationGistTTLDays     int
+
+	// Continuous accessibility decay (B1). When enabled, the read path stamps
+	// each fact with a soft accessibility score (Ebbinghaus forgetting curve)
+	// and effective_confidence = confidence × accessibility. Off by default;
+	// hard TTL behavior is unchanged.
+	DecayEnabled      bool
+	DecayHalfLifeDays float64 // baseline half-life for an unreinforced fact
+
+	// Reconsolidation-on-recall (B5). When enabled, the read path stamps
+	// last_recalled_at, and an update/supersede/reject that lands within
+	// ReconsolidationWindow of the last recall is recorded as a reconsolidation:
+	// reconsolidated_at is stamped and reconsolidation_chain is appended
+	// (Nader et al. 2000). Off by default; the raw event log is untouched.
+	ReconsolidationEnabled bool
+	ReconsolidationWindow  time.Duration // default 30m when enabled
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
+
+	// Temporal knowledge graph (B2). When enabled, entities/relations are
+	// extracted from chunks and session turns into a bi-temporal SQLite graph
+	// supporting as_of time-travel queries. Requires an LLM.
+	GraphEnabled bool
+	GraphPath    string // explicit path for graph.db; empty = heuristic
+
+	// Community summaries (B4). When enabled, POST /v1/graph/community/detect
+	// runs Louvain community detection over the graph and (with an LLM)
+	// generates per-community summaries. Requires GraphEnabled.
+	GraphCommunityEnabled bool
 
 	// Optional — LLM
 	LLMProvider        string
@@ -171,6 +222,10 @@ type Config struct {
 	// Optional — Audit / Tuning
 	AuditSampleSize int
 	AutoThreshold   float64
+
+	// Optional — Ask citations (#A4). When true, /ask returns sentence-level
+	// chunk attributions by default even if the request omits "cite".
+	AskCiteDefault bool
 
 	// Optional — Auth
 	AuthMode            string
@@ -343,9 +398,41 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RATE_LIMIT_REVIEW must be non-negative, got %d", c.RateLimitReview))
 	}
 
+	// Recall mode must be a recognized value
+	switch c.RecallMode {
+	case "dense", "sparse", "hybrid":
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RECALL_MODE must be 'dense', 'sparse', or 'hybrid', got %q", c.RecallMode))
+	}
+	// sparse mode requires the lexical index to be enabled
+	if c.RecallMode == "sparse" && !c.SparseEnabled {
+		errs = append(errs, "RAGAMUFFIN_RECALL_MODE=sparse requires RAGAMUFFIN_SPARSE=true")
+	}
+	if c.RecallMode == "hybrid" && !c.SparseEnabled {
+		errs = append(errs, "RAGAMUFFIN_RECALL_MODE=hybrid requires RAGAMUFFIN_SPARSE=true")
+	}
+	// Query-rewrite strategy must be recognized.
+	switch strings.ToLower(c.RetrievalRewrite) {
+	case "", "off", "hyde", "stepback", "multiquery":
+	default:
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_RETRIEVAL_REWRITE must be 'off', 'hyde', 'stepback', or 'multiquery', got %q", c.RetrievalRewrite))
+	}
+
 	// Pruner config: StaleDays must be positive if pruner is enabled
 	if c.PrunerEnabled && c.PrunerStaleDays <= 0 {
 		errs = append(errs, "RAGAMUFFIN_PRUNER_STALE_DAYS must be positive when pruner is enabled")
+	}
+	// Decay config: half-life must be positive if decay is enabled.
+	if c.DecayEnabled && c.DecayHalfLifeDays <= 0 {
+		errs = append(errs, "RAGAMUFFIN_DECAY_HALF_LIFE_DAYS must be positive when decay is enabled")
+	}
+	// Community detection requires the temporal graph.
+	if c.GraphCommunityEnabled && !c.GraphEnabled {
+		errs = append(errs, "RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED=true requires RAGAMUFFIN_GRAPH_ENABLED=true")
+	}
+	// Reconsolidation config: window must be positive if enabled.
+	if c.ReconsolidationEnabled && c.ReconsolidationWindow <= 0 {
+		errs = append(errs, "RAGAMUFFIN_RECONSOLIDATION_WINDOW must be positive when reconsolidation is enabled")
 	}
 
 	// Auth mode must be valid
@@ -406,7 +493,7 @@ func parseURL(raw string) (interface{}, error) {
 // RAGAMUFFIN_QDRANT_URL is required only when RAGAMUFFIN_VECTOR_STORE=qdrant
 // (the default). When RAGAMUFFIN_VECTOR_STORE=embedded, no Qdrant is needed.
 func Load() (*Config, error) {
-	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", "qdrant")
+	vectorStore := envOrDefault("RAGAMUFFIN_VECTOR_STORE", aliasOrDefault("REACHLOCK_VECTOR_STORE", "qdrant"))
 	qdrantURL := os.Getenv("RAGAMUFFIN_QDRANT_URL")
 	if vectorStore == "qdrant" {
 		var err error
@@ -454,6 +541,11 @@ func Load() (*Config, error) {
 		RateLimitIngest:   envInt("RAGAMUFFIN_RATE_LIMIT_INGEST", 30),
 		RateLimitReview:   envInt("RAGAMUFFIN_RATE_LIMIT_REVIEW", 30),
 
+		RecallMode:       envOrDefault("RAGAMUFFIN_RECALL_MODE", "dense"),
+		SparseEnabled:    envBool("RAGAMUFFIN_SPARSE"),
+		RetrievalRewrite: envOrDefault("RAGAMUFFIN_RETRIEVAL_REWRITE", "off"),
+		RerankEnabled:    envBool("RAGAMUFFIN_RERANK"),
+
 		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
 		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),
 		PrunerConflictInterval:       envDuration("RAGAMUFFIN_PRUNER_CONFLICT_INTERVAL", 72*time.Hour),
@@ -475,9 +567,27 @@ func Load() (*Config, error) {
 		ProceduralEnabled:            envBool("RAGAMUFFIN_PROCEDURAL_ENABLED"),
 		ProceduralMinSteps:           envInt("RAGAMUFFIN_PROCEDURAL_MIN_STEPS", 3),
 		ProceduralDedupThreshold:     envFloat("RAGAMUFFIN_PROCEDURAL_DEDUP_THRESHOLD", 0.85),
-		RestoreMismatchThreshold:     envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
-		LogStorePath:                 os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
-		LogstoreMaxRows:              envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+		ConsolidationEnabled:         envBool("RAGAMUFFIN_CONSOLIDATION_ENABLED"),
+		ConsolidationInterval:        envDuration("RAGAMUFFIN_CONSOLIDATION_INTERVAL", 6*time.Hour),
+		ConsolidationIdleWindow:      envDuration("RAGAMUFFIN_CONSOLIDATION_IDLE_WINDOW", 30*time.Minute),
+		ConsolidationBatchSize:       envInt("RAGAMUFFIN_CONSOLIDATION_BATCH_SIZE", 20),
+		ConsolidationInterleaveRatio: envFloat("RAGAMUFFIN_CONSOLIDATION_INTERLEAVE_RATIO", 0.3),
+		ConsolidationTurnLimit:       envInt("RAGAMUFFIN_CONSOLIDATION_TURN_LIMIT", 50),
+		ConsolidationGistTTLDays:     envInt("RAGAMUFFIN_CONSOLIDATION_GIST_TTL_DAYS", 365),
+
+		DecayEnabled:      envBool("RAGAMUFFIN_DECAY_ENABLED"),
+		DecayHalfLifeDays: envFloat("RAGAMUFFIN_DECAY_HALF_LIFE_DAYS", 30.0),
+
+		ReconsolidationEnabled: envBool("RAGAMUFFIN_RECONSOLIDATION_ENABLED"),
+		ReconsolidationWindow:  envDuration("RAGAMUFFIN_RECONSOLIDATION_WINDOW", 30*time.Minute),
+
+		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
+		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
+		LogstoreMaxRows:          envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
+
+		GraphEnabled:          envBool("RAGAMUFFIN_GRAPH_ENABLED"),
+		GraphPath:             os.Getenv("RAGAMUFFIN_GRAPH_PATH"),
+		GraphCommunityEnabled: envBool("RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED"),
 
 		LLMProvider:        os.Getenv("RAGAMUFFIN_LLM_PROVIDER"),
 		LLMBaseURL:         envOrDefault("RAGAMUFFIN_LLM_BASE_URL", "https://api.deepseek.com"), // NOTE: code appends "/v1/chat/completions", so omit "/v1" here
@@ -509,6 +619,7 @@ func Load() (*Config, error) {
 
 		AuditSampleSize:               envInt("RAGAMUFFIN_AUDIT_SAMPLE_SIZE", 50),
 		AutoThreshold:                 envFloat("RAGAMUFFIN_AUTO_THRESHOLD", 0.75),
+		AskCiteDefault:                envBool("RAGAMUFFIN_ASK_CITE_DEFAULT"),
 		LogLevel:                      envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 		ErrorTrackingTelegramBotToken: os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_BOT_TOKEN"),
 		ErrorTrackingTelegramChatID:   os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID"),

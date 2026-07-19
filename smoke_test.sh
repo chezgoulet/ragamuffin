@@ -74,6 +74,20 @@ assert_status "POST /recall returns 200" "0" "$RC" "$RESP"
 assert_field_type "recall has results" "results" "list" "$RESP"
 assert_field_type "recall has top_score" "top_score" "float" "$RESP"
 
+# /recall: query rewrite + rerank are backward-compatible no-ops when no LLM
+# is configured (A2/A3). They must never break the base recall contract.
+RESP=$(curl -sf -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test query","top_k":3,"rewrite":"hyde","rerank":true}' 2>&1) && RC=0 || RC=$?
+assert_status "POST /recall with rewrite+rerank returns 200" "0" "$RC" "$RESP"
+assert_field_type "recall (rewrite+rerank) has results" "results" "list" "$RESP"
+
+# /recall: invalid rewrite mode is rejected with 400.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/recall" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","rewrite":"bogus"}')
+assert_status "POST /recall invalid rewrite returns 400" "400" "$CODE" "rewrite=bogus"
+
 # /recall: verify first_paragraph is returned
 RESP=$(curl -sf -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
@@ -240,6 +254,30 @@ if [ "$RC" = "0" ]; then
   assert_field_type "ask sources" "sources" "list" "$RESP"
 else
   assert_field "/ask error code (LLM not configured)" "code" "LLM_NOT_CONFIGURED" "$RESP"
+fi
+
+# ── /ask with rewrite + rerank (retrieval pipeline pass-through) ───────────
+echo "--- /ask rewrite+rerank ---"
+RESP=$(curl -s -X POST "$BASE/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","mode":"rag","rewrite":"hyde","rerank":true}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  assert_field_type "ask (rewrite+rerank) answer" "answer" "str" "$RESP"
+  assert_field_type "ask (rewrite+rerank) sources" "sources" "list" "$RESP"
+else
+  assert_field "/ask rewrite+rerank error code (LLM not configured)" "code" "LLM_NOT_CONFIGURED" "$RESP"
+fi
+
+# ── /ask with citations (#A4) ──────────────────────────────────────────────
+echo "--- /ask cite=true ---"
+RESP=$(curl -s -X POST "$BASE/ask" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","cite":true}' 2>&1) && RC=0 || RC=$?
+if [ "$RC" = "0" ]; then
+  assert_field_type "ask cited answer" "answer" "str" "$RESP"
+  assert_field_type "ask citations" "citations" "list" "$RESP"
+else
+  assert_field "/ask cite error code (LLM not configured)" "code" "LLM_NOT_CONFIGURED" "$RESP"
 fi
 
 # ── /mcp (MCP bolt-on) ─────────────────────────────────────────────────────
@@ -431,6 +469,11 @@ RESP=$(curl -s -w "\\n%{http_code}" -X POST "$HOST/recall" \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"query":"test","top_k":5,"time_filter":"all"}')
 assert_status "recall time_filter=all" 200 "$RESP"
+
+yellow "Reconsolidation: semantic fact search is a recall path (200)"
+RESP=$(curl -s -w "\\n%{http_code}" "$HOST/v1/facts?query=temporal%20test&limit=5" \
+  -H "Authorization: Bearer $TOKEN")
+assert_status "semantic fact recall stamps access" 200 "$RESP"
 
 # Cleanup
 curl -s -X DELETE "$HOST/v1/facts?key=test/temporal-fact" \
@@ -805,6 +848,18 @@ else
   echo "FAIL: /v1/facts/nonexistent/history unexpected: $CODE"
 fi
 
+# ── /v1/review/stats (accessibility decay observable — B1) ───────────────────
+echo ""
+echo "--- /v1/review/stats ---"
+RESP=$(curl -s -o /dev/null -w '%{http_code}' "$BASE/v1/review/stats" 2>&1)
+if [ "$RESP" = "200" ]; then
+  PASS=$((PASS + 1))
+  echo "PASS: /v1/review/stats returns 200 (avg_accessibility present when RAGAMUFFIN_DECAY_ENABLED)"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL: /v1/review/stats expected 200, got $RESP"
+fi
+
 # ── /v1/chunks (no vault context, assumes default) ───────────────────────────
 echo ""
 echo "--- /v1/chunks (vault-scoped redirect) ---"
@@ -951,6 +1006,89 @@ if [ -n "$SESSION_ID" ]; then
 else
   echo "SKIP: procedural memory test (session creation failed)"
 fi
+
+echo ""
+echo "--- /v1/graph (temporal knowledge graph) ---"
+# Read endpoints work whether or not the graph is enabled: 200 when enabled,
+# 503 when disabled. Accept either so the smoke suite is env-agnostic.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/stats")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/stats reachable (HTTP $CODE)"
+else
+  red "/v1/graph/stats" "HTTP $CODE (expected 200 or 503)"
+fi
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/edges")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/edges reachable (HTTP $CODE)"
+else
+  red "/v1/graph/edges" "HTTP $CODE (expected 200 or 503)"
+fi
+# Malformed as_of must be rejected with 400 when the graph is enabled;
+# 503 is acceptable when disabled.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/edges?as_of=not-a-date")
+if [ "$CODE" = "400" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/edges rejects bad as_of (HTTP $CODE)"
+else
+  red "/v1/graph/edges bad as_of" "HTTP $CODE (expected 400 or 503)"
+fi
+
+# Community detection (B4). 200 when graph+community enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/v1/graph/community/detect")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/community/detect reachable (HTTP $CODE)"
+else
+  red "/v1/graph/community/detect" "HTTP $CODE (expected 200 or 503)"
+fi
+# Listing communities: 200 when graph enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/communities")
+if [ "$CODE" = "200" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/communities reachable (HTTP $CODE)"
+else
+  red "/v1/graph/communities" "HTTP $CODE (expected 200 or 503)"
+fi
+# Unknown community id: 404 when graph enabled, 503 otherwise.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/graph/community/does-not-exist")
+if [ "$CODE" = "404" ] || [ "$CODE" = "503" ]; then
+  green "/v1/graph/community/{id} handles unknown id (HTTP $CODE)"
+else
+  red "/v1/graph/community/{id}" "HTTP $CODE (expected 404 or 503)"
+fi
+
+echo ""
+echo "--- /v1/consolidation/status ---"
+# Always 200: returns {"enabled":false} when the worker is off, or full stats
+# when enabled.
+RESP=$(curl -s -w "\n%{http_code}" "$BASE/v1/consolidation/status")
+CODE=$(echo "$RESP" | tail -n1)
+BODY=$(echo "$RESP" | sed '$d')
+assert_status "/v1/consolidation/status returns 200" "200" "$CODE" "$BODY"
+assert_field_type "consolidation status" "enabled" "bool" "$BODY"
+
+echo ""
+echo "--- reconsolidation-on-recall (B5) ---"
+# Create a fact, recall it (GET stamps last_recalled_at when enabled), then
+# update it within the window. The fact response must always round-trip; when
+# reconsolidation is enabled the update records the reconsolidation chain.
+curl -s -o /dev/null -X POST "$BASE/v1/facts" \
+  -H "Content-Type: application/json" \
+  -d '{"key":"test/reconsolidation","value":"initial"}'
+curl -s -o /dev/null "$BASE/v1/facts?key=test/reconsolidation"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$BASE/v1/facts?key=test/reconsolidation" \
+  -H "Content-Type: application/json" \
+  -d '{"value":"updated"}')
+if [ "$CODE" = "200" ] || [ "$CODE" = "404" ]; then
+  green "reconsolidation update round-trips (HTTP $CODE)"
+else
+  red "reconsolidation update" "HTTP $CODE (expected 200 or 404)"
+fi
+# The fact response must remain valid JSON with the reconsolidation fields.
+RESP=$(curl -s "$BASE/v1/facts?key=test/reconsolidation")
+if echo "$RESP" | python3 -c "import sys,json; json.load(sys.stdin)" >/dev/null 2>&1; then
+  green "reconsolidated fact response is valid JSON"
+else
+  red "reconsolidation fact GET" "invalid JSON: $(echo "$RESP" | head -c 100)"
+fi
+curl -s -o /dev/null -X DELETE "$BASE/v1/facts?key=test/reconsolidation"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

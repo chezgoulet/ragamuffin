@@ -14,6 +14,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
+	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	store "github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/qdrant/go-client/qdrant"
@@ -51,32 +52,37 @@ type factPayload struct {
 
 // factResponse is the JSON response for a single fact (v0.8 temporal reasoning).
 type factResponse struct {
-	Key               string           `json:"key"`
-	Value             string           `json:"value"`
-	Tags              []string         `json:"tags,omitempty"`
-	Source            string           `json:"source,omitempty"`
-	SourceType        string           `json:"source_type,omitempty"`
-	Confidence        *float64         `json:"confidence,omitempty"`
-	Status            string           `json:"status"`
-	Version           int              `json:"version,omitempty"`
-	Supersedes        string           `json:"supersedes"`
-	SupersededBy      int              `json:"superseded_by,omitempty"`
-	Contradicts       []string         `json:"contradicts,omitempty"`
-	Refines           string           `json:"refines"`
-	Supports          []string         `json:"supports,omitempty"`
-	ConflictResolved  bool             `json:"conflict_resolved"`
-	ConfirmationCount int              `json:"confirmation_count"`
-	LastConfirmedAt   string           `json:"last_confirmed_at,omitempty"`
-	CreatedAt         string           `json:"created_at,omitempty"`
-	UpdatedAt         string           `json:"updated_at"`
-	ExpiresAt         string           `json:"expires_at,omitempty"`
-	RelatedChunks     []string         `json:"related_chunks,omitempty"`
-	ValidFrom         string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
-	ValidUntil        string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
-	Provenance        *provenanceEntry `json:"provenance,omitempty"`
-	Score             float64          `json:"score,omitempty"`
-	ReadCount         int              `json:"read_count,omitempty"`
-	LastReadAt        string           `json:"last_read_at,omitempty"`
+	Key                  string           `json:"key"`
+	Value                string           `json:"value"`
+	Tags                 []string         `json:"tags,omitempty"`
+	Source               string           `json:"source,omitempty"`
+	SourceType           string           `json:"source_type,omitempty"`
+	Confidence           *float64         `json:"confidence,omitempty"`
+	Status               string           `json:"status"`
+	Version              int              `json:"version,omitempty"`
+	Supersedes           string           `json:"supersedes"`
+	SupersededBy         int              `json:"superseded_by,omitempty"`
+	Contradicts          []string         `json:"contradicts,omitempty"`
+	Refines              string           `json:"refines"`
+	Supports             []string         `json:"supports,omitempty"`
+	ConflictResolved     bool             `json:"conflict_resolved"`
+	ConfirmationCount    int              `json:"confirmation_count"`
+	LastConfirmedAt      string           `json:"last_confirmed_at,omitempty"`
+	CreatedAt            string           `json:"created_at,omitempty"`
+	UpdatedAt            string           `json:"updated_at"`
+	ExpiresAt            string           `json:"expires_at,omitempty"`
+	RelatedChunks        []string         `json:"related_chunks,omitempty"`
+	ValidFrom            string           `json:"valid_from,omitempty"`  // RFC 3339; default = created_at
+	ValidUntil           string           `json:"valid_until,omitempty"` // RFC 3339; null = no expiry
+	Provenance           *provenanceEntry `json:"provenance,omitempty"`
+	Score                float64          `json:"score,omitempty"`
+	ReadCount            int              `json:"read_count,omitempty"`
+	LastReadAt           string           `json:"last_read_at,omitempty"`
+	Accessibility        *float64         `json:"accessibility,omitempty"`         // B1: soft decay score in (0,1]
+	EffectiveConfidence  *float64         `json:"effective_confidence,omitempty"`  // B1: confidence × accessibility
+	LastRecalledAt       string           `json:"last_recalled_at,omitempty"`      // B5: last recall (recall path)
+	ReconsolidatedAt     string           `json:"reconsolidated_at,omitempty"`     // B5: last reconsolidation event
+	ReconsolidationChain []string         `json:"reconsolidation_chain,omitempty"` // B5: immutable rewrite chain
 }
 
 // provenanceEntry is a resolved provenance link from a fact to its source.
@@ -251,8 +257,12 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 	pointID := factKeyHash(fp.Key)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	// Check if fact already exists → preserve created_at
-	var createdAt string
+	// Check if fact already exists → preserve server-managed lifecycle fields
+	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
+	var confirmationCount, supersededBy, accessCount float64
+	var conflictResolved bool
+	var existingContradicts, existingSupports []string
+
 	exists, err := s.factExists(r.Context(), fp.Key)
 	if err != nil {
 		s.log(r.Context()).Error("fact existence check failed", "error", err)
@@ -260,18 +270,36 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if exists {
-		// Read existing point to preserve created_at
 		points, err := s.facts.ScrollFiltered(r.Context(), s.factsCollectionFor(r.Context()), factKeyFilter(fp.Key), 1, "")
 		if err != nil {
-			s.log(r.Context()).Error("fact read for created_at failed", "error", err)
+			s.log(r.Context()).Error("fact read for existing fields failed", "error", err)
 		} else if len(points) > 0 {
-			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
-			// Carry forward confirmation_count and last_confirmed_at
-			// Only updated explicitly via PUT — preserve existing value on upsert
+			p := points[0].GetPayload()
+			createdAt, _ = qutil.GetPayloadString(p, "created_at")
+			status, _ = qutil.GetPayloadString(p, "status")
+			supersedes, _ = qutil.GetPayloadString(p, "supersedes")
+			refines, _ = qutil.GetPayloadString(p, "refines")
+			lastConfirmedAt, _ = qutil.GetPayloadString(p, "last_confirmed_at")
+			lastAccessedAt, _ = qutil.GetPayloadString(p, "last_accessed_at")
+			confirmationCount, _ = qutil.GetPayloadFloat(p, "confirmation_count")
+			supersededBy, _ = qutil.GetPayloadFloat(p, "superseded_by")
+			accessCount, _ = qutil.GetPayloadFloat(p, "access_count")
+			conflictResolved = qutil.GetPayloadBoolValue(p, "conflict_resolved")
+			existingContradicts = qutil.GetPayloadStringList(p, "contradicts")
+			existingSupports = qutil.GetPayloadStringList(p, "supports")
 		}
 	}
 	if createdAt == "" {
 		createdAt = now
+	}
+	if status == "" {
+		status = "active"
+	}
+	if lastConfirmedAt == "" {
+		lastConfirmedAt = now
+	}
+	if confirmationCount <= 0 {
+		confirmationCount = 1
 	}
 
 	// Compute fields
@@ -314,21 +342,21 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 
 	payload := qdrant.NewValueMap(map[string]any{
 		"fact_key":           fp.Key,
-		"key_prefix":         versionKeyPrefix(fp.Key), // for efficient version supersede (#409)
+		"key_prefix":         versionKeyPrefix(fp.Key),
 		"fact_value":         fp.Value,
 		"source":             fp.Source,
 		"source_type":        fp.SourceType,
 		"confidence":         confidence,
 		"version":            version,
-		"status":             "active",
-		"supersedes":         "",
-		"superseded_by":      0,
-		"refines":            "",
-		"conflict_resolved":  true,
-		"confirmation_count": 1,
-		"last_confirmed_at":  now,
-		"access_count":       0,
-		"last_accessed_at":   "",
+		"status":             status,
+		"supersedes":         supersedes,
+		"superseded_by":      supersededBy,
+		"refines":            refines,
+		"conflict_resolved":  conflictResolved,
+		"confirmation_count": confirmationCount,
+		"last_confirmed_at":  lastConfirmedAt,
+		"access_count":       accessCount,
+		"last_accessed_at":   lastAccessedAt,
 		"created_at":         createdAt,
 		"updated_at":         now,
 		"ttl_days":           intValue(fp.TTLDays),
@@ -339,18 +367,10 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		"valid_until":        validUntil,
 		"valid_until_unix":   validUntilUnix,
 	})
-	// Contradicts: empty list (server-managed)
-	payload["contradicts"] = &qdrant.Value{
-		Kind: &qdrant.Value_ListValue{
-			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
-		},
-	}
-	// Supports: empty list (server-managed)
-	payload["supports"] = &qdrant.Value{
-		Kind: &qdrant.Value_ListValue{
-			ListValue: &qdrant.ListValue{Values: []*qdrant.Value{}},
-		},
-	}
+	// Contradicts: carried forward on re-upsert, empty list on create
+	payload["contradicts"] = qutil.NvList(existingContradicts)
+	// Supports: carried forward on re-upsert, empty list on create
+	payload["supports"] = qutil.NvList(existingSupports)
 
 	if len(fp.Tags) > 0 {
 		setPayloadTags(payload, fp.Tags)
@@ -407,7 +427,7 @@ func (s *Server) handleFactsPost(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	resp := pointToFactResponse(point.Payload, fp.Key)
+	resp := pointToFactResponse(point.Payload, fp.Key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
@@ -434,7 +454,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			writeError(w, 404, "NOT_FOUND", fmt.Sprintf("fact not found: %s", key))
 			return
 		}
-		resp := pointToFact(points[0])
+		resp := pointToFact(points[0], s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 		if resp == nil {
 			writeError(w, 500, "INVALID_DATA", "corrupt fact data")
 			return
@@ -546,12 +566,16 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 		resp := make([]factResponse, 0, len(points))
 		for _, p := range points {
 			key, _ := qutil.GetPayloadString(p.GetPayload(), "fact_key")
-			fr := pointToFactResponse(p.GetPayload(), key)
+			fr := pointToFactResponse(p.GetPayload(), key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 			if fr != nil {
 				fr.Score = float64(p.GetScore())
 				resp = append(resp, *fr)
 			}
 		}
+
+		// Reconsolidation-on-recall / accessibility decay (B1/B5): semantic
+		// fact search is a recall path, so stamp the returned facts.
+		stampFactsRecalled(s, r.Context(), points)
 
 		writeJSON(w, 200, map[string]any{"entries": resp})
 		return
@@ -672,7 +696,7 @@ func (s *Server) handleFactsGet(w http.ResponseWriter, r *http.Request) {
 			}
 			break
 		}
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays); fr != nil {
 			resp = append(resp, *fr)
 		}
 	}
@@ -798,6 +822,11 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 
 	payload["updated_at"] = qutil.Nv(now)
 
+	// Reconsolidation-on-recall (B5): an update within the recall window is
+	// recorded as a reconsolidation of the just-recalled memory. Read against
+	// the original payload copied above (last_recalled_at is untouched here).
+	s.applyReconsolidationV(payload, time.Now().UTC())
+
 	// Read the final fact value from the updated payload for embedding
 	finalValue := ""
 	if v := payload["fact_value"]; v != nil {
@@ -827,7 +856,7 @@ func (s *Server) handleFactsPut(w http.ResponseWriter, r *http.Request) {
 		go s.registerProvenanceLink(s.shutdownCtx, key, *req.Source, vaultName)
 	}
 
-	resp := pointToFactResponse(payload, key)
+	resp := pointToFactResponse(payload, key, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 	writeJSON(w, 200, resp)
 }
 
@@ -962,6 +991,18 @@ func (s *Server) handleFactsPatch(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		// Reconsolidation-on-recall (B5): if this fact was recalled within the
+		// window, record the update as a reconsolidation event. Computed
+		// per-key from the fact's own last_recalled_at read above.
+		reconFields := map[string]any{}
+		if s.applyReconsolidation(points[0].GetPayload(), reconFields, time.Now().UTC()) {
+			if err := qc.SetPayload(r.Context(), collection, []*qdrant.PointId{{
+				PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+			}}, qdrant.NewValueMap(reconFields)); err != nil {
+				s.log(r.Context()).Warn("reconsolidation stamp failed", "key", key, "error", err)
+			}
+		}
+
 		// Handle tags separately: SetPayload can't "delete" a key. We need
 		// to overwrite fact_tags. If nil was passed, don't touch tags.
 		if req.Updates.Tags != nil {
@@ -1077,7 +1118,10 @@ func isAllDigits(s string) bool {
 // segment). Returns empty string if no version pattern is found.
 func versionKeyPrefix(key string) string {
 	parts := strings.Split(key, "/")
-	for i, part := range parts {
+	// Iterate in reverse so the last version segment wins, matching
+	// the pruner's parseVersionedKey (nested API versions are more specific).
+	for i := len(parts) - 1; i >= 0; i-- {
+		part := parts[i]
 		if len(part) > 1 && part[0] == 'v' {
 			var v int
 			for _, c := range part[1:] {
@@ -1088,7 +1132,7 @@ func versionKeyPrefix(key string) string {
 				v = v*10 + int(c-'0')
 			}
 			if v >= 1 {
-				parts = parts[:i] // drop version and everything after
+				parts = parts[:i]
 				return strings.Join(parts, "/")
 			}
 		}
@@ -1171,13 +1215,19 @@ func (s *Server) supersedeOlderVersions(ctx context.Context, key string, current
 			continue
 		}
 
-		if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{{
-			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
-		}}, qdrant.NewValueMap(map[string]any{
+		now := time.Now().UTC()
+		fields := map[string]any{
 			"status":        "superseded",
 			"superseded_by": currentVersion,
-			"updated_at":    time.Now().UTC().Format(time.RFC3339),
-		})); err != nil {
+			"updated_at":    now.Format(time.RFC3339),
+		}
+		// Reconsolidation-on-recall (B5): if this older version was recalled
+		// within the window, mark the supersede as a reconsolidation event.
+		s.applyReconsolidation(payload, fields, now)
+
+		if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{{
+			PointIdOptions: &qdrant.PointId_Uuid{Uuid: pointID},
+		}}, qdrant.NewValueMap(fields)); err != nil {
 			s.logger.Warn("supersedeOlderVersions: failed to mark", "key", factKey, "error", err)
 			continue
 		}
@@ -1348,10 +1398,20 @@ func (s *Server) migrateFacts() {
 				continue
 			}
 
+			// Preserve existing vector if available; fall back to zero vector
+			// so migration doesn't destroy embeddings for the embedded store.
+			vec := store.GetPointVector(p)
+			if vec == nil || len(vec) == 0 {
+				vec = make([]float32, s.cfg.FactsVectorSize)
+			}
 			point := &qdrant.PointStruct{
 				Id:      p.Id,
 				Payload: payload,
-				Vectors: s.zeroFactVector(),
+				Vectors: &qdrant.Vectors{
+					VectorsOptions: &qdrant.Vectors_Vector{
+						Vector: &qdrant.Vector{Data: vec},
+					},
+				},
 			}
 
 			if err := s.facts.Upsert(ctx, []*qdrant.PointStruct{point}); err != nil {
@@ -1414,16 +1474,16 @@ func (s *Server) handleFacts(w http.ResponseWriter, r *http.Request) {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 // pointToFact converts a Qdrant RetrievedPoint to a factResponse with all lifecycle fields.
-func pointToFact(p *qdrant.RetrievedPoint) *factResponse {
+func pointToFact(p *qdrant.RetrievedPoint, decayEnabled bool, halfLifeDays float64) *factResponse {
 	if p == nil {
 		return nil
 	}
-	return pointToFactResponse(p.GetPayload(), "")
+	return pointToFactResponse(p.GetPayload(), "", decayEnabled, halfLifeDays)
 }
 
 // pointToFactResponse builds a factResponse from a payload map and (optionally) a key.
 // If key is provided, it's used; otherwise reads from payload.
-func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *factResponse {
+func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string, decayEnabled bool, halfLifeDays float64) *factResponse {
 	fr := &factResponse{}
 
 	if keyOverride != "" {
@@ -1457,6 +1517,21 @@ func pointToFactResponse(payload map[string]*qdrant.Value, keyOverride string) *
 	fr.ValidUntil, _ = qutil.GetPayloadString(payload, "valid_until")
 	fr.ReadCount, _ = qutil.GetPayloadInt(payload, "access_count")
 	fr.LastReadAt, _ = qutil.GetPayloadString(payload, "last_accessed_at")
+	// Accessibility / effective_confidence (B1) are computed live from the
+	// payload's last_accessed_at rather than read from a stored field. The
+	// stored value was stamped at access time (when last_accessed_at == now),
+	// so it always reported ~1.0 and never reflected real decay. Computing on
+	// read gives a true decayed value, matching what review stats already do.
+	if decayEnabled {
+		now := time.Now().UTC()
+		acc := pruner.Accessibility(payload, now, halfLifeDays)
+		eff := pruner.EffectiveConfidence(payload, now, halfLifeDays)
+		fr.Accessibility = &acc
+		fr.EffectiveConfidence = &eff
+	}
+	fr.LastRecalledAt, _ = qutil.GetPayloadString(payload, "last_recalled_at")
+	fr.ReconsolidatedAt, _ = qutil.GetPayloadString(payload, "reconsolidated_at")
+	fr.ReconsolidationChain = qutil.GetPayloadStringList(payload, "reconsolidation_chain")
 
 	if fr.Status == "" {
 		fr.Status = "active"
@@ -1725,11 +1800,45 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 		s.log(ctx).Debug("incrementFactAccess: fact not found", "key", factKey, "error", err)
 		return
 	}
-	pt := points[0]
+	s.stampFactPointRecalled(ctx, points[0])
+}
+
+// stampFactsRecalled records recall access (access_count, last_accessed_at,
+// last_recalled_at, decay fields) for a batch of facts that were just returned
+// by a recall path (semantic fact search, /ask fact context). It is the shared
+// entry point so that reconsolidation-on-recall (B5) and accessibility decay
+// (B1) are stamped consistently regardless of which endpoint recalled the fact.
+//
+// It is a cheap no-op when neither reconsolidation nor decay is enabled and the
+// per-point debounce would skip the write anyway. Each point is stamped
+// independently; a failure on one does not abort the rest.
+func stampFactsRecalled[T factPoint](s *Server, ctx context.Context, points []T) {
+	for _, pt := range points {
+		s.stampFactPointRecalled(ctx, pt)
+	}
+}
+
+// factPoint is the minimal surface shared by qdrant.RetrievedPoint (scroll) and
+// qdrant.ScoredPoint (search) so the recall-stamping helpers accept results
+// from either API.
+type factPoint interface {
+	GetId() *qdrant.PointId
+	GetPayload() map[string]*qdrant.Value
+}
+
+// stampFactPointRecalled applies the access/recall/decay payload update to a
+// single already-fetched fact point. Callers that only have a fact key should
+// use incrementFactAccess; recall paths that already hold the points should use
+// stampFactsRecalled.
+func (s *Server) stampFactPointRecalled(ctx context.Context, pt factPoint) {
+	if pt == nil {
+		return
+	}
 	pointID := pt.GetId()
 	if pointID == nil || pointID.GetUuid() == "" {
 		return
 	}
+	factKey, _ := qutil.GetPayloadString(pt.GetPayload(), "fact_key")
 
 	// Read current access_count or default 0
 	currentCount := qutil.GetPayloadIntValue(pt.GetPayload(), "access_count")
@@ -1754,9 +1863,79 @@ func (s *Server) incrementFactAccess(ctx context.Context, factKey string) {
 		"access_count":     qutil.Nv(float64(newCount)),
 		"last_accessed_at": qutil.Nv(nowStr),
 	}
+
+	// Reconsolidation-on-recall (B5): stamp the recall timestamp so that a
+	// subsequent update within the reconsolidation window is treated as a
+	// rewrite of the freshly-recalled memory rather than a cold edit
+	// (Nader et al. 2000). This is independent of the debounced last_accessed_at
+	// above and is only written when reconsolidation is enabled.
+	if s.cfg.ReconsolidationEnabled {
+		setPayload["last_recalled_at"] = qutil.Nv(nowStr)
+	}
+
+	// Note: accessibility / effective_confidence are intentionally NOT stamped
+	// here. Stamping at access time (when last_accessed_at == now) always yields
+	// ~1.0 and never reflects real decay. These fields are computed live in
+	// pointToFactResponse from the stored last_accessed_at instead (B1).
+
 	if err := s.facts.SetPayload(ctx, s.factsCollectionFor(ctx), []*qdrant.PointId{pointID}, setPayload); err != nil {
 		s.log(ctx).Debug("incrementFactAccess: set payload failed", "key", factKey, "error", err)
 	}
+}
+
+// applyReconsolidation records a reconsolidation event when a mutation lands
+// within the reconsolidation window of the fact's last recall (Nader et al.
+// 2000). It reads last_recalled_at from the current payload and, when the
+// window is satisfied, writes reconsolidated_at into setPayload and appends the
+// recall timestamp to the immutable reconsolidation_chain. It is a no-op when
+// reconsolidation is disabled or the fact was not recently recalled.
+//
+// setPayload must be the map of fields about to be written for the fact; the
+// updated chain is written back into it. The raw event log is never touched.
+func (s *Server) applyReconsolidation(current map[string]*qdrant.Value, setPayload map[string]any, now time.Time) bool {
+	nowStr, chain, ok := s.reconsolidationChain(current, now)
+	if !ok {
+		return false
+	}
+	setPayload["reconsolidated_at"] = nowStr
+	setPayload["reconsolidation_chain"] = chain
+	return true
+}
+
+// applyReconsolidationV is the qdrant.Value variant of applyReconsolidation for
+// callers (e.g. the review flow) that mutate a map[string]*qdrant.Value in
+// place. It reads the prior state and writes the updated chain into the same map.
+func (s *Server) applyReconsolidationV(payload map[string]*qdrant.Value, now time.Time) bool {
+	nowStr, chain, ok := s.reconsolidationChain(payload, now)
+	if !ok {
+		return false
+	}
+	payload["reconsolidated_at"] = qutil.Nv(nowStr)
+	payload["reconsolidation_chain"] = qutil.NvList(chain)
+	return true
+}
+
+// reconsolidationChain decides whether a mutation at time now counts as a
+// reconsolidation of a recently-recalled fact and, if so, returns the new
+// timestamp and the appended reconsolidation_chain. Nader et al. 2000.
+func (s *Server) reconsolidationChain(current map[string]*qdrant.Value, now time.Time) (string, []string, bool) {
+	if !s.cfg.ReconsolidationEnabled {
+		return "", nil, false
+	}
+	lastRecalledStr, ok := qutil.GetPayloadString(current, "last_recalled_at")
+	if !ok || lastRecalledStr == "" {
+		return "", nil, false
+	}
+	lastRecalled, err := time.Parse(time.RFC3339, lastRecalledStr)
+	if err != nil {
+		return "", nil, false
+	}
+	if now.Sub(lastRecalled) > s.cfg.ReconsolidationWindow || now.Before(lastRecalled) {
+		return "", nil, false
+	}
+	nowStr := now.Format(time.RFC3339)
+	chain := append(qutil.GetPayloadStringList(current, "reconsolidation_chain"), nowStr)
+	return nowStr, chain, true
 }
 
 // ── /v1/facts/{key}/provenance — Fact Lineage (#803) ──────────────────────────

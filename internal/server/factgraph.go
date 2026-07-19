@@ -83,7 +83,7 @@ func (s *Server) fetchFactByPayloadKey(ctx context.Context, store store.FactStor
 	if err != nil || len(points) == 0 {
 		return nil
 	}
-	return pointToFact(points[0])
+	return pointToFact(points[0], s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 }
 
 // traverseFactGraph does BFS traversal of forward + reverse edges up to maxDepth.

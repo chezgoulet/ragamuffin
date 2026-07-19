@@ -1,16 +1,16 @@
 # memory-ragamuffin-openclaw
 
-OpenClaw memory plugin backed by Ragamuffin — per-agent Qdrant-isolated
-semantic search via vault recall. All embedding happens server-side in
-Ragamuffin; no local embedding model is required.
+OpenClaw memory plugin backed by Ragamuffin via **Model Context Protocol (MCP)**.
+Discovers all server tools dynamically — no hardcoded tool definitions needed.
+All embedding happens server-side; no local embedding model required.
+
+The plugin connects to Ragamuffin's `/mcp` endpoint using JSON-RPC 2.0,
+dynamically registers every tool the server exposes, and keeps the MCP
+connection for lifecycle hooks (auto-recall, auto-capture).
 
 ## Install
 
-This is an in-house plugin, not on npm. Install by linking the plugin
-directory into your OpenClaw plugins load path:
-
 ```bash
-# From the ragamuffin repo root
 cp -r plugins/memory-ragamuffin-openclaw /path/to/openclaw/plugins/
 ```
 
@@ -51,30 +51,37 @@ Config values take precedence over env vars.
 
 ## Tools
 
-| Tool | Description |
-|---|---|
-| `memory_recall` | Semantic search across vault memories |
-| `memory_store` | Save a fact (key-value) to vault |
-| `memory_forget` | Delete a fact by key |
+Dynamically discovered from the MCP server on startup. Typically includes:
+- `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_store`, `ragamuffin_hybrid_search`
+- `ragamuffin_fact_get`, `ragamuffin_fact_put`, `ragamuffin_fact_list`, `ragamuffin_fact_delete`
+- `ragamuffin_fact_graph`, `ragamuffin_fact_history`, `ragamuffin_fact_provenance`
+- `ragamuffin_review`, `ragamuffin_verify`, `ragamuffin_context_bundle`, `ragamuffin_dialectic`
+- `ragamuffin_peer_list`, `ragamuffin_briefing`, `ragamuffin_changes`
+- `ragamuffin_contradictions`, `ragamuffin_links`, `ragamuffin_draft`, `ragamuffin_audit`
+- `ragamuffin_graph_entity`, `ragamuffin_graph_edges`, `ragamuffin_graph_communities`
+- `ragamuffin_stats`, `ragamuffin_status`
+- `ragamuffin_session_create`, `ragamuffin_session_get`, `ragamuffin_session_list`
+- `ragamuffin_turn_append`, `ragamuffin_get_chunk`, `ragamuffin_facts`
+
+Run `ragamuffin tools` via the OpenClaw CLI to see the full live list (typically ~33 tools).
 
 ## Hooks
 
 | Hook | Condition | Behavior |
-|---|---|---|
-| `before_prompt_build` | `autoRecall: true` | Injects relevant memories as XML context |
-| `agent_end` | `autoCapture: true` | Stores important user statements as facts |
+|------|-----------|----------|
+| `before_prompt_build` | `autoRecall: true` | Injects relevant memories as XML context via MCP `ragamuffin_recall` |
+| `agent_end` | `autoCapture: true` | Stores important user statements via MCP `ragamuffin_fact_put` |
 
 ## Fail-Open
 
-If Ragamuffin is unreachable, the plugin logs a warning and returns:
-- Tool calls return a descriptive error message.
-- Hooks silently skip injection — the agent continues without memory.
+If Ragamuffin is unreachable, the plugin logs a warning and:
+- Tool registration is skipped (agent gets no Ragamuffin tools, runs normally)
+- Auto-recall/auto-capture silently skip their hooks
+- The agent continues without memory
 
 ## Development
 
 ```bash
 cd plugins/memory-ragamuffin-openclaw
-
-# Run tests (no npm install needed — uses Node's native test runner)
 node --test 'tests/*.test.js'
 ```

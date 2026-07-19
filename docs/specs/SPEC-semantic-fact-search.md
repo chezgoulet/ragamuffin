@@ -1,9 +1,6 @@
 # SPEC: Semantic Fact Search for v1.0
 
-**Status:** DRAFT
-**Author:** Vigilant
-**Date:** 2026-06-10
-**Target:** v1.0 (must land before public release)
+**Status:** Done (v0.9.x) — semantic fact search implemented. Facts embedded on upsert, `?query=` on GET /v1/facts, hybrid search, real 1536-dim vectors.
 
 ## Problem
 
@@ -84,7 +81,7 @@ Existing facts have 1536-dim zero vectors. The collection's vector dimension is 
 | `.env.example` | Add `RAGAMUFFIN_FACTS_VECTOR_SIZE` with comment explaining it defaults to `EMBEDDING_DIMS` |
 | `internal/server/facts.go` comments | Remove "Facts use zero vectors (no semantic search)" comment block; replace with accurate description |
 
-## ~Acceptance Criteria~ (Why Write When You Can Just Do)
+## Acceptance Criteria
 
 1. POST `/v1/facts` stores fact with real vector — verify via Qdrant point read
 2. GET `/v1/facts?query="arch linux"` returns facts about Arch Linux ranked by relevance

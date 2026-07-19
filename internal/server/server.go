@@ -16,10 +16,12 @@ import (
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/config"
+	"github.com/chezgoulet/ragamuffin/internal/consolidation"
 	"github.com/chezgoulet/ragamuffin/internal/embedding"
 	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/extraction"
 	"github.com/chezgoulet/ragamuffin/internal/git"
+	"github.com/chezgoulet/ragamuffin/internal/graph"
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/ingress"
 	"github.com/chezgoulet/ragamuffin/internal/llm"
@@ -28,6 +30,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/pruner"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	"github.com/chezgoulet/ragamuffin/internal/ratelimit"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	"github.com/chezgoulet/ragamuffin/internal/watcher"
 	"github.com/chezgoulet/ragamuffin/web"
 	"github.com/google/uuid"
@@ -74,6 +77,29 @@ type Server struct {
 
 	qdrantReconnecting bool
 	qdrantMu           sync.RWMutex
+
+	// Temporal knowledge graph (B2). Optional; nil when RAGAMUFFIN_GRAPH_ENABLED
+	// is off. graphExtractor is nil without an LLM.
+	graph                    *graph.Store
+	graphExtractor           *graph.Extractor
+	graphCommunitySummarizer *graph.CommunitySummarizer // B4; nil without an LLM
+
+	// Sleep-time consolidation worker (B3). Optional; nil when disabled.
+	consolidator *consolidation.Consolidator
+
+	// lexical indexes provide in-process BM25 recall, fused with dense
+	// semantic search via RRF for hybrid retrieval. Keyed by vault name.
+	lexicalMu sync.Mutex
+	lexical   map[string]*retrieval.LexicalIndex
+}
+
+// SetGraph attaches the temporal knowledge graph store and (optional) extractor.
+func (s *Server) SetGraph(store *graph.Store, ext *graph.Extractor) {
+	s.graph = store
+	s.graphExtractor = ext
+	if store != nil && s.llm != nil {
+		s.graphCommunitySummarizer = graph.NewCommunitySummarizer(store, s.llm, s.logger)
+	}
 }
 
 // New creates a new Server.
@@ -100,6 +126,7 @@ func New(cfg *config.Config, qc qdrant.FactStore, factsQc qdrant.FactStore, ec e
 		requestCounts:  make(map[string]map[string]int64),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
+		lexical:        make(map[string]*retrieval.LexicalIndex),
 	}
 
 	// Configure rate limits
@@ -169,6 +196,16 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/events", s.withRequestID(s.handleEvents))
 	mux.HandleFunc("/graph", s.withRequestID(s.handleGraph))
 	mux.HandleFunc("/webhook/git", s.withRequestID(s.handleWebhookGit))
+	mux.HandleFunc("/v1/consolidation/status", s.withRequestID(s.handleConsolidationStatus))
+
+	// Temporal knowledge graph (B2) — bare endpoints (single-tenant default vault)
+	mux.HandleFunc("/v1/graph/ingest", s.withRequestID(s.handleGraphIngest))
+	mux.HandleFunc("/v1/graph/entity/{id}", s.withRequestID(s.handleGraphEntity))
+	mux.HandleFunc("/v1/graph/edges", s.withRequestID(s.handleGraphEdges))
+	mux.HandleFunc("/v1/graph/stats", s.withRequestID(s.handleGraphStats))
+	mux.HandleFunc("/v1/graph/community/detect", s.withRequestID(s.handleGraphCommunityDetect))
+	mux.HandleFunc("/v1/graph/community/{id}", s.withRequestID(s.handleGraphCommunity))
+	mux.HandleFunc("/v1/graph/communities", s.withRequestID(s.handleGraphCommunities))
 
 	// Static file server (catch-all for web UI)
 	staticHandler := http.FileServer(http.FS(web.FS))
@@ -199,6 +236,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.handleChunksList))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleProvenance))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.handleFactHistory))))
+		mux.HandleFunc("/vault/{name}/v1/graph/ingest", s.withRequestID(s.withVault(s.handleGraphIngest)))
+		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.handleGraphEntity)))
+		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.handleGraphEdges)))
+		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.handleGraphStats)))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/detect", s.withRequestID(s.withVault(s.handleGraphCommunityDetect)))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/{id}", s.withRequestID(s.withVault(s.handleGraphCommunity)))
+		mux.HandleFunc("/vault/{name}/v1/graph/communities", s.withRequestID(s.withVault(s.handleGraphCommunities)))
 	} else {
 		// Single-tenant routes — /vault/{name} routes (same set as multi-tenant, validated against single vault name)
 		vaultName := filepath.Base(s.cfg.VaultPath)
@@ -229,6 +273,13 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/provenance", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleProvenance)))))
 		mux.HandleFunc("/vault/{name}/v1/facts/{key}/history", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/facts", s.requireVaultName(vaultName, s.handleFactHistory)))))
 		mux.HandleFunc("/vault/{name}/v1/chunks", s.withRequestID(s.withQdrant(s.withVaultRateLimit("/v1/chunks", s.requireVaultName(vaultName, s.handleChunksList)))))
+		mux.HandleFunc("/vault/{name}/v1/graph/ingest", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphIngest))))
+		mux.HandleFunc("/vault/{name}/v1/graph/entity/{id}", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEntity))))
+		mux.HandleFunc("/vault/{name}/v1/graph/edges", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphEdges))))
+		mux.HandleFunc("/vault/{name}/v1/graph/stats", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphStats))))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/detect", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunityDetect))))
+		mux.HandleFunc("/vault/{name}/v1/graph/community/{id}", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunity))))
+		mux.HandleFunc("/vault/{name}/v1/graph/communities", s.withRequestID(s.withVault(s.requireVaultName(vaultName, s.handleGraphCommunities))))
 
 	}
 
@@ -332,6 +383,25 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 
 	// MCP bolt-on
 	s.mcpHandler = mcp.New(s.mcpTools(), s.mcpDispatch, s.logger, Version)
+	s.mcpHandler.SetNotificationHandler(context.Background(), func(ctx context.Context, method string, params json.RawMessage) error {
+		switch method {
+		case "notifications/session_end":
+			var p struct {
+				SessionID string `json:"session_id"`
+				Vault     string `json:"vault"`
+			}
+			if err := json.Unmarshal(params, &p); err != nil {
+				return fmt.Errorf("invalid session_end params: %w", err)
+			}
+			if p.SessionID == "" {
+				return fmt.Errorf("session_id is required")
+			}
+			return s.doFinalizeSession(ctx, p.SessionID, p.Vault)
+		default:
+			s.logger.Warn("mcp: unknown notification", "method", method)
+			return nil
+		}
+	})
 	mux.Handle("/mcp", s.mcpHandler)
 }
 
@@ -555,6 +625,21 @@ func (s *Server) llmFor(ctx context.Context) llm.Synthesizer {
 		}
 	}
 	return s.llm
+}
+
+// completerFor returns an llm.Completer for retrieval-side query rewriting and
+// reranking, or nil if no LLM is configured for the request's vault. It reuses
+// the same per-vault LLM resolution as llmFor; the returned Synthesizer is a
+// *llm.Client, which also satisfies llm.Completer.
+func (s *Server) completerFor(ctx context.Context) llm.Completer {
+	syn := s.llmFor(ctx)
+	if syn == nil {
+		return nil
+	}
+	if c, ok := syn.(llm.Completer); ok {
+		return c
+	}
+	return nil
 }
 
 // embeddingFor returns the per-vault embedding client from context,

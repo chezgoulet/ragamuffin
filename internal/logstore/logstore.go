@@ -166,8 +166,12 @@ func migrate(db *sql.DB) error {
 	// Schema v2: add finalized_at column for session finalization
 	_, err = db.Exec(`ALTER TABLE sessions ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`)
 	if err != nil {
-		// Column may already exist (no-op), which is fine
-		_ = err
+		// Column may already exist after a partial migration — safe to skip.
+		// Propagate other errors (disk full, corruption) so the caller can
+		// surface them and fail fast.
+		if !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("logstore: schema migration v2: %w", err)
+		}
 	}
 
 	return nil
@@ -486,11 +490,25 @@ func (s *Store) DeleteSession(ctx context.Context, id string) error {
 
 // DeleteSessionsByVault hard-deletes all sessions and their turns for a vault.
 func (s *Store) DeleteSessionsByVault(ctx context.Context, vault string) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("logstore: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM session_turns WHERE session_id IN (SELECT id FROM sessions WHERE vault = ?)`, vault,
+	); err != nil {
+		return 0, fmt.Errorf("logstore: delete turns by vault: %w", err)
+	}
+	result, err := tx.ExecContext(ctx,
 		`DELETE FROM sessions WHERE vault = ?`, vault,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("logstore: delete sessions by vault: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("logstore: commit delete: %w", err)
 	}
 	n, _ := result.RowsAffected()
 	return n, nil

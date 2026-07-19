@@ -231,6 +231,33 @@ func TestHandleAsk_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestAskRequest_DecodesRewriteRerank(t *testing.T) {
+	var req askRequest
+	body := `{"query":"q","mode":"rag","top_k":5,"rewrite":"hyde","rerank":true}`
+	if err := json.Unmarshal([]byte(body), &req); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if req.Rewrite != "hyde" {
+		t.Errorf("expected rewrite=hyde, got %q", req.Rewrite)
+	}
+	if !req.Rerank {
+		t.Errorf("expected rerank=true, got false")
+	}
+}
+
+func TestAskRequest_RewriteRerankOmittedDefaults(t *testing.T) {
+	var req askRequest
+	if err := json.Unmarshal([]byte(`{"query":"q"}`), &req); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if req.Rewrite != "" {
+		t.Errorf("expected empty rewrite (server-config fallback), got %q", req.Rewrite)
+	}
+	if req.Rerank {
+		t.Errorf("expected rerank=false by default, got true")
+	}
+}
+
 func TestHandleAsk_Defaults(t *testing.T) {
 	t.Skip("needs embedding + LLM backends for full request path")
 	srv := newTestServer()

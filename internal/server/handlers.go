@@ -23,6 +23,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/qdrant"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	"github.com/chezgoulet/ragamuffin/internal/tokenutil"
 )
 
@@ -102,10 +103,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	for _, name := range s.indexers.VaultNames() {
 		vs := s.indexers.Stats(name)
 		vaults[name] = map[string]any{
-			"chunk_count":  vs.ChunkCount,
-			"file_count":   vs.FileCount,
-			"last_indexed": vs.LastIndexed.Format(time.RFC3339),
-			"indexing":     vs.Indexing,
+			"chunk_count": vs.ChunkCount,
+			"file_count":  vs.FileCount,
+			"indexing":    vs.Indexing,
+		}
+		if !vs.LastIndexed.IsZero() {
+			vaults[name]["last_indexed"] = vs.LastIndexed.Format(time.RFC3339)
 		}
 	}
 	if len(vaults) > 0 {
@@ -285,10 +288,13 @@ type recallRequest struct {
 	SourceFilter   string         `json:"source_filter"`
 	Filters        *recallFilters `json:"filters,omitempty"`
 	Detail         string         `json:"detail"`
+	Mode           string         `json:"mode,omitempty"`        // dense | sparse | hybrid (default dense)
 	TimeFilter     string         `json:"time_filter,omitempty"` // active | active_at:date | all
 	Vaults         string         `json:"vaults,omitempty"`      // cross-vault: comma-separated names
 	All            bool           `json:"all,omitempty"`         // cross-vault: search all vaults
 	Expand         bool           `json:"expand,omitempty"`      // associative recall: also search facts (#794)
+	Rewrite        string         `json:"rewrite,omitempty"`     // off | hyde | stepback | multiquery (default: server config)
+	Rerank         bool           `json:"rerank,omitempty"`      // listwise LLM rerank of fused top-k (requires RAGAMUFFIN_RERANK)
 }
 
 type recallResult struct {
@@ -413,6 +419,28 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 	if req.Detail != "l0" && req.Detail != "l1" && req.Detail != "l2" {
 		writeError(w, 400, "INVALID_REQUEST", "detail must be one of: l0, l1, l2")
 		return
+	}
+
+	// Resolve retrieval mode. Config default is dense (unchanged behavior);
+	// hybrid fuses dense semantic + in-process BM25 lexical via RRF.
+	if req.Mode == "" {
+		req.Mode = s.cfg.RecallMode
+	}
+	if req.Mode == "" {
+		req.Mode = "dense"
+	}
+	if req.Mode != "dense" && req.Mode != "sparse" && req.Mode != "hybrid" {
+		writeError(w, 400, "INVALID_REQUEST", "mode must be one of: dense, sparse, hybrid")
+		return
+	}
+
+	// Validate optional per-request query-rewrite override. Empty falls back to
+	// the server default in doRecall.
+	if req.Rewrite != "" {
+		if _, ok := retrieval.ParseRewriteMode(req.Rewrite); !ok {
+			writeError(w, 400, "INVALID_REQUEST", "rewrite must be one of: off, hyde, stepback, multiquery")
+			return
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
@@ -573,7 +601,12 @@ func (s *Server) handleRecall(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if b.Len() > 0 {
-			ans, err := s.llmFor(ctx).Synthesize(ctx, req.Query, b.String())
+			llm := s.llmFor(ctx)
+			if llm == nil {
+				writeError(w, 503, "LLM_UNAVAILABLE", "answer synthesis requested but no LLM is configured")
+				return
+			}
+			ans, err := llm.Synthesize(ctx, req.Query, b.String())
 			if err == nil {
 				answer = ans
 			} else {
@@ -1089,9 +1122,12 @@ func (s *Server) handleChunksDelete(w http.ResponseWriter, r *http.Request) {
 // ── /ask ───────────────────────────────────────────────────────────────────────
 
 type askRequest struct {
-	Query string `json:"query"`
-	Mode  string `json:"mode"`
-	TopK  int    `json:"top_k"`
+	Query   string `json:"query"`
+	Mode    string `json:"mode"`
+	TopK    int    `json:"top_k"`
+	Cite    bool   `json:"cite"`
+	Rewrite string `json:"rewrite,omitempty"` // off | hyde | stepback | multiquery (default: server config)
+	Rerank  bool   `json:"rerank,omitempty"`  // listwise LLM rerank of retrieved chunks (requires RAGAMUFFIN_RERANK)
 }
 
 // explanationEntry is a single chunk's contribution to an /ask response (#804).
@@ -1105,42 +1141,33 @@ type explanationEntry struct {
 
 // queryContext retrieves context text for /ask requests.
 // Handles RAG retrieval, source dedup, auto-mode threshold, and full-mode fallback.
-func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int) (contextText string, sources []string, modeUsed string, err error) {
+func (s *Server) queryContext(ctx context.Context, query string, mode string, topK int, rewrite string, rerank bool) (contextText string, sources []string, modeUsed string, err error) {
 	modeUsed = mode
 
 	if mode == "rag" || mode == "auto" {
-		vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, query)
-		if err != nil {
-			return "", nil, modeUsed, fmt.Errorf("embedding failed: %w", err)
-		}
-		results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0.0, "", nil)
+		// Route through doRecall so /ask honors the full retrieval pipeline:
+		// query rewrite (HyDE/step-back/multi-query) and listwise rerank.
+		results, topScore, err := s.doRecall(ctx, recallRequest{
+			Query:   query,
+			TopK:    topK,
+			Detail:  "l2",
+			Rewrite: rewrite,
+			Rerank:  rerank,
+		})
 		if err != nil {
 			return "", nil, modeUsed, fmt.Errorf("search failed: %w", err)
 		}
 
 		seenSources := make(map[string]bool)
-		var topScore float32
 		var b strings.Builder
 		for _, r := range results {
-			if r.Score > topScore {
-				topScore = r.Score
+			if !seenSources[r.SourceFile] && r.SourceFile != "" {
+				sources = append(sources, r.SourceFile)
+				seenSources[r.SourceFile] = true
 			}
-			src := ""
-			if s, ok := r.Payload["source_file"]; ok {
-				sv := s.GetStringValue()
-				if !seenSources[sv] {
-					sources = append(sources, sv)
-					seenSources[sv] = true
-				}
-				src = sv
-			}
-			ci := int64(0)
-			if c, ok := r.Payload["chunk_index"]; ok {
-				ci = c.GetIntegerValue()
-			}
-			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", src, ci, r.Score))
-			if text, ok := r.Payload["text"]; ok {
-				b.WriteString(text.GetStringValue())
+			b.WriteString(fmt.Sprintf("[Source: %s | Chunk %d | Score: %.3f]\n", r.SourceFile, r.ChunkIndex, r.Score))
+			if r.Text != "" {
+				b.WriteString(r.Text)
 				b.WriteString("\n\n")
 			}
 		}
@@ -1148,8 +1175,10 @@ func (s *Server) queryContext(ctx context.Context, query string, mode string, to
 
 		// ── Fact retrieval for temporal context ──
 		if s.facts != nil && contextText != "" {
-			if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
-				contextText += "\n" + factText
+			if vector, verr := s.embeddingFor(ctx).EmbedSingle(ctx, query); verr == nil {
+				if factText := s.appendFactContext(ctx, vector, topK); factText != "" {
+					contextText += "\n" + factText
+				}
 			}
 		}
 
@@ -1261,6 +1290,11 @@ func (s *Server) appendFactContext(ctx context.Context, vector []float32, topK i
 		b.WriteString(value)
 		b.WriteString("\n\n")
 	}
+
+	// Reconsolidation-on-recall / accessibility decay (B1/B5): the /ask fact
+	// context is a recall path, so stamp the returned facts.
+	stampFactsRecalled(s, ctx, factResults)
+
 	return b.String()
 }
 
@@ -1299,7 +1333,31 @@ func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
 
-	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK)
+	cite := req.Cite || s.cfg.AskCiteDefault
+
+	if cite {
+		answer, sources, citations, err := s.doAskCited(ctx, req.Query, req.TopK)
+		if err != nil {
+			writeError(w, 502, "ASK_ERROR", err.Error())
+			return
+		}
+		resp := map[string]any{
+			"answer":    answer,
+			"sources":   sources,
+			"mode_used": "rag",
+			"citations": citations,
+		}
+		if s.emitter != nil {
+			vault := vaultFromContext(r.Context())
+			s.emitter.Emit(events.TypeQueryProcessed, events.QueryProcessedData{
+				Query: req.Query, Results: len(sources), Vault: vault,
+			})
+		}
+		writeJSON(w, 200, resp)
+		return
+	}
+
+	answer, sources, modeUsed, explanation, err := s.doAskWithExplanation(ctx, req.Query, req.Mode, req.TopK, req.Rewrite, req.Rerank)
 	if err != nil {
 		writeError(w, 502, "ASK_ERROR", err.Error())
 		return
@@ -1609,6 +1667,9 @@ func (s *Server) handleReindex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 409, "CONFLICT", fmt.Sprintf("vault %q is already indexing", vaultName))
 		return
 	}
+
+	// Reindex is async; drop the stale lexical index so it rebuilds lazily.
+	s.InvalidateLexicalIndex(vaultName)
 
 	writeJSON(w, 202, map[string]any{
 		"status":  "accepted",
@@ -2080,7 +2141,7 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"period_hours": 24,
 		"total_events": len(entries),
-		"vaults":       vaults,
+		"agents":       vaults,
 	})
 }
 

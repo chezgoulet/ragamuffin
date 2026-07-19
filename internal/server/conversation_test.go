@@ -30,6 +30,14 @@ func (m *mockLLM) Synthesize(_ context.Context, query, context string) (string, 
 	return "", nil
 }
 
+func (m *mockLLM) SynthesizeCited(_ context.Context, query, context string) (string, error) {
+	m.synthesizeCallCount++
+	if m.synthesizeFn != nil {
+		return m.synthesizeFn(query, context), nil
+	}
+	return "", nil
+}
+
 func (m *mockLLM) Compare(_ context.Context, chunkA, chunkB, sourceA, sourceB string) (string, error) {
 	return "", nil
 }

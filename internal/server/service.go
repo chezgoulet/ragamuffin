@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/auth"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 )
 
 // ── Recall ─────────────────────────────────────────────────────────────────────
@@ -24,8 +27,40 @@ import (
 // ensuring temporal filtering, detail-level filtering, and result
 // mapping are identical across both interfaces.
 func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResult, float32, error) {
+	// Optional LLM query rewriting (HyDE / step-back / multi-query) before
+	// embedding. Degrades to the original query on any error, so recall never
+	// fails because rewriting failed. embedQuery holds the text we embed;
+	// req.Query is preserved for lexical search and reranking.
+	embedQuery := req.Query
+	if mode := s.resolveRewriteMode(req); mode != retrieval.RewriteOff {
+		if c := s.completerFor(ctx); c != nil {
+			rewrites := retrieval.Rewrite(ctx, c, mode, req.Query)
+			// Multi-query fan-out is dense-only: it fuses per-query dense
+			// rankings with RRF. For hybrid/sparse modes it would silently
+			// drop the lexical component, so restrict the fan-out to dense
+			// recall and fall back to a single rewrite for the others so
+			// their lexical search is preserved.
+			if useMultiQueryFanout(mode, req.Mode, len(rewrites)) {
+				return s.rerankIfRequested(ctx, req, func() ([]recallResult, float32, error) {
+					return s.multiQueryRecall(ctx, req, rewrites)
+				})
+			}
+			if mode == retrieval.RewriteMultiQuery && isLexicalMode(req.Mode) {
+				s.log(ctx).Debug("multi-query rewrite falls back to single query for lexical modes",
+					"mode", req.Mode)
+			}
+			if len(rewrites) > 0 && strings.TrimSpace(rewrites[0]) != "" {
+				embedQuery = rewrites[0]
+			}
+		}
+	}
+
 	// Embed query
-	vector, err := s.embeddingFor(ctx).EmbedSingle(ctx, req.Query)
+	emb := s.embeddingFor(ctx)
+	if emb == nil {
+		return nil, 0, fmt.Errorf("embedding not configured")
+	}
+	vector, err := emb.EmbedSingle(ctx, embedQuery)
 	if err != nil {
 		return nil, 0, fmt.Errorf("embedding failed: %w", err)
 	}
@@ -57,57 +92,413 @@ func (s *Server) doRecall(ctx context.Context, req recallRequest) ([]recallResul
 		}
 	}
 
-	// Search
+	// Search — dispatch by retrieval mode, then optionally rerank.
+	return s.rerankIfRequested(ctx, req, func() ([]recallResult, float32, error) {
+		switch req.Mode {
+		case "sparse":
+			return s.sparseRecall(ctx, req, filter)
+		case "hybrid":
+			return s.hybridRecall(ctx, req, vector, filter)
+		default: // dense (default, unchanged behavior)
+			return s.denseRecall(ctx, req, vector, filter)
+		}
+	})
+}
+
+// isLexicalMode reports whether a recall mode has a lexical (BM25) component
+// that the dense-only multi-query fan-out would drop.
+func isLexicalMode(mode string) bool {
+	return mode == "hybrid" || mode == "sparse"
+}
+
+// useMultiQueryFanout decides whether to take the dense multi-query RRF path.
+// It requires multi-query rewriting, more than one rewrite to fuse, and a
+// non-lexical (dense) recall mode — otherwise the lexical component would be
+// silently lost, so the caller falls back to a single rewrite instead.
+func useMultiQueryFanout(mode retrieval.RewriteMode, reqMode string, rewriteCount int) bool {
+	return mode == retrieval.RewriteMultiQuery && rewriteCount > 1 && !isLexicalMode(reqMode)
+}
+
+// resolveRewriteMode determines the effective query-rewrite mode for a request:
+// the per-request override if present, else the server default. Unrecognized
+// values fall back to RewriteOff.
+func (s *Server) resolveRewriteMode(req recallRequest) retrieval.RewriteMode {
+	raw := req.Rewrite
+	if strings.TrimSpace(raw) == "" {
+		raw = s.cfg.RetrievalRewrite
+	}
+	mode, _ := retrieval.ParseRewriteMode(raw)
+	return mode
+}
+
+// rerankIfRequested runs the underlying recall, then applies listwise LLM
+// reranking when the request opts in (req.Rerank), the server allows it
+// (RAGAMUFFIN_RERANK), and an LLM is configured. Reranking degrades to the
+// original order on any error, so it never breaks recall.
+func (s *Server) rerankIfRequested(ctx context.Context, req recallRequest, recall func() ([]recallResult, float32, error)) ([]recallResult, float32, error) {
+	results, top, err := recall()
+	if err != nil || !req.Rerank || !s.cfg.RerankEnabled || len(results) < 2 {
+		return results, top, err
+	}
+	c := s.completerFor(ctx)
+	if c == nil {
+		return results, top, nil
+	}
+	docs := make([]retrieval.RerankDoc, 0, len(results))
+	for _, r := range results {
+		docs = append(docs, retrieval.RerankDoc{ID: r.ChunkID, Text: rerankText(r)})
+	}
+	order := retrieval.Rerank(ctx, c, req.Query, docs)
+	return applyRerankOrder(results, order), top, nil
+}
+
+// multiQueryRecall fans out one dense search per rewritten query, then fuses
+// the dense ID rankings with RRF before fetching and mapping payloads. This is
+// a dense-only strategy; doRecall only routes dense-mode requests here so the
+// lexical component of hybrid/sparse recall is never silently dropped.
+func (s *Server) multiQueryRecall(ctx context.Context, req recallRequest, queries []string) ([]recallResult, float32, error) {
+	emb := s.embeddingFor(ctx)
+	if emb == nil {
+		return nil, 0, fmt.Errorf("embedding not configured")
+	}
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil, 0, fmt.Errorf("vector store not configured")
+	}
+	filter := recallFilter(req)
+	if isTemporalRecall(req.TimeFilter) {
+		if dateTo := temporalRecallDate(req.TimeFilter); dateTo != "" {
+			cond := &pb.Condition{ConditionOneOf: &pb.Condition_Field{Field: &pb.FieldCondition{
+				Key: "file_last_updated", Range: &pb.Range{Lte: float64Ptr(parseRFC3339Unix(dateTo))},
+			}}}
+			if filter != nil {
+				filter.Must = append(filter.Must, cond)
+			} else {
+				filter = &pb.Filter{Must: []*pb.Condition{cond}}
+			}
+		}
+	}
+
+	var lists [][]string
+	for _, q := range queries {
+		vec, err := emb.EmbedSingle(ctx, q)
+		if err != nil {
+			continue
+		}
+		res, err := qc.Search(ctx, vec, uint64(req.TopK*2), float32(req.ScoreThreshold), req.SourceFilter, filter)
+		if err != nil {
+			continue
+		}
+		ids := make([]string, 0, len(res))
+		for _, r := range res {
+			ids = append(ids, r.Id.GetUuid())
+		}
+		lists = append(lists, ids)
+	}
+	if len(lists) == 0 {
+		return []recallResult{}, 0, nil
+	}
+	fused := retrieval.Fuse(lists, 60)
+	if len(fused) > req.TopK {
+		fused = fused[:req.TopK]
+	}
+	return s.recallByIDs(ctx, fused, req, filter)
+}
+
+// denseRecall runs the classic single-vector semantic search.
+func (s *Server) denseRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK), float32(req.ScoreThreshold), req.SourceFilter, filter)
 	if err != nil {
 		return nil, 0, fmt.Errorf("search failed: %w", err)
 	}
+	return mapDenseResults(results, req.Detail), topScoreOf(results), nil
+}
 
-	// Map results with detail-level filtering
-	out := make([]recallResult, 0, len(results))
-	var topScore float32
-	for _, r := range results {
-		payload := r.Payload
-		res := recallResult{
-			Score:   r.Score,
-			ChunkID: r.Id.GetUuid(),
-		}
-		if r.Score > topScore {
-			topScore = r.Score
-		}
-		if v, ok := payload["text"]; ok {
-			res.Text = v.GetStringValue()
-		}
-		if v, ok := payload["first_paragraph"]; ok {
-			res.FirstParagraph = v.GetStringValue()
-		}
-		if v, ok := payload["source_file"]; ok {
-			res.SourceFile = v.GetStringValue()
-		}
-		if v, ok := payload["header"]; ok {
-			res.Header = v.GetStringValue()
-		}
-		if v, ok := payload["chunk_index"]; ok {
-			res.ChunkIndex = int(v.GetIntegerValue())
-		}
-		if v, ok := payload["file_last_updated"]; ok {
-			res.FileLastUpdated = v.GetStringValue()
-		}
+// sparseRecall runs lexical (BM25) recall only via Reciprocal Rank Fusion over
+// the in-process lexical index. Used when mode=sparse.
+func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb.Filter) ([]recallResult, float32, error) {
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
+	}
+	idx := s.lexicalIndexFor(ctx, vault)
+	if idx == nil || idx.Size() == 0 {
+		return nil, 0, fmt.Errorf("lexical index unavailable")
+	}
+	ranked := idx.Search(req.Query, req.TopK*2)
+	if len(ranked) == 0 {
+		return []recallResult{}, 0, nil
+	}
+	return s.recallByIDs(ctx, ranked, req, filter)
+}
 
-		// Detail-level field filtering
-		switch req.Detail {
-		case "l0":
-			res.Text = ""
-			res.FirstParagraph = ""
-		case "l1":
-			res.Text = ""
-		}
-		// l2: include everything
-
-		out = append(out, res)
+// hybridRecall fuses dense semantic + lexical BM25 results via Reciprocal Rank
+// Fusion (RRF). The two rankers produce heterogeneous scores (cosine vs BM25),
+// which RRF reconciles without calibration (Cormack et al., SIGIR 2009).
+func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
+	vault := vaultFromContext(ctx)
+	if vault == "" {
+		vault = "default"
 	}
 
+	denseResults, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(req.TopK*2), float32(req.ScoreThreshold), req.SourceFilter, filter)
+	if err != nil {
+		return nil, 0, fmt.Errorf("dense search failed: %w", err)
+	}
+	denseIDs := make([]string, 0, len(denseResults))
+	for _, r := range denseResults {
+		denseIDs = append(denseIDs, r.Id.GetUuid())
+	}
+
+	var lexicalIDs []string
+	if idx := s.lexicalIndexFor(ctx, vault); idx != nil && idx.Size() > 0 {
+		ranked := idx.Search(req.Query, req.TopK*2)
+		for _, r := range ranked {
+			lexicalIDs = append(lexicalIDs, r.ID)
+		}
+	}
+
+	fused := retrieval.Hybrid(denseIDs, lexicalIDs, 60)
+	if len(fused) == 0 {
+		// Degenerate: dense only.
+		return mapDenseResults(denseResults, req.Detail), topScoreOf(denseResults), nil
+	}
+	if len(fused) > req.TopK {
+		fused = fused[:req.TopK]
+	}
+	return s.recallByIDs(ctx, fused, req, filter)
+}
+
+// recallByIDs fetches payloads for a fused ranking and maps them to
+// recallResult, preserving the fused order. Used by sparse and hybrid modes.
+func (s *Server) recallByIDs(ctx context.Context, ranked []retrieval.RankedID, req recallRequest, filter *pb.Filter) ([]recallResult, float32, error) {
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil, 0, fmt.Errorf("vector store not configured")
+	}
+	ids := make([]*pb.PointId, 0, len(ranked))
+	for _, r := range ranked {
+		ids = append(ids, pb.NewIDUUID(r.ID))
+	}
+	pts, err := qc.GetPoints(ctx, qc.Collection(), ids)
+	if err != nil {
+		return nil, 0, fmt.Errorf("fetch fused points: %w", err)
+	}
+	// Preserve fused order; map by chunk id.
+	order := make(map[string]int, len(ranked))
+	for i, r := range ranked {
+		order[r.ID] = i
+	}
+	type scored struct {
+		rank  int
+		res   recallResult
+		score float32
+	}
+	collected := make([]scored, 0, len(pts))
+	for _, p := range pts {
+		id := p.Id.GetUuid()
+		rank, ok := order[id]
+		if !ok {
+			continue
+		}
+		res := mapPayloadToRecall(p.Payload, id, req.Detail)
+		collected = append(collected, scored{rank: rank, res: res, score: ranked[rank].Score})
+	}
+	sort.Slice(collected, func(i, j int) bool { return collected[i].rank < collected[j].rank })
+
+	out := make([]recallResult, 0, len(collected))
+	var topScore float32
+	for _, c := range collected {
+		if c.score > topScore {
+			topScore = c.score
+		}
+		c.res.Score = c.score
+		out = append(out, c.res)
+	}
 	return out, topScore, nil
+}
+
+// rerankText picks the best available text for a recall result to feed the
+// listwise reranker, preferring full text, then first paragraph, then header.
+func rerankText(r recallResult) string {
+	switch {
+	case r.Text != "":
+		return r.Text
+	case r.FirstParagraph != "":
+		return r.FirstParagraph
+	default:
+		return r.Header
+	}
+}
+
+// applyRerankOrder reorders results to match the ranked list of chunk IDs.
+// Any results whose IDs are absent from order are appended in original order,
+// so no result is dropped. Scores are left untouched (the reranker changes
+// order, not similarity scores).
+func applyRerankOrder(results []recallResult, order []string) []recallResult {
+	if len(order) == 0 {
+		return results
+	}
+	byID := make(map[string]recallResult, len(results))
+	for _, r := range results {
+		byID[r.ChunkID] = r
+	}
+	out := make([]recallResult, 0, len(results))
+	placed := make(map[string]struct{}, len(order))
+	for _, id := range order {
+		if r, ok := byID[id]; ok {
+			if _, dup := placed[id]; !dup {
+				out = append(out, r)
+				placed[id] = struct{}{}
+			}
+		}
+	}
+	for _, r := range results {
+		if _, ok := placed[r.ChunkID]; !ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// lexicalIndexFor returns the cached lexical index for a vault, building it
+// lazily from a Qdrant scroll of chunk text if absent or empty. The index is
+// rebuilt on reindex via RefreshLexicalIndex.
+func (s *Server) lexicalIndexFor(ctx context.Context, vault string) *retrieval.LexicalIndex {
+	s.lexicalMu.Lock()
+	idx, ok := s.lexical[vault]
+	if ok && idx != nil && idx.Size() > 0 {
+		s.lexicalMu.Unlock()
+		return idx
+	}
+	s.lexicalMu.Unlock()
+
+	if !s.cfg.SparseEnabled {
+		return nil
+	}
+	// Build off the hot path. Use a background context bounded by timeout.
+	bctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	built := s.buildLexicalIndex(bctx, vault)
+	if built == nil {
+		return nil
+	}
+	s.lexicalMu.Lock()
+	s.lexical[vault] = built
+	s.lexicalMu.Unlock()
+	return built
+}
+
+// buildLexicalIndex scrolls the vault's chunk collection and constructs a BM25
+// index from chunk text. Returns nil on any error (caller falls back to dense).
+func (s *Server) buildLexicalIndex(ctx context.Context, vault string) *retrieval.LexicalIndex {
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return nil
+	}
+	idx := retrieval.NewLexicalIndex()
+	var docs []retrieval.Doc
+	var offset *pb.PointId
+	for {
+		points, nextOffset, err := qc.Scroll(ctx, 200, offset)
+		if err != nil {
+			s.log(ctx).Warn("lexical index: scroll failed", "vault", vault, "error", err)
+			return nil
+		}
+		for _, p := range points {
+			id := p.Id.GetUuid()
+			text := p.Payload["text"].GetStringValue()
+			if text == "" {
+				text = p.Payload["first_paragraph"].GetStringValue()
+			}
+			if text != "" {
+				docs = append(docs, retrieval.Doc{ID: id, Text: text})
+			}
+		}
+		if nextOffset == nil {
+			break
+		}
+		offset = nextOffset
+	}
+	if len(docs) == 0 {
+		return idx // empty but valid (so we don't rebuild constantly)
+	}
+	idx.Build(docs)
+	return idx
+}
+
+// RefreshLexicalIndex rebuilds the lexical index for a vault. Called on reindex
+// and after large vault mutations.
+func (s *Server) RefreshLexicalIndex(ctx context.Context, vault string) {
+	if !s.cfg.SparseEnabled {
+		return
+	}
+	built := s.buildLexicalIndex(ctx, vault)
+	s.lexicalMu.Lock()
+	if built != nil {
+		s.lexical[vault] = built
+	}
+	s.lexicalMu.Unlock()
+}
+
+// InvalidateLexicalIndex drops the cached lexical index for a vault so it is
+// rebuilt lazily on the next hybrid/sparse recall. Used after async reindex,
+// where a synchronous rebuild is not possible.
+func (s *Server) InvalidateLexicalIndex(vault string) {
+	s.lexicalMu.Lock()
+	delete(s.lexical, vault)
+	s.lexicalMu.Unlock()
+}
+
+// mapDenseResults maps Qdrant scored points to recallResult with detail filtering.
+func mapDenseResults(results []*pb.ScoredPoint, detail string) []recallResult {
+	out := make([]recallResult, 0, len(results))
+	for _, r := range results {
+		res := mapPayloadToRecall(r.Payload, r.Id.GetUuid(), detail)
+		res.Score = r.Score
+		out = append(out, res)
+	}
+	return out
+}
+
+func mapPayloadToRecall(payload map[string]*pb.Value, id, detail string) recallResult {
+	res := recallResult{Score: 0, ChunkID: id}
+	if v, ok := payload["text"]; ok {
+		res.Text = v.GetStringValue()
+	}
+	if v, ok := payload["first_paragraph"]; ok {
+		res.FirstParagraph = v.GetStringValue()
+	}
+	if v, ok := payload["source_file"]; ok {
+		res.SourceFile = v.GetStringValue()
+	}
+	if v, ok := payload["header"]; ok {
+		res.Header = v.GetStringValue()
+	}
+	if v, ok := payload["chunk_index"]; ok {
+		res.ChunkIndex = int(v.GetIntegerValue())
+	}
+	if v, ok := payload["file_last_updated"]; ok {
+		res.FileLastUpdated = v.GetStringValue()
+	}
+	switch detail {
+	case "l0":
+		res.Text = ""
+		res.FirstParagraph = ""
+	case "l1":
+		res.Text = ""
+	}
+	return res
+}
+
+func topScoreOf(results []*pb.ScoredPoint) float32 {
+	var top float32
+	for _, r := range results {
+		if r.Score > top {
+			top = r.Score
+		}
+	}
+	return top
 }
 
 // doVerify validates a fact statement against the vault (#810).
@@ -202,12 +593,12 @@ func (s *Server) doVerify(ctx context.Context, req verifyRequest) (verifyRespons
 
 // doAsk handles the full ask pipeline: retrieval + LLM synthesis.
 // Both REST handleAsk and MCP mcpAsk call this method.
-func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (string, []string, string, error) {
+func (s *Server) doAsk(ctx context.Context, query, mode string, topK int, rewrite string, rerank bool) (string, []string, string, error) {
 	if !s.cfg.HasLLM() {
 		return "", nil, "", fmt.Errorf("LLM not configured")
 	}
 
-	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK)
+	contextText, sources, modeUsed, err := s.queryContext(ctx, query, mode, topK, rewrite, rerank)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("retrieval failed: %w", err)
 	}
@@ -224,8 +615,8 @@ func (s *Server) doAsk(ctx context.Context, query, mode string, topK int) (strin
 // Uses doAsk for the core synthesis, then builds explanation from a fresh search.
 // The double search is acceptable because explanation is only generated for the REST
 // handler (not MCP), and the cost is one extra embedding + one extra search.
-func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int) (string, []string, string, []explanationEntry, error) {
-	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK)
+func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, topK int, rewrite string, rerank bool) (string, []string, string, []explanationEntry, error) {
+	answer, sources, modeUsed, err := s.doAsk(ctx, query, mode, topK, rewrite, rerank)
 	if err != nil {
 		return "", nil, "", nil, err
 	}
@@ -239,7 +630,11 @@ func (s *Server) doAskWithExplanation(ctx context.Context, query, mode string, t
 	if err != nil {
 		return answer, sources, modeUsed, nil, nil // explanation is optional
 	}
-	results, err := s.qdrantFor(ctx).Search(ctx, vector, uint64(topK), 0, "", nil)
+	ec2 := s.qdrantFor(ctx)
+	if ec2 == nil {
+		return answer, sources, modeUsed, nil, nil // explanation is optional
+	}
+	results, err := ec2.Search(ctx, vector, uint64(topK), 0, "", nil)
 	if err != nil {
 		return answer, sources, modeUsed, nil, nil
 	}
@@ -725,6 +1120,100 @@ func (s *Server) doAppendTurn(ctx context.Context, sessionID, content, role stri
 	}, nil
 }
 
+// doFinalizeSession finalizes a session: builds a summary, indexes it, extracts
+// key decisions as facts, and marks the session as finalized in the logstore.
+// Called by the MCP notifications/session_end handler. Idempotent — safe to
+// call multiple times (FinalizeSession no-ops if already finalized).
+func (s *Server) doFinalizeSession(ctx context.Context, sessionID, vaultName string) error {
+	if s.logStore == nil {
+		return fmt.Errorf("session store not available")
+	}
+
+	sess, turns, err := s.logStore.GetSession(ctx, sessionID, 0)
+	if err != nil {
+		return fmt.Errorf("get session: %w", err)
+	}
+
+	vault := vaultName
+	if vault == "" {
+		vault = sess.Vault
+	}
+	if vault == "" {
+		vault = "default"
+	}
+
+	// Build a summary from turn content
+	var userTopics, asstTopics []string
+	seenTopics := map[string]bool{}
+	for _, t := range turns {
+		for _, keyword := range []string{"decision", "conclusion", "config", "prefer", "plan", "bug", "feature", "design"} {
+			if !seenTopics[keyword] && strings.Contains(strings.ToLower(t.Content), keyword) {
+				seenTopics[keyword] = true
+				if t.Role == "user" {
+					userTopics = append(userTopics, keyword)
+				} else {
+					asstTopics = append(asstTopics, keyword)
+				}
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Session Summary\nSession: %s\nAgent: %s\nTurns: %d\n", sessionID, sess.AgentID, len(turns)))
+	if len(userTopics) > 0 {
+		b.WriteString(fmt.Sprintf("User topics: %s\n", strings.Join(userTopics, ", ")))
+	}
+	if len(asstTopics) > 0 {
+		b.WriteString(fmt.Sprintf("Key aspects: %s\n", strings.Join(asstTopics, ", ")))
+	}
+	if len(turns) > 0 {
+		first := turns[0].Content
+		if len(first) > 200 {
+			first = first[:200]
+		}
+		b.WriteString(fmt.Sprintf("First topic: %s\n", first))
+	}
+	summaryText := b.String()
+
+	// Index the summary as a fact
+	summaryKey := fmt.Sprintf("session/%s/summary", sessionID)
+	_, err = s.doFactsUpsert(ctx, summaryKey, summaryText, "session_end", "conversation", []string{sess.AgentID, "session_summary"}, 0.7, 365)
+	if err != nil {
+		s.log(ctx).Warn("session summary fact failed", "session_id", sessionID, "error", err)
+	}
+
+	// Extract decision/conclusion facts from assistant turns
+	for _, t := range turns {
+		if t.Role != "assistant" {
+			continue
+		}
+		for _, keyword := range []string{"decision", "concluded", "we will use", "the approach is", "chose", "agreed"} {
+			if strings.Contains(strings.ToLower(t.Content), keyword) {
+				content := t.Content
+				if len(content) > 500 {
+					content = content[:497] + "..."
+				}
+				digest := sha256.Sum256([]byte(content))
+				slug := strings.NewReplacer(" ", "-", ".", "", ",", "", ":", "", "'", "", "\"", "").Replace(strings.ToLower(content[:min(len(content), 48)]))
+				decisionKey := fmt.Sprintf("house/decision/%s-%x", slug, digest[:4])
+				_, derr := s.doFactsUpsert(ctx, decisionKey, content, "session_end_auto", "conversation", []string{sess.AgentID, "auto_extracted"}, 0.6, 365)
+				if derr != nil {
+					s.log(ctx).Debug("auto fact failed", "key", decisionKey, "error", derr)
+				}
+				break
+			}
+		}
+	}
+
+	// Mark session as finalized
+	if err := s.logStore.FinalizeSession(ctx, sessionID); err != nil {
+		s.log(ctx).Warn("finalize session failed", "session_id", sessionID, "error", err)
+	}
+
+	s.log(ctx).Info("session finalized", "session_id", sessionID, "vault", vault, "turns", len(turns))
+	return nil
+}
+
 // indexSessionTurn asynchronously indexes a turn's content into the vault's
 // Qdrant collection so session conversations become searchable via /ask (#523).
 func (s *Server) indexSessionTurn(ctx context.Context, sessionID, content, role string, turnID int64) {
@@ -796,6 +1285,9 @@ func factToMap(fr *factResponse) map[string]interface{} {
 	if len(fr.Contradicts) > 0 {
 		m["contradicts"] = fr.Contradicts
 	}
+	if len(fr.Supports) > 0 {
+		m["supports"] = fr.Supports
+	}
 	if fr.LastConfirmedAt != "" {
 		m["last_confirmed_at"] = fr.LastConfirmedAt
 	}
@@ -815,7 +1307,7 @@ func (s *Server) doFactsList(ctx context.Context, key, prefix, keyContains, tag,
 		if len(points) == 0 {
 			return nil, fmt.Errorf("fact not found: %s", key)
 		}
-		fr := pointToFact(points[0])
+		fr := pointToFact(points[0], s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays)
 		if fr == nil {
 			return nil, fmt.Errorf("corrupt fact data for key: %s", key)
 		}
@@ -876,7 +1368,7 @@ func (s *Server) doFactsList(ctx context.Context, key, prefix, keyContains, tag,
 
 	facts := make([]interface{}, 0, len(points))
 	for _, p := range points {
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, s.cfg.DecayEnabled, s.cfg.DecayHalfLifeDays); fr != nil {
 			if keyContains != "" && !strings.Contains(fr.Key, keyContains) {
 				continue
 			}
@@ -912,30 +1404,50 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		created = true
 	}
 
-	// Build the fact payload (mirrors handleFactsPost's logic)
+	// Build the fact payload (mirrors handleFactsPost's lifecycle field preservation)
 	now := time.Now().UTC().Format(time.RFC3339)
-	var createdAt string
-	var confirmationCount int64 = 1
-	var lastConfirmedAt string
+	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
+	var confirmationCount, supersededBy, accessCount float64
+	var conflictResolved bool
+	var existingContradicts, existingSupports []string
 
 	if exists {
 		points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
+		if err != nil {
+			s.log(ctx).Warn("facts upsert: reading existing fields failed", "key", key, "error", err)
+		}
 		if err == nil && len(points) > 0 {
-			createdAt, _ = qutil.GetPayloadString(points[0].GetPayload(), "created_at")
-			if cc, ok := points[0].GetPayload()["confirmation_count"]; ok {
-				confirmationCount = cc.GetIntegerValue() + 1
-			}
-			lastConfirmedAt = now
+			p := points[0].GetPayload()
+			createdAt, _ = qutil.GetPayloadString(p, "created_at")
+			status, _ = qutil.GetPayloadString(p, "status")
+			supersedes, _ = qutil.GetPayloadString(p, "supersedes")
+			refines, _ = qutil.GetPayloadString(p, "refines")
+			lastConfirmedAt, _ = qutil.GetPayloadString(p, "last_confirmed_at")
+			lastAccessedAt, _ = qutil.GetPayloadString(p, "last_accessed_at")
+			confirmationCount, _ = qutil.GetPayloadFloat(p, "confirmation_count")
+			supersededBy, _ = qutil.GetPayloadFloat(p, "superseded_by")
+			accessCount, _ = qutil.GetPayloadFloat(p, "access_count")
+			conflictResolved = qutil.GetPayloadBoolValue(p, "conflict_resolved")
+			existingContradicts = qutil.GetPayloadStringList(p, "contradicts")
+			existingSupports = qutil.GetPayloadStringList(p, "supports")
 		}
 	}
 	if createdAt == "" {
 		createdAt = now
 	}
+	if status == "" {
+		status = "active"
+	}
+	if lastConfirmedAt == "" {
+		lastConfirmedAt = now
+	}
+	if confirmationCount <= 0 {
+		confirmationCount = 1
+	}
 
 	if confidence < 0 || confidence > 1.0 {
 		confidence = 1.0
 	}
-
 	if ttlDays < 0 {
 		ttlDays = 0
 	}
@@ -952,22 +1464,23 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		"source":             source,
 		"source_type":        sourceType,
 		"confidence":         confidence,
-		"status":             "active",
-		"supersedes":         "",
-		"conflict_resolved":  true,
+		"status":             status,
+		"supersedes":         supersedes,
+		"superseded_by":      supersededBy,
+		"refines":            refines,
+		"conflict_resolved":  conflictResolved,
 		"confirmation_count": confirmationCount,
 		"last_confirmed_at":  lastConfirmedAt,
+		"access_count":       accessCount,
+		"last_accessed_at":   lastAccessedAt,
 		"created_at":         createdAt,
 		"updated_at":         now,
 		"ttl_days":           int64(ttlDays),
 		"expires_at":         expiresAt,
 		"expires_at_unix":    expiresAtUnix,
 	})
-	payload["contradicts"] = &pb.Value{
-		Kind: &pb.Value_ListValue{
-			ListValue: &pb.ListValue{Values: []*pb.Value{}},
-		},
-	}
+	payload["contradicts"] = qutil.NvList(existingContradicts)
+	payload["supports"] = qutil.NvList(existingSupports)
 
 	if len(tags) > 0 {
 		tagVals := make([]*pb.Value, len(tags))

@@ -25,6 +25,7 @@ type factsMockStore struct {
 	upsertCalls     int
 	setPayloadCalls int
 	deleteCalls     int
+	lastSetPayload  map[string]*pb.Value // payload from the most recent SetPayload
 }
 
 func newFactsMockStore() *factsMockStore {
@@ -95,8 +96,9 @@ func (s *factsMockStore) ScrollFiltered(_ context.Context, _ string, filter *pb.
 	return result, nil
 }
 
-func (s *factsMockStore) SetPayload(_ context.Context, _ string, _ []*pb.PointId, _ map[string]*pb.Value) error {
+func (s *factsMockStore) SetPayload(_ context.Context, _ string, _ []*pb.PointId, payload map[string]*pb.Value) error {
 	s.setPayloadCalls++
+	s.lastSetPayload = payload
 	return nil
 }
 
@@ -467,7 +469,7 @@ func TestFactsGet_ListAll(t *testing.T) {
 	t.Logf("debug: simulation got %d points from s.facts.ScrollFiltered", len(pts))
 	simResp := make([]factResponse, 0, 100)
 	for _, p := range pts {
-		if fr := pointToFact(p); fr != nil {
+		if fr := pointToFact(p, false, 0); fr != nil {
 			simResp = append(simResp, *fr)
 		}
 	}

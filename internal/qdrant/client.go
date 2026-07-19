@@ -106,7 +106,7 @@ func (c *Client) CreatePayloadIndex(ctx context.Context, collection, field, fiel
 	case "uuid":
 		ft = pb.FieldType_FieldTypeUuid
 	default:
-		ft = pb.FieldType_FieldTypeKeyword
+		return fmt.Errorf("create payload index: unknown field type %q", fieldType)
 	}
 	_, err := c.points.CreateFieldIndex(ctx, &pb.CreateFieldIndexCollection{
 		CollectionName: collection,

@@ -6,60 +6,71 @@ This is the living development roadmap for Ragamuffin. Items are grouped by rele
 tier and ordered by value-to-effort ratio within each tier. Nothing ships until it's
 tested and green on CI.
 
+**Most recent update: 2026-07-18 (v0.9.6)**
+
 ---
 
-## v0.6 — Core Infrastructure
+## ✅ Completed: v0.6 — Core Infrastructure
 
-Unblocks both plugin adapters, fixes the multi-tenant isolation gap, and removes the
-only hard requirement for OpenAI. Everything in this tier is foundational — nothing
-else works well without it.
+All three items fully implemented. Session management (SQLite + Qdrant), per-vault
+fact isolation (`ragamuffin_{name}_facts` collections), and configurable embedding
+dimensions (`RAGAMUFFIN_FACTS_VECTOR_SIZE`).
 
-### 1. Session Management
+## ✅ Completed: v0.7 — Platform Growth
 
-**The problem:** `/v1/sessions` endpoints return 503 today. Both plugin adapters
-(OpenClaw and Hermes) are designed around sessions that don't exist yet. Agents
-have no way to persist conversation history — they either lose it or shoehorn it
-into facts, which aren't designed for temporal, ordered data.
+Fact graphs (`/v1/facts/{key}/graph`), webhook notifications (CloudEvents v1.0),
+adaptive pruner thresholds (`/v1/pruner/auto-tune`), versioned supersede.
 
-**The approach:** SQLite for metadata and ordering + Qdrant for semantic search
-over turn content. Ship SQLite-only first (FTS5 for basic recall), add Qdrant-backed
-semantic search in a follow-up.
+## ✅ Completed: v0.8 — Agent Readiness
 
-```
-POST   /v1/sessions              — Create session, returns UUID v7
-POST   /v1/sessions/{id}/turns   — Append turns
-GET    /v1/sessions/{id}         — Metadata + recent turns (paginated)
-GET    /v1/sessions              — List by vault, ordered by activity
-DELETE /v1/sessions/{id}         — Soft-delete (archive)
-```
+Tiered recall (`mode` parameter), review queue dashboard, MCP-to-REST adapter,
+fact extraction from conversation turns, benchmark harness.
 
-Storage: Extend `logstore` with `sessions` and `session_turns` tables.
-New package: `internal/session/` wrapping SQLite + Qdrant session collection.
-MCP tools: `ragamuffin_session_create`, `ragamuffin_session_append`,
-`ragamuffin_session_recall`.
+## ✅ Completed: v0.9.x — Agent Ecosystem
 
-**Reference:** Issue #1 (placeholder for detailed tracking).
+| Feature | Status |
+|---------|--------|
+| OIDC-native authentication | Done |
+| 33-tool MCP surface (was 14) | Done — all fact operations split, new graph/context/session/retrieval tools |
+| MCP session-end notifications | Done — auto-finalization, fact extraction, summary indexing |
+| Auto-provision agent vaults | Done — vaults created on first MCP dispatch |
+| SDK packages (JS + Python) | Done — zero-dep MCP clients in `sdks/` |
+| OpenClaw MCP rewrite | Done — plugin uses dynamic MCP discovery |
+| Adapter conformance tests | Done — `tests/mcp_conformance_test.sh` |
+| Memory Provider API rewrite | Done — MCP-first, 33-tool catalog |
+| Documentation audit | Done — all docs reviewed for v0.9.6 |
 
-### 2. Per-Vault Fact Isolation
+## v1.0 Remaining
 
-**The problem:** Facts are global — every vault shares one Qdrant collection.
-Agent alice can see agent bob's facts. This breaks the multi-tenant isolation
-model that chunks already have.
+### Configurable Embedding Dimensions
+Auto-detect via probe embed at startup. `RAGAMUFFIN_EMBEDDING_DIMS` already exists.
+Embed a probe string and use the resulting length. (~40 lines.)
 
-**The approach:** Each vault gets its own facts collection named
-`ragamuffin_{name}_facts` (parallel to the existing chunk collection naming
-from `provisionVault`). A `FactsCollectionFor(vault)` config method resolves
-the collection name. Existing facts on the global collection stay readable via
-`/v1/facts` for backward compatibility; new facts created scoped to a vault go
-to their own collection.
+### Fact-to-Chunk Bridge
+Store the chunk vector alongside the fact payload so fact search doesn't need a
+separate embedding call. Persist at write time. (~60 lines.)
 
-Migration: New facts get vault-isolated from the start. Existing facts remain
-in the global collection — a post-release migration script handles moving them.
+### Adaptive Pruner Thresholds
+Closed-loop feedback from review actions back into pruner thresholds so the
+pruner tunes itself per-vault over time. (~40 lines.)
 
-**Reference:** The chunk pattern is already established in `internal/server/ingest.go`.
-The config field `FactsCollection` becomes the default/fallback.
+### Full Benchmark Gauntlet
+The harness exists (LongMemEval, LoCoMo, NarrativeQA) but is disabled in CI.
+Enable and stabilize for automated regression detection.
 
-### 3. Configurable Embedding Dimensions
+---
+
+## Out of Scope (Forever)
+
+Ragamuffin will never be:
+- A general-purpose vector database (use Qdrant directly)
+- An agent runtime (use OpenClaw, Hermes, or the MCP client of your choice)
+- A replacement for git (use git)
+- A document management system (use your CMS)
+
+---
+
+*Last updated: 2026-07-18*
 
 **The problem:** `provisionVault` hardcodes 1536 as the vector dimension when
 creating Qdrant collections. This only works for OpenAI's `text-embedding-3-small`.

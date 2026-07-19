@@ -1,88 +1,101 @@
 /**
  * Ragamuffin Memory Plugin for OpenClaw
  *
- * Thin HTTP proxy to Ragamuffin's vault recall and facts API.
- * All embedding happens server-side in Ragamuffin — no local embedding model needed.
+ * Universal MCP client — discovers all 30+ Ragamuffin tools dynamically
+ * via the Model Context Protocol. No hardcoded tool definitions needed.
  *
  * Register as the active memory plugin via:
  *   plugins.slots.memory = "memory-ragamuffin-openclaw"
  */
 
 // ---------------------------------------------------------------------------
-// Ragamuffin HTTP client
+// MCP Client
 // ---------------------------------------------------------------------------
 
-export class RagamuffinClient {
+let _mcpIdCounter = 0;
+function nextId() { return ++_mcpIdCounter; }
+
+export class MCPClient {
   #endpoint;
   #authToken;
   #vaultPrefix;
+  #timeout;
+  #tools;
 
   constructor(config) {
     this.#endpoint = (config.endpoint || "http://localhost:8000").replace(/\/+$/, "");
     this.#authToken = config.authToken || "";
     this.#vaultPrefix = config.vaultPrefix || "agent::";
+    this.#timeout = (config.timeout || 30) * 1000;
+    this.#tools = null;
   }
 
   vaultName(agentIdentity) {
     return `${this.#vaultPrefix}${agentIdentity || "default"}`;
   }
 
-  #headers(contentType = "application/json") {
-    const h = { "Content-Type": contentType };
+  #headers() {
+    const h = { "Content-Type": "application/json" };
     if (this.#authToken) {
       h["Authorization"] = `Bearer ${this.#authToken}`;
     }
     return h;
   }
 
-  async #fetch(method, path, body) {
-    const url = `${this.#endpoint}${path}`;
-    const opts = { method, headers: this.#headers() };
-    if (body !== undefined) {
-      opts.body = JSON.stringify(body);
+  /** Send a JSON-RPC 2.0 request to /mcp and return the result. */
+  async #request(method, params = {}) {
+    const id = nextId();
+    const body = { jsonrpc: "2.0", id, method, params };
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.#timeout);
+    try {
+      const resp = await fetch(`${this.#endpoint}/mcp`, {
+        method: "POST",
+        headers: this.#headers(),
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error(`MCP ${method}: HTTP ${resp.status} ${text.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+      if (data.error) {
+        throw new Error(`MCP ${method}: ${data.error.message || JSON.stringify(data.error)}`);
+      }
+      return data.result;
+    } catch (err) {
+      if (err.name === "AbortError") {
+        throw new Error(`MCP ${method}: request timed out after ${this.#timeout}ms`);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    const resp = await fetch(url, opts);
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Ragamuffin ${method} ${path}: ${resp.status} ${text}`);
-    }
-    return resp.json();
   }
 
-  /** Recall semantically relevant chunks from a vault. */
-  async recall(vault, query, { limit = 5, threshold = 0.3 } = {}) {
-    const data = await this.#fetch("POST", `/vault/${encodeURIComponent(vault)}/recall`, {
-      query,
-      top_k: limit,
-      score_threshold: threshold,
-    });
-    return data.results || [];
+  /** Initialize the MCP session — returns protocol version and capabilities. */
+  async initialize() {
+    return this.#request("initialize");
   }
 
-  /**
-   * Store a fact (key-value). Facts are global, not per-vault.
-   * The vault parameter is used for the recall endpoint only — facts
-   * live in a single global collection on the server.
-   */
-  async storeFact(vault, key, value, { tags, source, sourceType } = {}) {
-    const body = { key, value };
-    if (tags) body.tags = tags;
-    if (source) body.source = source;
-    if (sourceType) body.source_type = sourceType;
-    return this.#fetch("POST", `/v1/facts`, body);
-  }
-
-  /**
-   * Delete a fact by key. Facts are global — vault parameter is unused.
-   */
-  async deleteFact(vault, key) {
-    const url = `${this.#endpoint}/v1/facts?key=${encodeURIComponent(key)}`;
-    const resp = await fetch(url, { method: "DELETE", headers: this.#headers() });
-    if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`Ragamuffin DELETE /v1/facts: ${resp.status} ${text}`);
+  /** List all available tools from the server. */
+  async listTools() {
+    if (!this.#tools) {
+      const result = await this.#request("tools/list");
+      this.#tools = result.tools || [];
     }
-    return resp.status === 204 ? null : resp.json();
+    return this.#tools;
+  }
+
+  /** Get the cached tool list without re-fetching. */
+  get tools() {
+    return this.#tools || [];
+  }
+
+  /** Call a tool with named arguments. */
+  async call(toolName, args = {}) {
+    return this.#request("tools/call", { name: toolName, arguments: args });
   }
 }
 
@@ -103,9 +116,7 @@ export function extractUserText(messages) {
             texts.push(block.text);
           }
         }
-        if (texts.length > 0) {
-          return texts.join("").trim();
-        }
+        if (texts.length > 0) return texts.join(" ").trim();
       }
     }
   }
@@ -114,18 +125,19 @@ export function extractUserText(messages) {
 
 export function truncate(str, maxChars) {
   if (!str || str.length <= maxChars) return str;
-  // Truncate at UTF-16-safe boundary
   let truncated = str.slice(0, maxChars);
-  // Don't break surrogate pairs
   const code = truncated.charCodeAt(truncated.length - 1);
-  if (code >= 0xd800 && code <= 0xdbff) {
-    truncated = truncated.slice(0, -1);
-  }
+  if (code >= 0xd800 && code <= 0xdbff) truncated = truncated.slice(0, -1);
   return truncated + "...";
 }
 
+/** Convert an MCP tool definition to a human-readable label. */
+function toolLabel(name) {
+  return name.replace(/^ragamuffin_/, "").replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 // ---------------------------------------------------------------------------
-// Plugin definition
+// Plugin entry
 // ---------------------------------------------------------------------------
 
 export default function pluginEntry(api) {
@@ -140,178 +152,61 @@ export default function pluginEntry(api) {
   const recallMaxChars = cfg.recallMaxChars || 1000;
   const captureMaxChars = cfg.captureMaxChars || 500;
 
-  const client = new RagamuffinClient({ endpoint, authToken, vaultPrefix });
+  const mcp = new MCPClient({ endpoint, authToken, vaultPrefix });
 
-  // Derive agent identity — used as vault name suffix
   function resolveVaultName() {
-    // Agent identity comes from the plugin config or the agent's configured identity
     const agentId = cfg.agentIdentity || "default";
-    return client.vaultName(agentId);
+    return mcp.vaultName(agentId);
   }
 
   // -----------------------------------------------------------------------
-  // Tools
+  // Dynamic tool registration — discover all tools from MCP server
   // -----------------------------------------------------------------------
 
-  api.registerTool(
-    {
-      name: "memory_recall",
-      label: "Memory Recall",
-      description:
-        "Search through Ragamuffin vault memories. Use when you need context about user preferences, past decisions, or previously discussed topics.",
-      parameters: {
-        type: "object",
-        properties: {
-          query: {
-            type: "string",
-            description: "Search query describing what you want to find",
-          },
-          limit: {
-            type: "integer",
-            description: "Max results to return (1-50)",
-            default: 5,
-          },
-          threshold: {
-            type: "number",
-            description: "Minimum relevance score 0.0-1.0",
-            default: 0.3,
-          },
-        },
-        required: ["query"],
-      },
-      async execute(_toolCallId, params) {
-        const { query, limit = recallLimit, threshold = recallThreshold } = params;
-        if (!query || typeof query !== "string" || !query.trim()) {
-          return {
-            content: [{ type: "text", text: "Query is required for memory recall." }],
-            isError: true,
-          };
+  api.registerService({
+    id: "memory-ragamuffin-openclaw",
+    start: async () => {
+      try {
+        await mcp.initialize();
+        const tools = await mcp.listTools();
+        for (const tool of tools) {
+          const schema = tool.inputSchema || {};
+          api.registerTool({
+            name: tool.name,
+            label: toolLabel(tool.name),
+            description: tool.description || "",
+            parameters: {
+              type: "object",
+              properties: schema.properties || {},
+              required: schema.required || [],
+            },
+            async execute(_toolCallId, params) {
+              try {
+                const result = await mcp.call(tool.name, params);
+                return {
+                  content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                };
+              } catch (err) {
+                return {
+                  content: [{ type: "text", text: `${tool.name} failed: ${err.message}` }],
+                  isError: true,
+                };
+              }
+            },
+          }, { name: tool.name });
         }
-        try {
-          const vault = resolveVaultName();
-          const results = await client.recall(vault, truncate(query, recallMaxChars), {
-            limit: Math.min(limit, 50),
-            threshold,
-          });
-          if (results.length === 0) {
-            return {
-              content: [{ type: "text", text: "No relevant memories found." }],
-            };
-          }
-          const text = results
-            .map((r, i) => `${i + 1}. ${r.text || ""} (${((r.score || 0) * 100).toFixed(0)}%)`)
-            .join("\n");
-          return {
-            content: [{ type: "text", text: `Found ${results.length} memories:\n\n${text}` }],
-          };
-        } catch (err) {
-          api.logger?.warn?.("memory-ragamuffin: recall failed:", err.message);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Memory recall failed: ${err.message}. The agent continues without memory context.`,
-              },
-            ],
-            isError: true,
-          };
-        }
-      },
+        api.logger?.info?.(
+          `memory-ragamuffin: registered ${tools.length} MCP tools ` +
+          `(endpoint=${endpoint}, autoRecall=${autoRecall}, autoCapture=${autoCapture})`,
+        );
+      } catch (err) {
+        api.logger?.warn?.("memory-ragamuffin: MCP init failed — tools not registered", err.message);
+      }
     },
-    { name: "memory_recall" },
-  );
-
-  api.registerTool(
-    {
-      name: "memory_store",
-      label: "Memory Store",
-      description:
-        "Save an important fact or piece of information into Ragamuffin vault memory for later recall.",
-      parameters: {
-        type: "object",
-        properties: {
-          key: {
-            type: "string",
-            description: "Unique fact key, e.g. 'user/prefers-dark-mode'",
-          },
-          value: {
-            type: "string",
-            description: "The information to remember",
-          },
-          tags: {
-            type: "array",
-            items: { type: "string" },
-            description: "Optional tags for filtering",
-          },
-        },
-        required: ["key", "value"],
-      },
-      async execute(_toolCallId, params) {
-        const { key, value, tags } = params;
-        if (!key || !value) {
-          return {
-            content: [{ type: "text", text: "Both key and value are required." }],
-            isError: true,
-          };
-        }
-        try {
-          const vault = resolveVaultName();
-          await client.storeFact(vault, key, value, { tags, sourceType: "agent_observation" });
-          return {
-            content: [{ type: "text", text: `Stored: "${key}" → saved.` }],
-          };
-        } catch (err) {
-          api.logger?.warn?.("memory-ragamuffin: store failed:", err.message);
-          return {
-            content: [{ type: "text", text: `Failed to store memory: ${err.message}` }],
-            isError: true,
-          };
-        }
-      },
+    stop: () => {
+      api.logger?.info?.("memory-ragamuffin: stopped");
     },
-    { name: "memory_store" },
-  );
-
-  api.registerTool(
-    {
-      name: "memory_forget",
-      label: "Memory Forget",
-      description: "Delete a specific memory fact by its key.",
-      parameters: {
-        type: "object",
-        properties: {
-          key: {
-            type: "string",
-            description: "Fact key to delete, e.g. 'user/prefers-dark-mode'",
-          },
-        },
-        required: ["key"],
-      },
-      async execute(_toolCallId, params) {
-        const { key } = params;
-        if (!key) {
-          return {
-            content: [{ type: "text", text: "Fact key is required." }],
-            isError: true,
-          };
-        }
-        try {
-          const vault = resolveVaultName();
-          await client.deleteFact(vault, key);
-          return {
-            content: [{ type: "text", text: `Forgotten: "${key}"` }],
-          };
-        } catch (err) {
-          api.logger?.warn?.("memory-ragamuffin: forget failed:", err.message);
-          return {
-            content: [{ type: "text", text: `Failed to forget: ${err.message}` }],
-            isError: true,
-          };
-        }
-      },
-    },
-    { name: "memory_forget" },
-  );
+  });
 
   // -----------------------------------------------------------------------
   // Auto-recall: inject relevant memories before each model turn
@@ -324,18 +219,18 @@ export default function pluginEntry(api) {
       try {
         const query = truncate(extractUserText(event.messages) || event.prompt, recallMaxChars);
         const vault = resolveVaultName();
-        const results = await client.recall(vault, query, {
-          limit: recallLimit,
-          threshold: recallThreshold,
+        const result = await mcp.call("ragamuffin_recall", {
+          query,
+          vault,
+          top_k: recallLimit,
+          score_threshold: recallThreshold,
         });
 
+        const results = result.results || [];
         if (results.length === 0) return;
 
         const memoryBlock = results
-          .map(
-            (r, i) =>
-              `${i + 1}. ${r.text || ""} (${((r.score || 0) * 100).toFixed(0)}% match)`,
-          )
+          .map((r, i) => `${i + 1}. ${r.text || ""} (${((r.score || 0) * 100).toFixed(0)}% match)`)
           .join("\n");
 
         api.logger?.info?.("memory-ragamuffin: injecting", results.length, "memories");
@@ -374,9 +269,8 @@ export default function pluginEntry(api) {
 
           if (!text || text.length < 10 || text.length > captureMaxChars) continue;
           if (text.includes("<relevant-memories>")) continue;
-          if (/^<[a-z].*<\/[a-z]>$/i.test(text)) continue;
+          if (/^<[a-z]+[^>]*>[\s\S]*<\/[a-z]+>$/i.test(text)) continue;
 
-          // Check for important content patterns
           const importantPatterns = [
             /prefer|like|love|hate|want|need|decide|always|never|important/i,
             /remember|forget|save|keep/i,
@@ -386,17 +280,19 @@ export default function pluginEntry(api) {
           const isImportant = importantPatterns.some((p) => p.test(text));
           if (!isImportant) continue;
 
-          // Derive a stable key from a hash of the text
           const key = `auto/${msg.role}/${Date.now()}/${Math.random().toString(36).slice(2, 8)}`;
 
           try {
-            await client.storeFact(vault, key, text, {
+            await mcp.call("ragamuffin_fact_put", {
+              key,
+              value: text,
+              vault,
               tags: ["auto-captured"],
-              sourceType: "agent_observation",
+              source_type: "agent_observation",
             });
             api.logger?.info?.("memory-ragamuffin: auto-captured fact", key);
           } catch {
-            // Best-effort capture — don't let a store failure cascade
+            // Best-effort capture
           }
         }
       } catch (err) {
@@ -411,7 +307,7 @@ export default function pluginEntry(api) {
 
   api.registerCli(
     ({ program }) => {
-      const rag = program.command("ragamuffin").description("Ragamuffin memory commands");
+      const rag = program.command("ragamuffin").description("Ragamuffin MCP commands");
 
       rag
         .command("recall")
@@ -422,10 +318,13 @@ export default function pluginEntry(api) {
         .option("--threshold <n>", "Min score threshold", "0.3")
         .action(async (query, opts) => {
           const vault = opts.vault || resolveVaultName();
-          const limit = parseInt(opts.limit, 10) || 5;
-          const threshold = parseFloat(opts.threshold) || 0.3;
-          const results = await client.recall(vault, query, { limit, threshold });
-          console.log(JSON.stringify(results, null, 2));
+          const result = await mcp.call("ragamuffin_recall", {
+            query,
+            vault,
+            top_k: parseInt(opts.limit, 10) || 5,
+            score_threshold: parseFloat(opts.threshold) || 0.3,
+          });
+          console.log(JSON.stringify(result, null, 2));
         });
 
       rag
@@ -438,26 +337,18 @@ export default function pluginEntry(api) {
         .action(async (key, value, opts) => {
           const vault = opts.vault || resolveVaultName();
           const tags = opts.tags ? opts.tags.split(",").map((t) => t.trim()) : undefined;
-          const result = await client.storeFact(vault, key, value, { tags });
+          const result = await mcp.call("ragamuffin_fact_put", { key, value, vault, tags });
           console.log(JSON.stringify(result, null, 2));
+        });
+
+      rag
+        .command("tools")
+        .description("List available MCP tools")
+        .action(async () => {
+          const tools = await mcp.listTools();
+          console.log(JSON.stringify(tools.map((t) => t.name), null, 2));
         });
     },
     { commands: ["ragamuffin"] },
   );
-
-  // -----------------------------------------------------------------------
-  // Service lifecycle
-  // -----------------------------------------------------------------------
-
-  api.registerService({
-    id: "memory-ragamuffin-openclaw",
-    start: () => {
-      api.logger?.info?.(
-        `memory-ragamuffin: ready (endpoint=${endpoint}, autoRecall=${autoRecall}, autoCapture=${autoCapture})`,
-      );
-    },
-    stop: () => {
-      api.logger?.info?.("memory-ragamuffin: stopped");
-    },
-  });
 }

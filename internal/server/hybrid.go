@@ -51,13 +51,19 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Optional retrieval-quality controls (A2/A3): query rewrite + rerank.
+	rewrite := r.URL.Query().Get("rewrite")
+	rerank := r.URL.Query().Get("rerank") == "true"
+
 	var results []hybridResult
 
 	// ── 1. Chunks (vector recall) ──
 	if query != "" {
 		chunks, _, err := s.doRecall(r.Context(), recallRequest{
-			Query: query,
-			TopK:  topK,
+			Query:   query,
+			TopK:    topK,
+			Rewrite: rewrite,
+			Rerank:  rerank,
 		})
 		if err == nil {
 			for _, c := range chunks {

@@ -2,6 +2,8 @@
 ragamuffin
 ragamuffin-*
 !/docs/integration/ragamuffin-memory-api.yaml
+!/sdks/ragamuffin-client-js/
+!/sdks/ragamuffin-client-py/
 cmd/ragamuffin/ragamuffin
 cmd/embedding-proxy/embedding-proxy
 

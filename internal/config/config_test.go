@@ -248,6 +248,85 @@ func TestValidate_ValidConfig(t *testing.T) {
 	}
 }
 
+func TestValidate_CommunityRequiresGraph(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED", "true")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_GRAPH_COMMUNITY_ENABLED")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	found := false
+	for _, e := range cfg.Validate() {
+		if strings.Contains(e, "GRAPH_COMMUNITY_ENABLED") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected community-requires-graph error, got: %v", cfg.Validate())
+	}
+}
+
+func TestValidate_ReconsolidationWindowMustBePositive(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_RECONSOLIDATION_ENABLED", "true")
+	os.Setenv("RAGAMUFFIN_RECONSOLIDATION_WINDOW", "0s")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_RECONSOLIDATION_ENABLED")
+		os.Unsetenv("RAGAMUFFIN_RECONSOLIDATION_WINDOW")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	found := false
+	for _, e := range cfg.Validate() {
+		if strings.Contains(e, "RECONSOLIDATION_WINDOW") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected reconsolidation window error, got: %v", cfg.Validate())
+	}
+}
+
+func TestValidate_ReconsolidationDefaultWindow(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	os.Setenv("RAGAMUFFIN_RECONSOLIDATION_ENABLED", "true")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_RECONSOLIDATION_ENABLED")
+	}()
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.ReconsolidationWindow != 30*time.Minute {
+		t.Errorf("expected default window 30m, got %v", cfg.ReconsolidationWindow)
+	}
+	for _, e := range cfg.Validate() {
+		if strings.Contains(e, "RECONSOLIDATION") {
+			t.Errorf("unexpected reconsolidation error with default window: %v", e)
+		}
+	}
+}
+
 func TestValidate_VaultPathMissing(t *testing.T) {
 	os.Setenv("RAGAMUFFIN_VAULT_PATH", "/nonexistent/path/12345")
 	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
