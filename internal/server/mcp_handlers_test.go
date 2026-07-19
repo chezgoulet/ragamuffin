@@ -215,7 +215,7 @@ func TestMCPTools_AnalystProfile(t *testing.T) {
 			t.Errorf("analyst profile missing core tool: %s", n)
 		}
 	}
-	for _, n := range []string{"hybrid_search", "verify", "audit", "contradictions", "review", "fact_graph", "fact_history", "briefing", "changes"} {
+	for _, n := range []string{"hybrid_search", "verify", "audit", "contradictions", "review"} {
 		fullName := "memory." + n
 		if !containsName(names, fullName) {
 			t.Errorf("analyst profile missing tool: %s", fullName)

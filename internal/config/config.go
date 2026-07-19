@@ -476,6 +476,8 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not be empty")
 	} else if !strings.HasSuffix(c.MCPToolPrefix, ".") && !strings.HasSuffix(c.MCPToolPrefix, "_") {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_TOOL_PREFIX must end with '.' or '_', got %q", c.MCPToolPrefix))
+	} else if len(c.MCPToolPrefix) < 2 {
+		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must contain at least one character before the separator")
 	} else if strings.Contains(c.MCPToolPrefix[:len(c.MCPToolPrefix)-1], " ") {
 		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not contain whitespace")
 	}
