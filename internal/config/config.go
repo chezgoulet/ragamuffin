@@ -244,6 +244,9 @@ type Config struct {
 	// Optional — Error tracking (#814)
 	ErrorTrackingTelegramBotToken string
 	ErrorTrackingTelegramChatID   string
+
+	// Optional — MCP tool prefix (default: "memory.")
+	MCPToolPrefix string
 }
 
 // IsMultiTenant returns true when multi-tenancy is active.
@@ -465,6 +468,15 @@ func (c *Config) Validate() []string {
 		}
 	}
 
+	// MCP tool prefix must be non-empty and end with a separator
+	if c.MCPToolPrefix == "" {
+		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not be empty")
+	} else if !strings.HasSuffix(c.MCPToolPrefix, ".") && !strings.HasSuffix(c.MCPToolPrefix, "_") {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_TOOL_PREFIX must end with '.' or '_', got %q", c.MCPToolPrefix))
+	} else if strings.Contains(c.MCPToolPrefix[:len(c.MCPToolPrefix)-1], " ") {
+		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not contain whitespace")
+	}
+
 	return errs
 }
 
@@ -623,6 +635,8 @@ func Load() (*Config, error) {
 		LogLevel:                      envOrDefault("RAGAMUFFIN_LOG_LEVEL", "info"),
 		ErrorTrackingTelegramBotToken: os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_BOT_TOKEN"),
 		ErrorTrackingTelegramChatID:   os.Getenv("RAGAMUFFIN_ERROR_TRACKING_TELEGRAM_CHAT_ID"),
+
+		MCPToolPrefix: envOrDefault("RAGAMUFFIN_MCP_TOOL_PREFIX", "memory."),
 	}
 
 	// Parse vaults root for multi-tenant path validation

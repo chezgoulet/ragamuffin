@@ -65,60 +65,60 @@ catalog below.
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_recall` | Semantic search: ranked chunks with scores and timestamps. Supports detail levels (l0/l1/l2), score thresholds, and source filters. |
-| `ragamuffin_ask` | LLM synthesis with citations: full-context question answering. Modes: auto (smart cutoff), rag (vector-only), full (whole vault). |
-| `ragamuffin_hybrid_search` | Dense + BM25 hybrid search. Returns both chunks AND facts ranked by combined relevance. |
-| `ragamuffin_verify` | Validate a claim against the vault. Returns confirmed/conflicts/insufficient. |
+| `memory.recall` | Semantic search: ranked chunks with scores and timestamps. Supports detail levels (l0/l1/l2), score thresholds, and source filters. |
+| `memory.ask` | LLM synthesis with citations: full-context question answering. Modes: auto (smart cutoff), rag (vector-only), full (whole vault). |
+| `memory.hybrid_search` | Dense + BM25 hybrid search. Returns both chunks AND facts ranked by combined relevance. |
+| `memory.verify` | Validate a claim against the vault. Returns confirmed/conflicts/insufficient. |
 
 ### Fact CRUD & Lineage
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_fact_get` | Retrieve a single fact by exact key. Returns value, confidence, TTL, status. |
-| `ragamuffin_fact_put` | Write or update a fact with lifecycle fields (confidence, TTL, tags, source). |
-| `ragamuffin_fact_list` | List facts by key, prefix, tag, or lifecycle status. Paginated. |
-| `ragamuffin_fact_delete` | Delete a fact by key. Irreversible. |
-| `ragamuffin_fact_graph` | Fact lineage: supersedes, refines, contradicts. BFS traversal with configurable depth. |
-| `ragamuffin_fact_history` | Fact evolution timeline: creation, confirmation, updates across time. |
-| `ragamuffin_fact_provenance` | Fact origin: source, source type, creation metadata, related chunks. |
+| `memory.fact_get` | Retrieve a single fact by exact key. Returns value, confidence, TTL, status. |
+| `memory.fact_put` | Write or update a fact with lifecycle fields (confidence, TTL, tags, source). |
+| `memory.fact_list` | List facts by key, prefix, tag, or lifecycle status. Paginated. |
+| `memory.fact_delete` | Delete a fact by key. Irreversible. |
+| `memory.fact_graph` | Fact lineage: supersedes, refines, contradicts. BFS traversal with configurable depth. |
+| `memory.fact_history` | Fact evolution timeline: creation, confirmation, updates across time. |
+| `memory.fact_provenance` | Fact origin: source, source type, creation metadata, related chunks. |
 
 ### Knowledge Graph
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_graph_entity` | Look up an entity by ID. Returns metadata and relations. |
-| `ragamuffin_graph_edges` | Query entity relationships — filter by type, entity, or time. |
-| `ragamuffin_graph_communities` | List Louvain-detected knowledge communities. Each community is a cluster of related entities. |
-| `ragamuffin_links` | Link index: outbound links, backlinks, or the full link graph for a source file. |
+| `memory.graph_entity` | Look up an entity by ID. Returns metadata and relations. |
+| `memory.graph_edges` | Query entity relationships — filter by type, entity, or time. |
+| `memory.graph_communities` | List Louvain-detected knowledge communities. Each community is a cluster of related entities. |
+| `memory.links` | Link index: outbound links, backlinks, or the full link graph for a source file. |
 
 ### Quality & Review
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_review` | List flagged facts (contradictions, low confidence, expiring) or resolve a single flag. |
-| `ragamuffin_contradictions` | Find contradictory fact pairs surfaced by the pruner. |
-| `ragamuffin_audit` | Vault health check: staleness, semantic conflicts, coverage gaps, duplicates. |
+| `memory.review` | List flagged facts (contradictions, low confidence, expiring) or resolve a single flag. |
+| `memory.contradictions` | Find contradictory fact pairs surfaced by the pruner. |
+| `memory.audit` | Vault health check: staleness, semantic conflicts, coverage gaps, duplicates. |
 
 ### Context & Discovery
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_context_bundle` | Composite context: peer card + recent facts + recall in one call. Use at turn start to orient. |
-| `ragamuffin_dialectic` | Multi-pass reasoning prompts: cold (analytical), warm (synthetic), hot (evaluative). Depth 1–3. |
-| `ragamuffin_peer_list` | Discover other agents from `/peer/*/profile` fact keys. Returns vault names and peer cards. |
-| `ragamuffin_briefing` | Vault activity digest for a time period (24h/7d/30d). Counts events by type. |
-| `ragamuffin_changes` | Recent vault activity: new/updated facts and log events with timestamps. Time-filterable. |
-| `ragamuffin_store` | Ingest content into the vault. The canonical write path. |
-| `ragamuffin_draft` | Write a file to the vault (direct mode) or open a PR. |
+| `memory.context_bundle` | Composite context: peer card + recent facts + recall in one call. Use at turn start to orient. |
+| `memory.dialectic` | Multi-pass reasoning prompts: cold (analytical), warm (synthetic), hot (evaluative). Depth 1–3. |
+| `memory.peer_list` | Discover other agents from `/peer/*/profile` fact keys. Returns vault names and peer cards. |
+| `memory.briefing` | Vault activity digest for a time period (24h/7d/30d). Counts events by type. |
+| `memory.changes` | Recent vault activity: new/updated facts and log events with timestamps. Time-filterable. |
+| `memory.store` | Ingest content into the vault. The canonical write path. |
+| `memory.draft` | Write a file to the vault (direct mode) or open a PR. |
 
 ### Session Management
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_session_create` | Create a conversation session with optional auto-fact-extraction. |
-| `ragamuffin_session_get` | Get session metadata and turn history. |
-| `ragamuffin_session_list` | List active sessions by agent or vault. Paginated. |
-| `ragamuffin_turn_append` | Append a turn (user/assistant) to an existing session. |
+| `memory.session_create` | Create a conversation session with optional auto-fact-extraction. |
+| `memory.session_get` | Get session metadata and turn history. |
+| `memory.session_list` | List active sessions by agent or vault. Paginated. |
+| `memory.turn_append` | Append a turn (user/assistant) to an existing session. |
 
 ### Notifications
 
@@ -130,11 +130,11 @@ catalog below.
 
 | Tool | What it does |
 |------|-------------|
-| `ragamuffin_get_chunk` | Retrieve a single chunk by ID (from recall results). Full text + metadata. |
-| `ragamuffin_stats` | Operational metrics: file count, chunk count, fact count, vault age. |
-| `ragamuffin_status` | Server health: checks Qdrant, embedder, LLM connectivity. Returns version + uptime. |
+| `memory.get_chunk` | Retrieve a single chunk by ID (from recall results). Full text + metadata. |
+| `memory.stats` | Operational metrics: file count, chunk count, fact count, vault age. |
+| `memory.status` | Server health: checks Qdrant, embedder, LLM connectivity. Returns version + uptime. |
 
-> **Backward compatibility:** The old combined `ragamuffin_facts` tool (operation:
+> **Backward compatibility:** The old combined `memory.facts` tool (operation:
 > list\|upsert) is still dispatched. The new split tools (`fact_get`, `fact_put`,
 > `fact_list`, `fact_delete`) are preferred — LLMs reason better with discrete
 > tools than a Swiss-army-knife parameter.
@@ -162,10 +162,10 @@ only handles lifecycle hooks that MCP can't express:
 
 | Harness hook | Description | Shim implementation |
 |-------------|-------------|-------------------|
-| `initialize(session_id)` | Agent starts, provision vault | Connect to MCP. Call `ragamuffin_session_create` via MCP. |
-| `prefetch(query)` | Recall context before next turn | Call `ragamuffin_recall` or `ragamuffin_context_bundle` via MCP. Cache results. |
-| `sync_turn(user_msg, asst_msg)` | Persist the exchange | Build `ragamuffin_turn_append` call. |
-| `on_session_end(messages)` | Session ended, persist summary + facts | Summarize messages. Call `ragamuffin_store` + `ragamuffin_fact_put` for decisions/conclusions. |
+| `initialize(session_id)` | Agent starts, provision vault | Connect to MCP. Call `memory.session_create` via MCP. |
+| `prefetch(query)` | Recall context before next turn | Call `memory.recall` or `memory.context_bundle` via MCP. Cache results. |
+| `sync_turn(user_msg, asst_msg)` | Persist the exchange | Build `memory.turn_append` call. |
+| `on_session_end(messages)` | Session ended, persist summary + facts | Summarize messages. Call `memory.store` + `memory.fact_put` for decisions/conclusions. |
 | `get_tool_schemas()` | Expose tools to agent | Return the MCP `tools/list` result directly, or a subset. |
 | `handle_tool_call(name, args)` | Dispatch a tool invocation | Forward to MCP `tools/call`. |
 | `shutdown()` | Clean disconnect | Close MCP SSE connection. |
@@ -199,8 +199,8 @@ The harness adapter needs:
 2. **Vault prefix** — configurable, defaults to `agent::`
 3. **Resulting vault name** = `{prefix}{agent_id}`, e.g. `agent::dev`
 
-Peer cards provide agent identity across harnesses. Use `ragamuffin_fact_put`
-with key `peer/{agent_id}/card/profile` to set a card, and `ragamuffin_peer_list`
+Peer cards provide agent identity across harnesses. Use `memory.fact_put`
+with key `peer/{agent_id}/card/profile` to set a card, and `memory.peer_list`
 to discover other agents.
 
 ---

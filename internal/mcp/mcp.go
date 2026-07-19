@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+
+	"github.com/google/uuid"
 )
 
 // JSONRPCRequest is a standard JSON-RPC 2.0 request.
@@ -104,7 +106,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 	sessionID := r.URL.Query().Get("session_id")
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("mcp-%d", len(h.clients))
+		sessionID = uuid.New().String()
 	}
 
 	ch := make(chan []byte, 64)

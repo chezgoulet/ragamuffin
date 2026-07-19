@@ -28,7 +28,7 @@ const tools = await client.listTools();
 console.log(tools.map((t) => t.name));
 
 // Call a tool
-const result = await client.call("ragamuffin_recall", {
+const result = await client.call("memory.recall", {
   query: "how does Qdrant isolation work?",
   vault: "agent::dev",
 });

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import pluginEntry from "../index.js";
 
 const MOCK_TOOLS = [
-  { name: "ragamuffin_recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
+  { name: "memory.recall", description: "Search", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
 ];
 
 function jsonRpcResult(result) {

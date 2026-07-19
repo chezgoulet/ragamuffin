@@ -20,423 +20,6 @@ import (
 
 // ── MCP Tools ─────────────────────────────────────────────────────────────
 
-func (s *Server) mcpTools() []mcp.ToolDefinition {
-	return []mcp.ToolDefinition{
-		{
-			Name:        "ragamuffin_recall",
-			Description: "Semantic search across the vault. Returns ranked chunks with source paths, scores, and timestamps.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":           map[string]interface{}{"type": "string", "description": "Natural-language search query"},
-					"vault":           map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"top_k":           map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 10)"},
-					"score_threshold": map[string]interface{}{"type": "number", "description": "Minimum similarity score 0.0-1.0"},
-					"source_filter":   map[string]interface{}{"type": "string", "description": "Restrict to files under this path prefix"},
-					"detail":          map[string]interface{}{"type": "string", "description": "Response detail level: l0 (header only), l1 (first paragraph), l2 (full text, default)", "enum": []interface{}{"l0", "l1", "l2"}},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "ragamuffin_ask",
-			Description: "Full-context synthesis via LLM. Returns a prose answer with source citations.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query": map[string]interface{}{"type": "string", "description": "The question to answer"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"mode":  map[string]interface{}{"type": "string", "description": "auto, rag, or full (default: auto)"},
-					"top_k": map[string]interface{}{"type": "integer", "description": "RAG results to retrieve (1-50, default 8)"},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "ragamuffin_store",
-			Description: "Ingest structured content into the vault. The canonical Tier 1 write path — agents contribute knowledge, session summaries, observations, and annotations.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"content": map[string]interface{}{"type": "string", "description": "Text content to ingest (markdown, plain text)"},
-					"source":  map[string]interface{}{"type": "string", "description": "Origin identifier (agent name, workflow ID, file path)"},
-					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"tags":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags for filtering"},
-				},
-				"required": []string{"content", "source"},
-			},
-		},
-		{
-			Name:        "ragamuffin_draft",
-			Description: "Write a file to the vault. Direct mode writes immediately; PR mode opens a pull request.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"title":       map[string]interface{}{"type": "string", "description": "PR title if PR mode"},
-					"content":     map[string]interface{}{"type": "string", "description": "File content to write. Required unless delete=true."},
-					"target_path": map[string]interface{}{"type": "string", "description": "Vault path relative to vault root"},
-					"mode":        map[string]interface{}{"type": "string", "description": "direct or pr (default: direct)"},
-					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"description": map[string]interface{}{"type": "string", "description": "Optional PR body"},
-					"delete":      map[string]interface{}{"type": "boolean", "description": "Delete the file instead of writing"},
-				},
-				"required": []string{"title", "target_path"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_get",
-			Description: "Retrieve a single fact by its exact key. Returns the fact value, confidence, TTL, status, and relationships.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to retrieve, e.g. user/prefer-rust-cli"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_put",
-			Description: "Write or update a fact by key. Facts have lifecycle fields (confidence, TTL, status, supersession). Creating the same key again carries forward lifecycle fields.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":         map[string]interface{}{"type": "string", "description": "Unique fact key, e.g. decision/use-postgres"},
-					"value":       map[string]interface{}{"type": "string", "description": "The fact value / statement to store"},
-					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"tags":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags for categorization"},
-					"source":      map[string]interface{}{"type": "string", "description": "Origin reference"},
-					"source_type": map[string]interface{}{"type": "string", "description": "manual, agent_observation, conversation, code_review, automated"},
-					"confidence":  map[string]interface{}{"type": "number", "description": "Confidence 0.0-1.0 (default 1.0)"},
-					"ttl_days":    map[string]interface{}{"type": "integer", "description": "Days until auto-expiry. 0 = never (default)."},
-				},
-				"required": []string{"key", "value"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_list",
-			Description: "List facts filtered by key, prefix, tag, or status. Returns fact keys, values, confidence, TTL, and lifecycle state.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":    map[string]interface{}{"type": "string", "description": "Exact key filter"},
-					"prefix": map[string]interface{}{"type": "string", "description": "Key prefix filter (e.g. decision/)"},
-					"tag":    map[string]interface{}{"type": "string", "description": "Tag filter"},
-					"status": map[string]interface{}{"type": "string", "description": "Lifecycle status: active, needs_review, superseded, rejected"},
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-1000, default 100)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_delete",
-			Description: "Delete a fact by its exact key. Irreversible — use ragamuffin_fact_put with status=superseded for reversible voids.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to delete"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_graph",
-			Description: "Get the lineage graph of a fact — what it supersedes, contradicts, or refines. Use to understand how a fact evolved over time.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get the lineage graph for"},
-					"depth": map[string]interface{}{"type": "integer", "description": "Traversal depth (0-5, default 1)"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_history",
-			Description: "Get the evolution timeline of a fact across time — events like creation, confidence changes, supersession.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get history for"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "ragamuffin_fact_provenance",
-			Description: "Get the provenance of a fact — its source, source type, related chunks, and creation metadata.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"key":   map[string]interface{}{"type": "string", "description": "Fact key to get provenance for"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"key"},
-			},
-		},
-		{
-			Name:        "ragamuffin_review",
-			Description: "List flagged facts awaiting review (contradictions, low confidence, near-expiry) or resolve a single flagged fact. The pruner populates the review queue automatically.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":     map[string]interface{}{"type": "string", "description": "Operation: 'list' (default) or 'resolve'"},
-					"reason":     map[string]interface{}{"type": "string", "description": "Filter by review reason (contradiction, low_confidence, expiring)"},
-					"limit":      map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
-					"point_id":   map[string]interface{}{"type": "string", "description": "Qdrant point ID to resolve (required for resolve action)"},
-					"resolution": map[string]interface{}{"type": "string", "description": "Resolution action: confirm, supersede, or reject (required for resolve)"},
-					"correction": map[string]interface{}{"type": "string", "description": "Corrected fact value (required for supersede resolution)"},
-					"vault":      map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_hybrid_search",
-			Description: "Dense + BM25 hybrid search across the vault. Returns both chunks AND facts in a single response, ranked by combined relevance.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":  map[string]interface{}{"type": "string", "description": "Natural-language search query"},
-					"key":    map[string]interface{}{"type": "string", "description": "Exact fact key filter"},
-					"prefix": map[string]interface{}{"type": "string", "description": "Fact key prefix filter"},
-					"tag":    map[string]interface{}{"type": "string", "description": "Fact tag filter"},
-					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_verify",
-			Description: "Validate a fact statement against the vault. Returns whether the fact is confirmed, conflicts with existing knowledge, or has insufficient data.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
-				},
-				"required": []string{"fact"},
-			},
-		},
-		{
-			Name:        "ragamuffin_context_bundle",
-			Description: "Composite context bundle: peer card + recent facts + recall in one call. Use this at the start of a turn to quickly orient to an agent's state.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"agent_identity": map[string]interface{}{"type": "string", "description": "Agent name for peer card lookup (default: vault name)"},
-					"query":          map[string]interface{}{"type": "string", "description": "Optional query to focus recall"},
-					"top_k":          map[string]interface{}{"type": "integer", "description": "Recall results to include (1-10, default 3)"},
-					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_dialectic",
-			Description: "Multi-pass reasoning prompts for deep context analysis. Returns structured cold (analytical), warm (creative), and hot (evaluative) reasoning blocks. Use before making decisions that need thorough vetting against stored knowledge.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"depth":   map[string]interface{}{"type": "integer", "description": "Reasoning depth: 1=cold only, 2=cold+warm, 3=cold+warm+hot (default: 1)"},
-					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"context": map[string]interface{}{"type": "string", "description": "Optional additional context to reason about"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_peer_list",
-			Description: "Discover other agents by listing peer cards (peer/*/profile facts). Returns each agent's vault name and card content.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_briefing",
-			Description: "Get an activity digest for the vault — recent additions, changes, and event summaries. Use to quickly catch up on vault activity.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '7d', '30d'"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_changes",
-			Description: "List recent changes in the vault — newly created facts, updated facts, and indexed content. Each change includes a timestamp. Use to understand what's happened since the last session.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '7d', '30d'"},
-					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 20)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_contradictions",
-			Description: "Find contradictory facts within the vault. Returns pairs of facts with conflicting statements — surfaced by the pruner's automated analysis.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"limit": map[string]interface{}{"type": "integer", "description": "Max pairs to return (1-50, default 20)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_links",
-			Description: "Query the link index: list outbound links, backlinks, or the full link graph for a source file.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"source": map[string]interface{}{"type": "string", "description": "Source file path or prefix"},
-					"mode":   map[string]interface{}{"type": "string", "description": "'outbound' (default), 'backlinks', or 'graph'"},
-					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-500, default 100)"},
-					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_graph_entity",
-			Description: "Look up a specific entity by ID or name in the knowledge graph. Returns entity metadata and relations.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"entity_id": map[string]interface{}{"type": "string", "description": "Entity UUID or name"},
-					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_graph_edges",
-			Description: "Query edges in the knowledge graph — relationships between entities, optionally filtered by type or entity.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"entity_id": map[string]interface{}{"type": "string", "description": "Filter edges involving this entity"},
-					"rel_type":  map[string]interface{}{"type": "string", "description": "Edge type filter (e.g. works_at, knows)"},
-					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_graph_communities",
-			Description: "List knowledge communities detected by the Louvain community detection algorithm. Each community represents a cluster of related entities.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_audit",
-			Description: "Vault health check. Scans for staleness, semantic conflicts, gaps, and duplicates.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"stale_days":  map[string]interface{}{"type": "integer", "description": "Days since last update to flag as stale (default: 90)"},
-					"checks":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Which checks to run: stale, semantic_conflict, gap, duplicate"},
-					"sample_size": map[string]interface{}{"type": "integer", "description": "Chunk pairs to LLM-compare (1-200, default 50)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_stats",
-			Description: "Operational metrics for the vault. Returns file counts, chunk counts, fact counts, and vault age.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_status",
-			Description: "Server health and connectivity check. Returns server status, version, uptime, and component health (Qdrant, embedder, LLM).",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_session_create",
-			Description: "Create a conversation session. Returns the session ID for subsequent turn appends.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"agent_id":     map[string]interface{}{"type": "string", "description": "Agent identity for the session"},
-					"content":      map[string]interface{}{"type": "string", "description": "Optional initial message content"},
-					"vault":        map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Enable automatic fact extraction from turns"},
-				},
-				"required": []string{"agent_id"},
-			},
-		},
-		{
-			Name:        "ragamuffin_session_get",
-			Description: "Get session metadata and conversation turns.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"session_id": map[string]interface{}{"type": "string", "description": "Session UUID"},
-					"turns":      map[string]interface{}{"type": "integer", "description": "Max turns to return (0 for all, default 50)"},
-				},
-				"required": []string{"session_id"},
-			},
-		},
-		{
-			Name:        "ragamuffin_session_list",
-			Description: "List active sessions, optionally filtered by agent_id or vault.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"agent_id": map[string]interface{}{"type": "string", "description": "Filter by agent identity"},
-					"vault":    map[string]interface{}{"type": "string", "description": "Filter by vault name"},
-					"limit":    map[string]interface{}{"type": "integer", "description": "Max results (default 100)"},
-					"offset":   map[string]interface{}{"type": "integer", "description": "Result offset (default 0)"},
-				},
-			},
-		},
-		{
-			Name:        "ragamuffin_get_chunk",
-			Description: "Retrieve a single chunk by its chunk_id. Returns full text, source, and metadata.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"chunk_id": map[string]interface{}{"type": "string", "description": "UUID chunk ID from recall results"},
-					"vault":    map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
-				},
-				"required": []string{"chunk_id"},
-			},
-		},
-		{
-			Name:        "ragamuffin_turn_append",
-			Description: "Append a turn to an existing session.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"session_id":   map[string]interface{}{"type": "string", "description": "Session UUID"},
-					"content":      map[string]interface{}{"type": "string", "description": "Message content"},
-					"role":         map[string]interface{}{"type": "string", "description": "user, assistant, or system (default: user)"},
-					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Extract facts from this turn (default: fallback to session setting)"},
-				},
-				"required": []string{"session_id", "content"},
-			},
-		},
-	}
-}
-
 // mcpVaultContext returns a context with the vault name set from MCP args.
 func (s *Server) mcpVaultContext(ctx context.Context, args map[string]interface{}) context.Context {
 	if v, ok := args["vault"].(string); ok && v != "" {
@@ -444,8 +27,6 @@ func (s *Server) mcpVaultContext(ctx context.Context, args map[string]interface{
 	}
 	return ctx
 }
-
-// ── Dispatch ─────────────────────────────────────────────────────────────────
 
 func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[string]interface{}) (interface{}, error) {
 	ctx = s.mcpVaultContext(ctx, args)
@@ -461,75 +42,444 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		s.ensureAgentVault(ctx, vaultName)
 	}
 
-	switch toolName {
-	case "ragamuffin_recall":
+	// Strip configured prefix to get the base tool name
+	baseName := toolName
+	if strings.HasPrefix(toolName, s.cfg.MCPToolPrefix) {
+		baseName = strings.TrimPrefix(toolName, s.cfg.MCPToolPrefix)
+	}
+
+	switch baseName {
+	case "recall":
 		return s.mcpRecall(ctx, args)
-	case "ragamuffin_get_chunk":
+	case "get_chunk":
 		return s.mcpChunkGet(ctx, args)
-	case "ragamuffin_ask":
+	case "ask":
 		return s.mcpAsk(ctx, args)
-	case "ragamuffin_store":
+	case "store":
 		return s.mcpStore(ctx, args)
-	case "ragamuffin_draft":
+	case "draft":
 		return s.mcpDraft(ctx, args)
-	case "ragamuffin_facts":
-		return s.mcpFacts(ctx, args)
-	case "ragamuffin_fact_get":
+	case "fact_get":
 		return s.mcpFactGet(ctx, args)
-	case "ragamuffin_fact_put":
+	case "fact_put":
 		return s.mcpFactPut(ctx, args)
-	case "ragamuffin_fact_list":
+	case "fact_list":
 		return s.mcpFactList(ctx, args)
-	case "ragamuffin_fact_delete":
+	case "fact_delete":
 		return s.mcpFactDelete(ctx, args)
-	case "ragamuffin_fact_graph":
+	case "fact_graph":
 		return s.mcpFactGraph(ctx, args)
-	case "ragamuffin_fact_history":
+	case "fact_history":
 		return s.mcpFactHistory(ctx, args)
-	case "ragamuffin_fact_provenance":
+	case "fact_provenance":
 		return s.mcpFactProvenance(ctx, args)
-	case "ragamuffin_review":
+	case "review":
 		return s.mcpReview(ctx, args)
-	case "ragamuffin_hybrid_search":
+	case "hybrid_search":
 		return s.mcpHybridSearch(ctx, args)
-	case "ragamuffin_verify":
+	case "verify":
 		return s.mcpVerify(ctx, args)
-	case "ragamuffin_context_bundle":
+	case "context_bundle":
 		return s.mcpContextBundle(ctx, args)
-	case "ragamuffin_dialectic":
+	case "dialectic":
 		return s.mcpDialectic(ctx, args)
-	case "ragamuffin_peer_list":
+	case "peer_list":
 		return s.mcpPeerList(ctx, args)
-	case "ragamuffin_briefing":
+	case "briefing":
 		return s.mcpBriefing(ctx, args)
-	case "ragamuffin_changes":
+	case "changes":
 		return s.mcpChanges(ctx, args)
-	case "ragamuffin_contradictions":
+	case "contradictions":
 		return s.mcpContradictions(ctx, args)
-	case "ragamuffin_links":
+	case "links":
 		return s.mcpLinks(ctx, args)
-	case "ragamuffin_graph_entity":
+	case "graph_entity":
 		return s.mcpGraphEntity(ctx, args)
-	case "ragamuffin_graph_edges":
+	case "graph_edges":
 		return s.mcpGraphEdges(ctx, args)
-	case "ragamuffin_graph_communities":
+	case "graph_communities":
 		return s.mcpGraphCommunities(ctx, args)
-	case "ragamuffin_audit":
+	case "audit":
 		return s.mcpAudit(ctx, args)
-	case "ragamuffin_stats":
+	case "stats":
 		return s.mcpStats(ctx, args)
-	case "ragamuffin_status":
+	case "status":
 		return s.mcpStatus(ctx, args)
-	case "ragamuffin_session_create":
+	case "session_create":
 		return s.mcpSessionCreate(ctx, args)
-	case "ragamuffin_session_get":
+	case "session_get":
 		return s.mcpSessionGet(ctx, args)
-	case "ragamuffin_session_list":
+	case "session_list":
 		return s.mcpSessionList(ctx, args)
-	case "ragamuffin_turn_append":
+	case "turn_append":
 		return s.mcpTurnAppend(ctx, args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", toolName)
+	}
+
+}
+
+// ── MCP Tools ─────────────────────────────────────────────────────────────
+
+// toolDef builds an MCP tool definition with the configured prefix applied.
+func (s *Server) toolDef(name, desc string, schema map[string]interface{}) mcp.ToolDefinition {
+	return mcp.ToolDefinition{
+		Name:        s.cfg.MCPToolPrefix + name,
+		Description: desc,
+		InputSchema: schema,
+	}
+}
+
+func (s *Server) mcpTools() []mcp.ToolDefinition {
+	return []mcp.ToolDefinition{
+		s.toolDef("recall",
+			"Search your knowledge base before starting work on any topic. Use this to check what's already known, find prior decisions, or locate relevant documentation. Returns ranked text chunks with source files and similarity scores.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":           map[string]interface{}{"type": "string", "description": "Natural-language search query"},
+					"vault":           map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k":           map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 10)"},
+					"score_threshold": map[string]interface{}{"type": "number", "description": "Minimum similarity score 0.0-1.0"},
+					"source_filter":   map[string]interface{}{"type": "string", "description": "Restrict to files under this path prefix"},
+					"detail":          map[string]interface{}{"type": "string", "description": "Response detail level: l0 (header only), l1 (first paragraph), l2 (full text, default)", "enum": []interface{}{"l0", "l1", "l2"}},
+				},
+				"required": []string{"query"},
+			}),
+		s.toolDef("ask",
+			"Ask a question that spans multiple documents and get a synthesized answer. Use when you need a coherent summary rather than raw search results. Returns a prose answer with source citations.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "The question to answer"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"mode":  map[string]interface{}{"type": "string", "description": "auto, rag, or full (default: auto)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "RAG results to retrieve (1-50, default 8)"},
+				},
+				"required": []string{"query"},
+			}),
+		s.toolDef("store",
+			"Save knowledge you've learned so it persists beyond this session. Use after reaching conclusions, discovering patterns, or completing analysis worth preserving. Returns the store result with source identifier.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"content": map[string]interface{}{"type": "string", "description": "Text content to ingest (markdown, plain text)"},
+					"source":  map[string]interface{}{"type": "string", "description": "Origin identifier (agent name, workflow ID, file path)"},
+					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"tags":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags for filtering"},
+				},
+				"required": []string{"content", "source"},
+			}),
+		s.toolDef("draft",
+			"Propose a document edit. Direct mode writes immediately; PR mode opens a pull request. Use when your analysis or research leads to a concrete change. Returns the write result with file path.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"title":       map[string]interface{}{"type": "string", "description": "Document title (PR title if PR mode)"},
+					"content":     map[string]interface{}{"type": "string", "description": "File content to write. Required unless delete=true."},
+					"target_path": map[string]interface{}{"type": "string", "description": "Vault path relative to vault root"},
+					"mode":        map[string]interface{}{"type": "string", "description": "direct or pr (default: direct)"},
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"description": map[string]interface{}{"type": "string", "description": "Optional PR body (PR mode)"},
+					"delete":      map[string]interface{}{"type": "boolean", "description": "Delete the file instead of writing"},
+				},
+				"required": []string{"title", "target_path"},
+			}),
+		s.toolDef("fact_get",
+			"Look up a specific known fact by its key. Use when you know the exact key and need the current value, confidence, and status. Returns the fact value with metadata.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to retrieve"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			}),
+		s.toolDef("fact_put",
+			"Record a discrete decision, preference, or configuration as a named fact. Use for small, structured knowledge — connection strings, architectural decisions, agent preferences. Facts are versioned and can be superseded.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":         map[string]interface{}{"type": "string", "description": "Unique fact key, e.g. decision/use-postgres"},
+					"value":       map[string]interface{}{"type": "string", "description": "The fact value to store"},
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"tags":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional tags"},
+					"source":      map[string]interface{}{"type": "string", "description": "Origin reference"},
+					"source_type": map[string]interface{}{"type": "string", "description": "manual, agent_observation, conversation, code_review, automated"},
+					"confidence":  map[string]interface{}{"type": "number", "description": "Confidence 0.0-1.0 (default 1.0)"},
+					"ttl_days":    map[string]interface{}{"type": "integer", "description": "Days until auto-expiry. 0 = never (default)."},
+				},
+				"required": []string{"key", "value"},
+			}),
+		s.toolDef("fact_list",
+			"Browse existing facts by prefix, tag, or status. Use to discover what facts exist before writing new ones. Returns a list of matching facts with values and metadata.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":    map[string]interface{}{"type": "string", "description": "Exact key filter"},
+					"prefix": map[string]interface{}{"type": "string", "description": "Key prefix filter"},
+					"tag":    map[string]interface{}{"type": "string", "description": "Tag filter"},
+					"status": map[string]interface{}{"type": "string", "description": "Lifecycle status: active, needs_review, superseded, rejected"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-1000, default 100)"},
+				},
+			}),
+		s.toolDef("fact_delete",
+			"Permanently remove a fact by its key. For cleanup of obsolete entries. Irreversible — consider superseding for reversible deprecation.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Exact fact key to delete"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			}),
+		s.toolDef("fact_graph",
+			"Explore the lineage of a fact — what it supersedes, contradicts, or refines. Use to resolve conflicting information by tracing provenance. Returns a graph of related facts with relationship types.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key for the lineage graph"},
+					"depth": map[string]interface{}{"type": "integer", "description": "Traversal depth (0-5, default 1)"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			}),
+		s.toolDef("fact_history",
+			"See how a fact evolved over time. Use to verify when it was last confirmed or how it changed. Returns a chronological list of events.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key for history"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			}),
+		s.toolDef("fact_provenance",
+			"Trace where a fact came from. Use to verify credibility or understand origin. Returns complete provenance metadata.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"key":   map[string]interface{}{"type": "string", "description": "Fact key for provenance"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"key"},
+			}),
+		s.toolDef("review",
+			"Review facts flagged for attention. Use when alerted about contradictions, low confidence, or near-expiry entries. Resolve with confirm, supersede, or reject.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"action":     map[string]interface{}{"type": "string", "description": "'list' or 'resolve'"},
+					"reason":     map[string]interface{}{"type": "string", "description": "Filter by review reason"},
+					"limit":      map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
+					"point_id":   map[string]interface{}{"type": "string", "description": "Point ID to resolve"},
+					"resolution": map[string]interface{}{"type": "string", "description": "confirm, supersede, or reject"},
+					"correction": map[string]interface{}{"type": "string", "description": "Corrected value (required for supersede)"},
+					"vault":      map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("hybrid_search",
+			"Search documents and facts together. Use when you don't know whether the information is in a document or a fact. Returns interleaved results ranked by combined relevance.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query":  map[string]interface{}{"type": "string", "description": "Natural-language search query"},
+					"key":    map[string]interface{}{"type": "string", "description": "Exact fact key filter"},
+					"prefix": map[string]interface{}{"type": "string", "description": "Fact key prefix filter"},
+					"tag":    map[string]interface{}{"type": "string", "description": "Fact tag filter"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-100, default 20)"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("verify",
+			"Check a claim against your knowledge base. Use to detect contradictions before acting on uncertain information.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"fact":  map[string]interface{}{"type": "string", "description": "The fact statement to validate"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 10)"},
+				},
+				"required": []string{"fact"},
+			}),
+		s.toolDef("context_bundle",
+			"Get a quick orientation snapshot. Use at session start or when returning to a vault after time away. Returns peer card, recent facts, and relevant memories.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_identity": map[string]interface{}{"type": "string", "description": "Agent name for peer card lookup"},
+					"query":          map[string]interface{}{"type": "string", "description": "Optional query to focus recall"},
+					"top_k":          map[string]interface{}{"type": "integer", "description": "Recall results to include (1-10, default 3)"},
+					"vault":          map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("dialectic",
+			"Generate structured reasoning prompts. Use before decisions needing thorough vetting — architectural choices, policy decisions, conflict resolution. Returns cold, warm, and hot reasoning blocks.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"depth":   map[string]interface{}{"type": "integer", "description": "Reasoning depth: 1=cold, 2=cold+warm, 3=cold+warm+hot (default: 1)"},
+					"vault":   map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"context": map[string]interface{}{"type": "string", "description": "Optional context to reason about"},
+				},
+			}),
+		s.toolDef("peer_list",
+			"Discover other agents by listing peer cards. Use to find what agents exist and how to reference their vaults.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("briefing",
+			"Get a summary of recent vault activity. Use when returning after an absence. Returns an event digest by type for the specified period.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '168h', '720h'"},
+				},
+			}),
+		s.toolDef("changes",
+			"See what's changed recently. Use to catch up on activity since your last session. Returns chronologically ordered changes with timestamps.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"period": map[string]interface{}{"type": "string", "description": "Time period: '24h' (default), '168h', '720h'"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-50, default 20)"},
+				},
+			}),
+		s.toolDef("contradictions",
+			"Find conflicting information in your knowledge base. Use to detect inconsistencies before they cause problems.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"limit": map[string]interface{}{"type": "integer", "description": "Max pairs (1-50, default 20)"},
+				},
+			}),
+		s.toolDef("links",
+			"Navigate the link graph between documents. Use to discover related content or find backlinks.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"source": map[string]interface{}{"type": "string", "description": "Source file path"},
+					"mode":   map[string]interface{}{"type": "string", "description": "'outbound', 'backlinks', or 'graph'"},
+					"limit":  map[string]interface{}{"type": "integer", "description": "Max results (1-500, default 100)"},
+					"vault":  map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("graph_entity",
+			"Look up an entity in the knowledge graph. Use to find what's known about a person, project, or concept.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_id": map[string]interface{}{"type": "string", "description": "Entity UUID or name"},
+					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("graph_edges",
+			"Query relationships between entities. Use to understand how things are connected. Returns edges with relationship types.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"entity_id": map[string]interface{}{"type": "string", "description": "Filter edges involving this entity"},
+					"rel_type":  map[string]interface{}{"type": "string", "description": "Edge type filter"},
+					"vault":     map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("graph_communities",
+			"Discover how entities naturally cluster. Returns communities with member counts and summaries.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("audit",
+			"Run a vault health check. Use periodically to find stale files, conflicts, gaps, and duplicates.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault":       map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"stale_days":  map[string]interface{}{"type": "integer", "description": "Days to flag as stale (default: 90)"},
+					"checks":      map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "stale, semantic_conflict, gap, duplicate"},
+					"sample_size": map[string]interface{}{"type": "integer", "description": "Chunk pairs to compare (1-200, default 50)"},
+				},
+			}),
+		s.toolDef("stats",
+			"Get operational metrics. File counts, chunk counts, fact counts, vault age. No side effects.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("status",
+			"Check server health and connectivity. Use at session start or after errors. Returns status, version, uptime.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+			}),
+		s.toolDef("session_create",
+			"Start a conversation session. Use at the beginning of a multi-turn interaction. Returns session ID for subsequent calls.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_id":     map[string]interface{}{"type": "string", "description": "Agent identity"},
+					"content":      map[string]interface{}{"type": "string", "description": "Optional initial message"},
+					"vault":        map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Auto fact extraction from turns"},
+				},
+				"required": []string{"agent_id"},
+			}),
+		s.toolDef("session_get",
+			"Retrieve session metadata and turns. Use to review past interactions or continue a paused conversation.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"session_id": map[string]interface{}{"type": "string", "description": "Session UUID"},
+					"turns":      map[string]interface{}{"type": "integer", "description": "Max turns to return (0 for all, default 50)"},
+				},
+				"required": []string{"session_id"},
+			}),
+		s.toolDef("session_list",
+			"Browse active sessions. Use to find sessions needing attention or get an overview of recent activity.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent_id": map[string]interface{}{"type": "string", "description": "Filter by agent identity"},
+					"vault":    map[string]interface{}{"type": "string", "description": "Filter by vault name"},
+					"limit":    map[string]interface{}{"type": "integer", "description": "Max results (default 100)"},
+					"offset":   map[string]interface{}{"type": "integer", "description": "Result offset (default 0)"},
+				},
+			}),
+		s.toolDef("get_chunk",
+			"Retrieve full text and metadata of a specific chunk. Use when recall found relevant results and you need complete context.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"chunk_id": map[string]interface{}{"type": "string", "description": "UUID chunk ID from recall results"},
+					"vault":    map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+				},
+				"required": []string{"chunk_id"},
+			}),
+		s.toolDef("turn_append",
+			"Add a message to a session. Use during conversations to persist exchanges for future context.",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"session_id":   map[string]interface{}{"type": "string", "description": "Session UUID"},
+					"content":      map[string]interface{}{"type": "string", "description": "Message content"},
+					"role":         map[string]interface{}{"type": "string", "description": "user, assistant, or system (default: user)"},
+					"auto_extract": map[string]interface{}{"type": "boolean", "description": "Extract facts from this turn"},
+				},
+				"required": []string{"session_id", "content"},
+			}),
 	}
 }
 

@@ -13,7 +13,7 @@ tested and green on CI.
 ## ✅ Completed: v0.6 — Core Infrastructure
 
 All three items fully implemented. Session management (SQLite + Qdrant), per-vault
-fact isolation (`ragamuffin_{name}_facts` collections), and configurable embedding
+fact isolation (`memory.{name}_facts` collections), and configurable embedding
 dimensions (`RAGAMUFFIN_FACTS_VECTOR_SIZE`).
 
 ## ✅ Completed: v0.7 — Platform Growth
@@ -293,7 +293,7 @@ for deployments without OIDC. New deployments should be OIDC-first.
 Also: add a `POST /v1/auth/check` endpoint that returns the caller's scoped
 permissions, intended for agent startup self-diagnostics.
 
-Storage: A `ragamuffin_agents` SQLite table maps Authentik user IDs to vault
+Storage: A `memory.agents` SQLite table maps Authentik user IDs to vault
 access, or the JWT claims are self-contained (authorization at the token level).
 Prefer self-contained claims — no additional database dependency for auth.
 

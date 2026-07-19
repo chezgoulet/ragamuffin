@@ -212,10 +212,10 @@ Ragamuffin's API directly — no plugin swap required.
 ```mermaid
 flowchart LR
     subgraph OC [OpenClaw — dev agent]
-        OC_TOOL["ragamuffin_recall/store<br/>(agent tools)"]
+        OC_TOOL["memory.recall/store<br/>(agent tools)"]
     end
     subgraph H [Hermes — robot agent]
-        H_TOOL["ragamuffin_recall/store<br/>(agent tools)"]
+        H_TOOL["memory.recall/store<br/>(agent tools)"]
     end
     CL[Claudemem] ---|per-turn auto-persist<br/>unchanged| OC
     HN[Honcho] ---|per-turn auto-persist<br/>unchanged| H
@@ -243,7 +243,7 @@ flowchart LR
 |---|---|---|
 | Harness slot | Swap to memory-ragamuffin | Keep claudemem/Honcho |
 | Turn persistence | Automatic | Slot handles this |
-| Cross-harness recall | Built-in | Via ragamuffin_recall tool |
+| Cross-harness recall | Built-in | Via memory.recall tool |
 | Agent writes | Zero-touch | Explicit tool calls |
 | Migration risk | Swap and validate | Additive, zero-risk |
 | End state | Full Ragamuffin | Ragamuffin as bridge layer |
@@ -262,8 +262,8 @@ latency profiles and are designed for different use cases:
 | Path | Interface | Latency | Best For |
 |---|---|---|---|
 | File watcher | filesystem | seconds to minutes | Human-edited vault files |
-| `POST /draft` / `ragamuffin_draft` | REST / MCP | near-real-time | Agent-proposed file edits |
-| `POST /v1/ingest` / `ragamuffin_store` | REST / MCP | near-real-time | Agent-originated signals, observations |
+| `POST /draft` / `memory.draft` | REST / MCP | near-real-time | Agent-proposed file edits |
+| `POST /v1/ingest` / `memory.store` | REST / MCP | near-real-time | Agent-originated signals, observations |
 
 ### Path 1: File Watcher (Pattern 1)
 
@@ -279,7 +279,7 @@ documentation. The vault is the source of truth; Ragamuffin is the index.
 write that needs to survive a container restart without a filesystem. If the
 watcher isn't the writer, you're adding latency and complexity.
 
-### Path 2: `POST /draft` — Agent-Proposed File Edits (MCP: `ragamuffin_draft`)
+### Path 2: `POST /draft` — Agent-Proposed File Edits (MCP: `memory.draft`)
 
 Agents use `POST /draft` to create or update files in the vault. The request
 includes the file path and content. Ragamuffin writes the file, and the
@@ -293,7 +293,7 @@ content; Ragamuffin makes it real.
 consumers know who wrote it — e.g. `agent:news-digest` or `human:christopher`.
 See [Source Labeling](#source-labeling) below.
 
-### Path 3: `POST /v1/ingest` — Agent-Oriented Signals (MCP: `ragamuffin_store`)
+### Path 3: `POST /v1/ingest` — Agent-Oriented Signals (MCP: `memory.store`)
 
 Agents send structured documents (JSON with text + metadata) directly to the
 vault, bypassing the filesystem entirely. The data goes straight into Qdrant
@@ -314,8 +314,8 @@ Those go through `/draft` or the file watcher.
 flowchart TD
     Q{"Is the content a<br/>human-editable file?"}
     Q -->|Yes| Q2{"Is the agent<br/>proposing it?"}
-    Q -->|No| I["POST /v1/ingest<br/>(ragamuffin_store MCP tool)"]
-    Q2 -->|Yes| D["POST /draft<br/>(ragamuffin_draft MCP tool)"]
+    Q -->|No| I["POST /v1/ingest<br/>(memory.store MCP tool)"]
+    Q2 -->|Yes| D["POST /draft<br/>(memory.draft MCP tool)"]
     Q2 -->|No| W["File watcher<br/>(write file to vault dir)"]
     I --> Q3{"Is this a harness-<br/>managed session?"}
     Q3 -->|Yes| HP["Harness plugin calls<br/>ingest automatically"]
@@ -324,7 +324,7 @@ flowchart TD
 
 ### Agent Write Discipline
 
-Agents that use `ragamuffin_store` or `ragamuffin_draft` must be explicitly
+Agents that use `memory.store` or `memory.draft` must be explicitly
 prompted to write back. Unlike Pattern 2 (harness plugin), the agent decides
 *when* and *what* to persist. This means:
 
@@ -1025,7 +1025,7 @@ shutdown context (not the HTTP request context) so it survives fast responses.
 **Configuration prerequisites:**
 - LLM client configured (`RAGAMUFFIN_LLM_API_KEY`, etc.)
 - Embedding client configured (`RAGAMUFFIN_EMBEDDING_API_KEY`, etc.)
-- Fact collection configured (`RAGAMUFFIN_FACTS_COLLECTION`, defaults to `ragamuffin_facts`)
+- Fact collection configured (`RAGAMUFFIN_FACTS_COLLECTION`, defaults to `memory.facts`)
 
 ---
 
@@ -1323,7 +1323,7 @@ curl -s -N http://localhost:8000/mcp
 # In a separate shell, send tool invocation
 curl -s -X POST http://localhost:8000/mcp \
   -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ragamuffin_recall","arguments":{"query":"deployment strategy"}}}'
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"memory.recall","arguments":{"query":"deployment strategy"}}}'
 ```
 
 #### Implements
@@ -1339,13 +1339,13 @@ curl -s -X POST http://localhost:8000/mcp \
 
 All tools mirror the REST API. Full 33-tool catalog:
 
-- **Search & Synthesis:** `ragamuffin_recall`, `ragamuffin_ask`, `ragamuffin_hybrid_search`, `ragamuffin_verify`
-- **Fact CRUD & Lineage:** `ragamuffin_fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` + legacy `ragamuffin_facts`
-- **Knowledge Graph:** `ragamuffin_graph_entity`, `_edges`, `_communities`, `ragamuffin_links`
-- **Quality & Review:** `ragamuffin_review`, `_contradictions`, `_audit`, `ragamuffin_get_chunk`
-- **Context & Discovery:** `ragamuffin_context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes`
-- **Session Management:** `ragamuffin_session_create`, `_get`, `_list`, `ragamuffin_turn_append`
-- **Utilities:** `ragamuffin_store`, `_draft`, `_stats`, `_status`
+- **Search & Synthesis:** `memory.recall`, `memory.ask`, `memory.hybrid_search`, `memory.verify`
+- **Fact CRUD & Lineage:** `memory.fact_get`, `_put`, `_list`, `_delete`, `_graph`, `_history`, `_provenance` + legacy `memory.facts`
+- **Knowledge Graph:** `memory.graph_entity`, `_edges`, `_communities`, `memory.links`
+- **Quality & Review:** `memory.review`, `_contradictions`, `_audit`, `memory.get_chunk`
+- **Context & Discovery:** `memory.context_bundle`, `_dialectic`, `_peer_list`, `_briefing`, `_changes`
+- **Session Management:** `memory.session_create`, `_get`, `_list`, `memory.turn_append`
+- **Utilities:** `memory.store`, `_draft`, `_stats`, `_status`
 
 **Auto-provisioning:** Agent vaults (names containing `:`) created on first tool dispatch.
 **Session end:** Send `notifications/session_end` to auto-finalize sessions with summary and fact extraction.

@@ -201,12 +201,12 @@ mcp_has "  initialize returns capabilities" "$body" "capabilities"
 body=$(mcprpc "tools/list")
 mcp_ok "  tools/list returns no error" "$body"
 mcp_count "  tools/list tool count" "$body" 30
-for tool in ragamuffin_recall ragamuffin_ask ragamuffin_fact_put ragamuffin_fact_get \
-  ragamuffin_fact_list ragamuffin_fact_delete ragamuffin_fact_graph \
-  ragamuffin_session_create ragamuffin_session_get ragamuffin_turn_append \
-  ragamuffin_context_bundle ragamuffin_peer_list ragamuffin_briefing \
-  ragamuffin_contradictions ragamuffin_graph_entity ragamuffin_graph_edges \
-  ragamuffin_review ragamuffin_dialectic ragamuffin_changes ragamuffin_status; do
+for tool in memory.recall memory.ask memory.fact_put memory.fact_get \
+  memory.fact_list memory.fact_delete memory.fact_graph \
+  memory.session_create memory.session_get memory.turn_append \
+  memory.context_bundle memory.peer_list memory.briefing \
+  memory.contradictions memory.graph_entity memory.graph_edges \
+  memory.review memory.dialectic memory.changes memory.status; do
   if mcp_tool_exists "$body" "$tool"; then
     green "  essential tool '$tool' present"
   else
@@ -232,10 +232,10 @@ echo ""
 echo "===== 1. Auto-Provisioning ====="
 
 if $HAS_EMBEDDING; then
-  body=$(mcprpc "tools/call" '{"name":"ragamuffin_recall","arguments":{"query":"test","vault":"agent::integration-test"}}')
+  body=$(mcprpc "tools/call" '{"name":"memory.recall","arguments":{"query":"test","vault":"agent::integration-test"}}')
   mcp_ok "  first recall against agent::integration-test (auto-provisions vault)" "$body"
 
-  body=$(mcprpc "tools/call" '{"name":"ragamuffin_recall","arguments":{"query":"test","vault":"agent::integration-test"}}')
+  body=$(mcprpc "tools/call" '{"name":"memory.recall","arguments":{"query":"test","vault":"agent::integration-test"}}')
   mcp_ok "  second recall succeeds (vault already provisioned)" "$body"
 else
   skip "  Auto-provisioning recall — requires RAGAMUFFIN_EMBEDDING_API_KEY"
@@ -244,16 +244,16 @@ fi
 echo ""
 echo "===== 2. Session Lifecycle ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_session_create","arguments":{"agent_id":"integ-test","content":"Test session","vault":"default"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.session_create","arguments":{"agent_id":"integ-test","content":"Test session","vault":"default"}}')
 mcp_ok "  session_create returns no error" "$body"
 session_id=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',{}).get('session_id',''))" 2>/dev/null)
 if [ -n "$session_id" ]; then
   green "  session_id: $session_id"
-  body=$(mcprpc "tools/call" "{\"name\":\"ragamuffin_turn_append\",\"arguments\":{\"session_id\":\"$session_id\",\"content\":\"User: hello\\nAssistant: hi\",\"role\":\"assistant\"}}")
+  body=$(mcprpc "tools/call" "{\"name\":\"memory.turn_append\",\"arguments\":{\"session_id\":\"$session_id\",\"content\":\"User: hello\\nAssistant: hi\",\"role\":\"assistant\"}}")
   mcp_ok "  turn_append succeeds" "$body"
-  body=$(mcprpc "tools/call" "{\"name\":\"ragamuffin_session_get\",\"arguments\":{\"session_id\":\"$session_id\",\"turns\":5}}")
+  body=$(mcprpc "tools/call" "{\"name\":\"memory.session_get\",\"arguments\":{\"session_id\":\"$session_id\",\"turns\":5}}")
   mcp_ok "  session_get succeeds" "$body"
-  body=$(mcprpc "tools/call" "{\"name\":\"ragamuffin_session_list\",\"arguments\":{}}")
+  body=$(mcprpc "tools/call" "{\"name\":\"memory.session_list\",\"arguments\":{}}")
   mcp_ok "  session_list succeeds" "$body"
 else
   skip "  session lifecycle — no session_id from create"
@@ -262,20 +262,20 @@ fi
 echo ""
 echo "===== 3. Fact CRUD ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_put","arguments":{"key":"integ/test-key","value":"test value","source":"integration_test","source_type":"automated"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_put","arguments":{"key":"integ/test-key","value":"test value","source":"integration_test","source_type":"automated"}}')
 mcp_ok "  fact_put creates fact" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_get","arguments":{"key":"integ/test-key"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_get","arguments":{"key":"integ/test-key"}}')
 mcp_ok "  fact_get returns fact" "$body"
 
 # Re-upsert (same key) — lifecycle fields should be preserved
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_put","arguments":{"key":"integ/test-key","value":"updated value","tags":["test"]}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_put","arguments":{"key":"integ/test-key","value":"updated value","tags":["test"]}}')
 mcp_ok "  fact_put re-upsert (lifecycle fields preserved)" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_list","arguments":{"status":"active"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_list","arguments":{"status":"active"}}')
 mcp_ok "  fact_list returns facts" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_delete","arguments":{"key":"integ/test-key"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_delete","arguments":{"key":"integ/test-key"}}')
 # DeleteFiltered may fail on embedded store (only supports source_file filters).
 # The Qdrant client's DeleteFiltered supports arbitrary filters — this is an
 # embedded store limitation, not a protocol bug.
@@ -285,7 +285,7 @@ sys.exit(0 if d.get('result',{}).get('deleted') else 1)
 " 2>/dev/null; then
   green "  fact_delete removes fact"
   # Verify deleted
-  body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_get","arguments":{"key":"integ/test-key"}}')
+  body=$(mcprpc "tools/call" '{"name":"memory.fact_get","arguments":{"key":"integ/test-key"}}')
   mcp_err "  fact_get on deleted key returns error" "$body"
 else
   skip "  fact_delete — embedded store limitation (use Qdrant for this test)"
@@ -294,47 +294,47 @@ fi
 echo ""
 echo "===== 4. Fact Graph ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_put","arguments":{"key":"integ/graph-a","value":"version 1","tags":["graph"]}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_put","arguments":{"key":"integ/graph-a","value":"version 1","tags":["graph"]}}')
 mcp_ok "  fact_put graph-a" "$body"
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_put","arguments":{"key":"integ/graph-b","value":"version 2","tags":["graph"]}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_put","arguments":{"key":"integ/graph-b","value":"version 2","tags":["graph"]}}')
 mcp_ok "  fact_put graph-b" "$body"
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_fact_graph","arguments":{"key":"integ/graph-a","depth":2}}')
+body=$(mcprpc "tools/call" '{"name":"memory.fact_graph","arguments":{"key":"integ/graph-a","depth":2}}')
 mcp_ok "  fact_graph returns graph" "$body"
 
 echo ""
 echo "===== 5. Context & Discovery ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_context_bundle","arguments":{"query":"composition","top_k":3}}')
+body=$(mcprpc "tools/call" '{"name":"memory.context_bundle","arguments":{"query":"composition","top_k":3}}')
 mcp_ok "  context_bundle returns bundle" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_peer_list","arguments":{}}')
+body=$(mcprpc "tools/call" '{"name":"memory.peer_list","arguments":{}}')
 mcp_ok "  peer_list succeeds" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_briefing","arguments":{"period":"24h"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.briefing","arguments":{"period":"24h"}}')
 mcp_ok "  briefing returns digest" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_changes","arguments":{"period":"168h","limit":10}}')
+body=$(mcprpc "tools/call" '{"name":"memory.changes","arguments":{"period":"168h","limit":10}}')
 mcp_ok "  changes returns recent activity" "$body"
 
 echo ""
 echo "===== 6. Review Queue ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_review","arguments":{"action":"list"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.review","arguments":{"action":"list"}}')
 mcp_ok "  review list succeeds" "$body"
 
 echo ""
 echo "===== 7. Status & Graph ====="
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_stats","arguments":{}}')
+body=$(mcprpc "tools/call" '{"name":"memory.stats","arguments":{}}')
 mcp_ok "  stats returns metrics" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_status","arguments":{}}')
+body=$(mcprpc "tools/call" '{"name":"memory.status","arguments":{}}')
 mcp_ok "  status returns health" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_graph_communities","arguments":{"vault":"default"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.graph_communities","arguments":{"vault":"default"}}')
 mcp_ok "  graph_communities succeeds" "$body"
 
-body=$(mcprpc "tools/call" '{"name":"ragamuffin_graph_edges","arguments":{"vault":"default"}}')
+body=$(mcprpc "tools/call" '{"name":"memory.graph_edges","arguments":{"vault":"default"}}')
 mcp_ok "  graph_edges succeeds" "$body"
 
 echo ""

@@ -55,14 +55,14 @@ recallMode routing:
   tools   — expose tools only, no auto-injection
 
 Tool schemas:
-  ragamuffin_recall     — search any agent's vault (cross-agent recall)
-  ragamuffin_search    — alias for ragamuffin_recall
-  ragamuffin_ask       — synthesis with citations (supports reasoning_effort)
-  ragamuffin_profile   — get/set agent peer card
-  ragamuffin_context   — composite context (card + summary + recall)
-  ragamuffin_learn     — store a conclusion as a fact
-  ragamuffin_fact_*    — fact CRUD and graph operations
-  ragamuffin_review_*  — review queue management
+  memory.recall     — search any agent's vault (cross-agent recall)
+  memory.search    — alias for memory.recall
+  memory.ask       — synthesis with citations (supports reasoning_effort)
+  memory.profile   — get/set agent peer card
+  memory.context   — composite context (card + summary + recall)
+  memory.learn     — store a conclusion as a fact
+  memory.fact_*    — fact CRUD and graph operations
+  memory.review_*  — review queue management
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ _PEER_CARD_PREFIX = "peer/{agent}/card/"  # peer card fact key prefix
 # ---------------------------------------------------------------------------
 
 RECALL_SCHEMA = {
-    "name": "ragamuffin_recall",
+    "name": "memory.recall",
     "description": (
         "Semantic search across any agent's Ragamuffin vault. "
         "Use this to recall what another agent knows, or to find specific "
@@ -132,9 +132,9 @@ RECALL_SCHEMA = {
 }
 
 SEARCH_SCHEMA = {
-    "name": "ragamuffin_search",
+    "name": "memory.search",
     "description": (
-        "Alias for ragamuffin_recall. Semantic search across any agent's "
+        "Alias for memory.recall. Semantic search across any agent's "
         "Ragamuffin vault. Returns ranked text excerpts with relevance scores."
     ),
     "parameters": {
@@ -166,7 +166,7 @@ SEARCH_SCHEMA = {
 }
 
 ASK_SCHEMA = {
-    "name": "ragamuffin_ask",
+    "name": "memory.ask",
     "description": (
         "Ask a synthesis question across agent memory. "
         "Returns a natural language answer with citations from relevant "
@@ -200,7 +200,7 @@ ASK_SCHEMA = {
 }
 
 PROFILE_SCHEMA = {
-    "name": "ragamuffin_profile",
+    "name": "memory.profile",
     "description": (
         "Get or update the agent's peer profile card. "
         "Without a value, returns the current card. "
@@ -219,7 +219,7 @@ PROFILE_SCHEMA = {
 }
 
 CONTEXT_SCHEMA = {
-    "name": "ragamuffin_context",
+    "name": "memory.context",
     "description": (
         "Get a composite context bundle for this agent: the peer card, "
         "session summary, and relevant recalled information. "
@@ -241,7 +241,7 @@ CONTEXT_SCHEMA = {
 }
 
 LEARN_SCHEMA = {
-    "name": "ragamuffin_learn",
+    "name": "memory.learn",
     "description": (
         "Store a conclusion or learned fact from the current conversation. "
         "Use this when you discover something the agent should remember "
@@ -270,7 +270,7 @@ LEARN_SCHEMA = {
 }
 
 FACT_GET_SCHEMA = {
-    "name": "ragamuffin_fact_get",
+    "name": "memory.fact_get",
     "description": (
         "Retrieve a specific fact by its key. Returns the fact value, "
         "confidence (0.0-1.0), TTL, status, and relationships. "
@@ -290,7 +290,7 @@ FACT_GET_SCHEMA = {
 }
 
 FACT_PUT_SCHEMA = {
-    "name": "ragamuffin_fact_put",
+    "name": "memory.fact_put",
     "description": (
         "Write or update a fact in the agent's own vault. "
         "Use to record persistent knowledge - user preferences, "
@@ -331,7 +331,7 @@ FACT_PUT_SCHEMA = {
 }
 
 FACT_GRAPH_SCHEMA = {
-    "name": "ragamuffin_fact_graph",
+    "name": "memory.fact_graph",
     "description": (
         "Get the lineage graph of a fact - what it supersedes, "
         "contradicts, or refines. Use to understand how a fact has "
@@ -350,7 +350,7 @@ FACT_GRAPH_SCHEMA = {
 }
 
 REVIEW_LIST_SCHEMA = {
-    "name": "ragamuffin_review_list",
+    "name": "memory.review_list",
     "description": (
         "List flagged facts awaiting review. Facts enter the review queue "
         "when the pruner detects contradictions, low confidence, or near-expiry. "
@@ -372,7 +372,7 @@ REVIEW_LIST_SCHEMA = {
 }
 
 REVIEW_RESOLVE_SCHEMA = {
-    "name": "ragamuffin_review_resolve",
+    "name": "memory.review_resolve",
     "description": (
         "Resolve a flagged fact in the review queue. Actions: confirm the fact, "
         "supersede it with a corrected version, or reject it as invalid."
@@ -398,9 +398,9 @@ REVIEW_RESOLVE_SCHEMA = {
     },
 }
 
-# ragamuffin_status — health introspection (#784)
+# memory.status — health introspection (#784)
 STATUS_SCHEMA = {
-    "name": "ragamuffin_status",
+    "name": "memory.status",
     "description": (
         "Check Ragamuffin provider health and connectivity. "
         "Returns server status, tool injection state, vault info, "
@@ -606,7 +606,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "key": "save_messages",
                 "description": (
                     "Persist turn content to vault. Set to false when you only "
-                    "need selective fact storage via ragamuffin_learn."
+                    "need selective fact storage via memory.learn."
                 ),
                 "default": True,
                 "env_var": "RAGAMUFFIN_SAVE_MESSAGES",
@@ -686,7 +686,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                     "At session end, automatically extract key decisions, "
                     "conclusions, config, and preferences from the transcript "
                     "and write them to the vault as deduplicated facts "
-                    "(house/<domain>/<topic>). No manual ragamuffin_learn "
+                    "(house/<domain>/<topic>). No manual memory.learn "
                     "call required."
                 ),
                 "default": True,
@@ -1010,27 +1010,27 @@ class RagamuffinMemoryProvider(MemoryProvider):
             block += "Context is automatically injected each turn.\n"
         if self._recall_mode != "context":
             block += (
-                "Use `ragamuffin_recall` or `ragamuffin_search` "
+                "Use `memory.recall` or `memory.search` "
                 "to search any agent's vault.\n"
             )
             block += (
-                "Use `ragamuffin_profile` to view or update "
+                "Use `memory.profile` to view or update "
                 "this agent's peer card.\n"
             )
             block += (
-                "Use `ragamuffin_context` for a composite "
+                "Use `memory.context` for a composite "
                 "context bundle.\n"
             )
             block += (
-                "Use `ragamuffin_learn` to store a conclusion "
+                "Use `memory.learn` to store a conclusion "
                 "as a persistent fact.\n"
             )
             block += (
-                "Use `ragamuffin_fact_get` to retrieve a "
+                "Use `memory.fact_get` to retrieve a "
                 "specific fact by key.\n"
             )
             block += (
-                "Use `ragamuffin_fact_put` to write or update "
+                "Use `memory.fact_put` to write or update "
                 "a fact.\n"
             )
         return block
@@ -1300,9 +1300,9 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "- recall_mode (should not be 'tools')"
             )
         return (
-            "Peer card is empty. Use `ragamuffin_profile` with a 'value' "
+            "Peer card is empty. Use `memory.profile` with a 'value' "
             "to describe this agent's role and knowledge. Example:\n"
-            "ragamuffin_profile(value=\"Dev agent - builds software, "
+            "memory.profile(value=\"Dev agent - builds software, "
             "maintains code, works from GitHub Issues\")"
         )
 
@@ -1889,7 +1889,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "value": value,
                 "vault": self._agent_vault,
                 "tags": ["peer_card", self._agent_identity],
-                "source": "ragamuffin_profile",
+                "source": "memory.profile",
             }
             resp = self._requests.post(
                 url,
@@ -1908,35 +1908,35 @@ class RagamuffinMemoryProvider(MemoryProvider):
         self, tool_name: str, args: Dict[str, Any], **kwargs
     ) -> str:
         """Handle a tool call for one of this provider's tools."""
-        if tool_name == "ragamuffin_recall":
+        if tool_name == "memory.recall":
             return self._handle_recall(args)
-        elif tool_name == "ragamuffin_search":
+        elif tool_name == "memory.search":
             return self._handle_recall(args)  # alias
-        elif tool_name == "ragamuffin_ask":
+        elif tool_name == "memory.ask":
             return self._handle_ask(args)
-        elif tool_name == "ragamuffin_profile":
+        elif tool_name == "memory.profile":
             return self._handle_profile(args)
-        elif tool_name == "ragamuffin_context":
+        elif tool_name == "memory.context":
             return self._handle_context(args)
-        elif tool_name == "ragamuffin_learn":
+        elif tool_name == "memory.learn":
             return self._handle_learn(args)
-        elif tool_name == "ragamuffin_fact_get":
+        elif tool_name == "memory.fact_get":
             return self._handle_fact_get(args)
-        elif tool_name == "ragamuffin_fact_put":
+        elif tool_name == "memory.fact_put":
             return self._handle_fact_put(args)
-        elif tool_name == "ragamuffin_fact_graph":
+        elif tool_name == "memory.fact_graph":
             return self._handle_fact_graph(args)
-        elif tool_name == "ragamuffin_review_list":
+        elif tool_name == "memory.review_list":
             return self._handle_review_list(args)
-        elif tool_name == "ragamuffin_review_resolve":
+        elif tool_name == "memory.review_resolve":
             return self._handle_review_resolve(args)
-        elif tool_name == "ragamuffin_status":
+        elif tool_name == "memory.status":
             return self._handle_status(args)
         raise NotImplementedError(
             f"Ragamuffin provider does not handle tool '{tool_name}'"
         )
 
-    # ragamuffin_status — health introspection (#784)
+    # memory.status — health introspection (#784)
     def _handle_status(self, args: Dict[str, Any]) -> str:
         """Return provider and server health status."""
         status = {
@@ -2122,7 +2122,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 {
                     "agent": self._agent_identity,
                     "card": None,
-                    "note": "No peer card set. Use ragamuffin_profile with a 'value' to create one.",
+                    "note": "No peer card set. Use memory.profile with a 'value' to create one.",
                 },
                 indent=2,
             )
@@ -2220,7 +2220,7 @@ class RagamuffinMemoryProvider(MemoryProvider):
                 "value": statement,
                 "vault": self._agent_vault,
                 "tags": ["conclusion", self._agent_identity],
-                "source": "ragamuffin_learn",
+                "source": "memory.learn",
             }
             if "confidence" in args:
                 payload["confidence"] = min(

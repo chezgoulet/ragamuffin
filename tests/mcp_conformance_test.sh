@@ -128,7 +128,7 @@ else
 fi
 
 # Verify essential tools exist
-for tool in ragamuffin_recall ragamuffin_ask ragamuffin_store ragamuffin_fact_get ragamuffin_fact_put ragamuffin_fact_list ragamuffin_fact_delete ragamuffin_fact_graph ragamuffin_review ragamuffin_context_bundle ragamuffin_peer_list ragamuffin_status ragamuffin_session_create; do
+for tool in memory.recall memory.ask memory.store memory.fact_get memory.fact_put memory.fact_list memory.fact_delete memory.fact_graph memory.review memory.context_bundle memory.peer_list memory.status memory.session_create; do
   found=$(echo "$body" | python3 -c "
 import sys,json
 d = json.load(sys.stdin)
@@ -174,16 +174,16 @@ print('PASS')
 echo ""
 echo "--- 4. Tool Invocation ---"
 
-# 4a. ragamuffin_recall — missing query should error
-body=$(mcp_rpc "tools/call" '{"name":"ragamuffin_recall","arguments":{}}')
+# 4a. memory.recall — missing query should error
+body=$(mcp_rpc "tools/call" '{"name":"memory.recall","arguments":{}}')
 assert_error "recall with empty args returns error" "$body"
 
-# 4b. ragamuffin_fact_put — missing key/value should error
-body=$(mcp_rpc "tools/call" '{"name":"ragamuffin_fact_put","arguments":{}}')
+# 4b. memory.fact_put — missing key/value should error
+body=$(mcp_rpc "tools/call" '{"name":"memory.fact_put","arguments":{}}')
 assert_error "fact_put with empty args returns error" "$body"
 
-# 4c. ragamuffin_session_create — missing agent_id should error
-body=$(mcp_rpc "tools/call" '{"name":"ragamuffin_session_create","arguments":{}}')
+# 4c. memory.session_create — missing agent_id should error
+body=$(mcp_rpc "tools/call" '{"name":"memory.session_create","arguments":{}}')
 assert_error "session_create with empty args returns error" "$body"
 
 # 4d. Unknown tool should error
@@ -196,7 +196,7 @@ echo ""
 echo "--- 5. Session Lifecycle (initialize → session → turn → finalize) ---"
 
 # Create a session
-body=$(mcp_rpc "tools/call" '{"name":"ragamuffin_session_create","arguments":{"agent_id":"conftest","content":"Test session for conformance","vault":"default"}}')
+body=$(mcp_rpc "tools/call" '{"name":"memory.session_create","arguments":{"agent_id":"conftest","content":"Test session for conformance","vault":"default"}}')
 session_id=$(echo "$body" | python3 -c "
 import sys,json
 d = json.load(sys.stdin)
@@ -207,7 +207,7 @@ if [ -n "$session_id" ]; then
   green "session_create returns session_id: $session_id"
 
   # Append a turn
-  body=$(mcp_rpc "tools/call" "{\"name\":\"ragamuffin_turn_append\",\"arguments\":{\"session_id\":\"$session_id\",\"content\":\"User: hello\\nAssistant: hi there\",\"role\":\"assistant\"}}")
+  body=$(mcp_rpc "tools/call" "{\"name\":\"memory.turn_append\",\"arguments\":{\"session_id\":\"$session_id\",\"content\":\"User: hello\\nAssistant: hi there\",\"role\":\"assistant\"}}")
   turn_id=$(echo "$body" | python3 -c "import sys,json; d=json.load(sys.stdin); r=d.get('result',{}); print(r.get('turn_id',0))" 2>/dev/null)
   if [ "$turn_id" -gt 0 ] 2>/dev/null; then
     green "  turn_append succeeds, turn_id=$turn_id"
@@ -216,11 +216,11 @@ if [ -n "$session_id" ]; then
   fi
 
   # Get session
-  body=$(mcp_rpc "tools/call" "{\"name\":\"ragamuffin_session_get\",\"arguments\":{\"session_id\":\"$session_id\",\"turns\":5}}")
+  body=$(mcp_rpc "tools/call" "{\"name\":\"memory.session_get\",\"arguments\":{\"session_id\":\"$session_id\",\"turns\":5}}")
   assert_no_error "  session_get succeeds" "$body"
 
   # List sessions
-  body=$(mcp_rpc "tools/call" "{\"name\":\"ragamuffin_session_list\",\"arguments\":{}}")
+  body=$(mcp_rpc "tools/call" "{\"name\":\"memory.session_list\",\"arguments\":{}}")
   assert_no_error "  session_list succeeds" "$body"
 else
   skip "session lifecycle" "session_create failed—is logstore configured?"
