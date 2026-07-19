@@ -18,7 +18,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,8 +33,7 @@ import (
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 )
 
-// Session is the minimal session shape the consolidator needs. It mirrors
-// logstore.Session but is declared here to keep the package decoupled.
+// Session is the minimal session shape the consolidator needs.
 type Session struct {
 	ID        string
 	Vault     string
@@ -48,50 +49,50 @@ type Turn struct {
 }
 
 // SessionSource supplies sessions and their transcripts for replay.
-// Implemented by an adapter over logstore.Store.
 type SessionSource interface {
-	// RecentSessions returns up to limit sessions for a vault, most recently
-	// updated first.
 	RecentSessions(ctx context.Context, vault string, limit int) ([]Session, error)
-	// Transcript returns the last n turns of a session, oldest first.
 	Transcript(ctx context.Context, sessionID string, n int) ([]Turn, error)
 }
 
-// Emitter emits a CloudEvent when a consolidation run completes. Satisfied by
-// *events.Emitter (nil-safe).
+// Emitter emits a CloudEvent when a consolidation run completes.
 type Emitter interface {
 	Emit(eventType string, data any)
 }
 
 // Config controls the consolidation worker.
 type Config struct {
-	Enabled bool
-	// Interval between consolidation sweeps.
-	Interval time.Duration
-	// IdleWindow: only consolidate a vault if no session was updated within this
-	// window (the system is "asleep"). Zero disables the idle gate.
-	IdleWindow time.Duration
-	// BatchSize: max recent sessions replayed per vault per sweep.
-	BatchSize int
-	// InterleaveRatio: fraction (0-1) of the batch drawn from older sessions to
-	// mix with the newest ones (interleaved replay). 0.3 = 30% old, 70% new.
-	InterleaveRatio float64
-	// TurnLimit: max turns fetched per session transcript.
-	TurnLimit int
-	// GistTTLDays: TTL for written gist facts (long-lived).
-	GistTTLDays int
+	Enabled           bool
+	Interval          time.Duration
+	IdleWindow        time.Duration
+	BatchSize         int
+	InterleaveRatio   float64
+	TurnLimit         int
+	GistTTLDays       int
+	SchemaThreshold   int
+	SchemaSimilarity  float64
+	ReplayAccessBoost float64
 }
 
 // DefaultConfig returns sane defaults (still off unless Enabled is set).
 func DefaultConfig() Config {
 	return Config{
-		Interval:        6 * time.Hour,
-		IdleWindow:      30 * time.Minute,
-		BatchSize:       20,
-		InterleaveRatio: 0.3,
-		TurnLimit:       50,
-		GistTTLDays:     365,
+		Interval:          6 * time.Hour,
+		IdleWindow:        30 * time.Minute,
+		BatchSize:         20,
+		InterleaveRatio:   0.3,
+		TurnLimit:         50,
+		GistTTLDays:       365,
+		SchemaThreshold:   3,
+		SchemaSimilarity:  0.8,
+		ReplayAccessBoost: 1.0,
 	}
+}
+
+// gistEntry tracks a single gist fact during schema clustering.
+type gistEntry struct {
+	key   string
+	value string
+	vec   []float32
 }
 
 // Stats is a snapshot of consolidation activity.
@@ -99,9 +100,11 @@ type Stats struct {
 	LastRunAt         string `json:"last_run_at,omitempty"`
 	LastRunSessions   int    `json:"last_run_sessions"`
 	LastRunGists      int    `json:"last_run_gists"`
+	LastRunSchemas    int    `json:"last_run_schemas,omitempty"`
 	TotalRuns         int    `json:"total_runs"`
 	TotalGistsWritten int    `json:"total_gists_written"`
 	TotalSessionsSeen int    `json:"total_sessions_seen"`
+	TotalSchemas      int    `json:"total_schemas,omitempty"`
 	LastError         string `json:"last_error,omitempty"`
 	Enabled           bool   `json:"enabled"`
 	Running           bool   `json:"running"`
@@ -122,8 +125,7 @@ type Consolidator struct {
 	stats Stats
 }
 
-// New creates a Consolidator. vaults returns the set of vault names to sweep
-// (pass a closure over config); it may return a single "default" entry.
+// New creates a Consolidator.
 func New(cfg Config, sessions SessionSource, lm llm.Synthesizer, embedder embedding.Embedder, facts qdrant.FactStore, emitter Emitter, vaults func() []string, logger *slog.Logger) *Consolidator {
 	if logger == nil {
 		logger = slog.Default()
@@ -140,6 +142,15 @@ func New(cfg Config, sessions SessionSource, lm llm.Synthesizer, embedder embedd
 	if cfg.GistTTLDays <= 0 {
 		cfg.GistTTLDays = 365
 	}
+	if cfg.SchemaThreshold <= 0 {
+		cfg.SchemaThreshold = 3
+	}
+	if cfg.SchemaSimilarity <= 0 || cfg.SchemaSimilarity > 1 {
+		cfg.SchemaSimilarity = 0.8
+	}
+	if cfg.ReplayAccessBoost < 0 {
+		cfg.ReplayAccessBoost = 0
+	}
 	return &Consolidator{
 		cfg:      cfg,
 		sessions: sessions,
@@ -153,18 +164,14 @@ func New(cfg Config, sessions SessionSource, lm llm.Synthesizer, embedder embedd
 	}
 }
 
-// Enabled reports whether consolidation is switched on.
 func (c *Consolidator) Enabled() bool { return c.cfg.Enabled }
 
-// Snapshot returns a copy of current stats.
 func (c *Consolidator) Snapshot() Stats {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stats
 }
 
-// Run starts the periodic sweep loop until ctx is cancelled. It is a no-op when
-// disabled. Intended to be launched in its own goroutine from main.
 func (c *Consolidator) Run(ctx context.Context) {
 	if !c.cfg.Enabled {
 		c.logger.Info("consolidation disabled")
@@ -190,8 +197,6 @@ func (c *Consolidator) Run(ctx context.Context) {
 	}
 }
 
-// RunOnce performs a single consolidation sweep across all vaults. Exposed for
-// tests and manual triggering.
 func (c *Consolidator) RunOnce(ctx context.Context) error {
 	c.mu.Lock()
 	if c.stats.Running {
@@ -207,7 +212,7 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 		c.mu.Unlock()
 	}()
 
-	var sweepSessions, sweepGists int
+	var sweepSessions, sweepGists, sweepSchemas int
 	var vaults []string
 	if c.vaults != nil {
 		vaults = c.vaults()
@@ -217,7 +222,7 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 	}
 
 	for _, vault := range vaults {
-		s, g, err := c.consolidateVault(ctx, vault)
+		s, g, sch, err := c.consolidateVault(ctx, vault)
 		if err != nil {
 			c.recordError(err)
 			c.logger.Warn("vault consolidation failed", "vault", vault, "error", err)
@@ -225,6 +230,7 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 		}
 		sweepSessions += s
 		sweepGists += g
+		sweepSchemas += sch
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -232,40 +238,39 @@ func (c *Consolidator) RunOnce(ctx context.Context) error {
 	c.stats.LastRunAt = now
 	c.stats.LastRunSessions = sweepSessions
 	c.stats.LastRunGists = sweepGists
+	c.stats.LastRunSchemas = sweepSchemas
 	c.stats.TotalRuns++
 	c.stats.TotalGistsWritten += sweepGists
 	c.stats.TotalSessionsSeen += sweepSessions
+	c.stats.TotalSchemas += sweepSchemas
 	c.mu.Unlock()
 
 	if c.emitter != nil {
 		c.emitter.Emit("consolidation.complete", map[string]any{
 			"sessions_replayed": sweepSessions,
 			"gists_written":     sweepGists,
+			"schemas_extracted": sweepSchemas,
 			"completed_at":      now,
 		})
 	}
-	c.logger.Info("consolidation sweep complete", "sessions", sweepSessions, "gists", sweepGists)
+	c.logger.Info("consolidation sweep complete", "sessions", sweepSessions, "gists", sweepGists, "schemas", sweepSchemas)
 	return nil
 }
 
-// consolidateVault replays a scheduled batch of sessions for one vault and
-// writes gist facts. Returns (sessionsReplayed, gistsWritten).
-func (c *Consolidator) consolidateVault(ctx context.Context, vault string) (int, int, error) {
-	// Fetch a generous candidate pool, then schedule an interleaved batch.
+func (c *Consolidator) consolidateVault(ctx context.Context, vault string) (int, int, int, error) {
 	pool, err := c.sessions.RecentSessions(ctx, vault, c.cfg.BatchSize*4)
 	if err != nil {
-		return 0, 0, fmt.Errorf("list sessions: %w", err)
+		return 0, 0, 0, fmt.Errorf("list sessions: %w", err)
 	}
 	if len(pool) == 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 
-	// Idle gate: skip if the most-recently-updated session is too fresh.
 	if c.cfg.IdleWindow > 0 {
 		if newest := mostRecentUpdate(pool); !newest.IsZero() {
 			if time.Since(newest) < c.cfg.IdleWindow {
 				c.logger.Debug("vault not idle, skipping", "vault", vault)
-				return 0, 0, nil
+				return 0, 0, 0, nil
 			}
 		}
 	}
@@ -298,10 +303,14 @@ func (c *Consolidator) consolidateVault(ctx context.Context, vault string) (int,
 		}
 		gists++
 	}
-	return replayed, gists, nil
+
+	var schemas int
+	if c.cfg.SchemaThreshold >= 2 && c.embedder != nil && c.llm != nil {
+		schemas, _ = c.extractSchemas(ctx, vault)
+	}
+	return replayed, gists, schemas, nil
 }
 
-// summarize asks the LLM to distill a transcript into a durable gist.
 func (c *Consolidator) summarize(ctx context.Context, transcript string) (string, error) {
 	if c.llm == nil {
 		return "", fmt.Errorf("consolidation requires an LLM")
@@ -318,20 +327,12 @@ func (c *Consolidator) summarize(ctx context.Context, transcript string) (string
 	return trimGist(out), nil
 }
 
-// gistNamespace is a fixed UUID namespace for deriving deterministic gist point
-// ids. Generated once; must never change or existing gists would orphan.
 var gistNamespace = uuid.MustParse("6f3d5c8e-2b1a-4d9f-8c7e-1a2b3c4d5e6f")
 
-// gistPointID derives a stable UUIDv5 from the gist fact key so that
-// re-consolidating the same session upserts the existing gist point in place
-// rather than creating a duplicate on every sweep (Qdrant upserts by point id).
 func gistPointID(key string) string {
 	return uuid.NewSHA1(gistNamespace, []byte(key)).String()
 }
 
-// writeGist stores a gist summary as a long-TTL fact. The fact is tagged
-// gist=true and source_type=consolidation so it is distinguishable from
-// extracted facts and the immutable session log.
 func (c *Consolidator) writeGist(ctx context.Context, vault, sessionID, gist string) error {
 	if c.facts == nil || c.embedder == nil {
 		return fmt.Errorf("gist write requires facts store and embedder")
@@ -393,11 +394,187 @@ func (c *Consolidator) recordError(err error) {
 	c.mu.Unlock()
 }
 
-// scheduleReplay selects up to n sessions from the pool, mixing the newest with
-// an interleaved sample of older ones. The pool is assumed newest-first. This
-// implements interleaved replay: new memories are consolidated alongside a
-// sample of old ones, weighted toward higher-turn-count ("more important")
-// sessions, so the semantic store doesn't drift toward only-recent knowledge.
+// extractSchemas performs cross-session pattern detection. It fetches gists
+// without a schema_parent, clusters them by cosine similarity, and for clusters
+// of >= SchemaThreshold members, LLM-extracts a general principle schema fact.
+func (c *Consolidator) extractSchemas(ctx context.Context, vault string) (int, error) {
+	filter := &pb.Filter{
+		Must: []*pb.Condition{
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key:   "gist",
+						Match: &pb.Match{MatchValue: &pb.Match_Keyword{Keyword: "true"}},
+					},
+				},
+			},
+			{
+				ConditionOneOf: &pb.Condition_Field{
+					Field: &pb.FieldCondition{
+						Key:   "schema_parent",
+						Match: &pb.Match{MatchValue: &pb.Match_Keyword{Keyword: ""}},
+					},
+				},
+			},
+		},
+	}
+
+	var gists []gistEntry
+	var offset string
+	for {
+		points, err := c.facts.ScrollFiltered(ctx, c.facts.Collection(), filter, 100, offset)
+		if err != nil {
+			return 0, fmt.Errorf("scroll gists: %w", err)
+		}
+		if len(points) == 0 {
+			break
+		}
+		for _, p := range points {
+			key := qutil.GetPayloadStringValue(p.GetPayload(), "fact_key")
+			value := qutil.GetPayloadStringValue(p.GetPayload(), "fact_value")
+			if key == "" || value == "" {
+				continue
+			}
+			vec, verr := c.embedder.EmbedSingle(ctx, value)
+			if verr != nil {
+				c.logger.Debug("embed gist for schema skipped", "key", key, "error", verr)
+				continue
+			}
+			gists = append(gists, gistEntry{key: key, value: value, vec: vec})
+		}
+		if l := len(points); l > 0 {
+			if id := points[l-1].GetId().GetUuid(); id != "" {
+				offset = id
+				continue
+			}
+		}
+		break
+	}
+	if len(gists) < c.cfg.SchemaThreshold {
+		return 0, nil
+	}
+
+	// Cluster gists by cosine similarity (single-linkage).
+	type cluster struct {
+		members []string
+		values  []string
+	}
+	var clusters []*cluster
+
+	for _, g := range gists {
+		placed := false
+		for _, cl := range clusters {
+			baseVec := getGistVec(gists, cl.members[0])
+			if baseVec == nil {
+				continue
+			}
+			if cosineSimilarity(g.vec, baseVec) >= c.cfg.SchemaSimilarity {
+				cl.members = append(cl.members, g.key)
+				cl.values = append(cl.values, g.value)
+				placed = true
+				break
+			}
+		}
+		if !placed {
+			clusters = append(clusters, &cluster{
+				members: []string{g.key},
+				values:  []string{g.value},
+			})
+		}
+	}
+
+	var schemas int
+	for _, cl := range clusters {
+		if len(cl.members) < c.cfg.SchemaThreshold {
+			continue
+		}
+		var sb strings.Builder
+		sb.WriteString("The following summaries relate to a common theme. Extract the stable, reusable knowledge as a single statement of principle.\n\n")
+		for i, v := range cl.values {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, v))
+		}
+		cctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		principle, serr := c.llm.Synthesize(cctx, sb.String(), "")
+		if serr != nil {
+			c.logger.Debug("schema LLM failed", "error", serr)
+			continue
+		}
+		principle = trimGist(principle)
+		if principle == "" {
+			continue
+		}
+
+		schemaKey := fmt.Sprintf("schema:%s", uuid.New().String())
+		nowStr := time.Now().UTC().Format(time.RFC3339)
+		payload := map[string]*pb.Value{
+			"fact_key":           qutil.Nv(schemaKey),
+			"fact_value":         qutil.Nv(principle),
+			"status":             qutil.Nv("active"),
+			"source_type":        qutil.Nv("schema"),
+			"category":           qutil.Nv("schema"),
+			"vault":              qutil.Nv(vault),
+			"confidence":         qutil.Nv(0.85),
+			"ttl_days":           qutil.Nv(float64(730)),
+			"created_at":         qutil.Nv(nowStr),
+			"updated_at":         qutil.Nv(nowStr),
+			"access_count":       qutil.Nv(float64(0)),
+			"last_accessed_at":   qutil.Nv(""),
+			"confirmation_count": qutil.Nv(float64(1)),
+			"last_confirmed_at":  qutil.Nv(nowStr),
+		}
+		vec, verr := c.embedder.EmbedSingle(ctx, principle)
+		if verr != nil {
+			c.logger.Debug("embed schema failed", "error", verr)
+			continue
+		}
+		point := &pb.PointStruct{
+			Id:      &pb.PointId{PointIdOptions: &pb.PointId_Uuid{Uuid: gistPointID(schemaKey)}},
+			Payload: payload,
+			Vectors: &pb.Vectors{VectorsOptions: &pb.Vectors_Vector{Vector: &pb.Vector{Data: vec}}},
+		}
+		if uerr := c.facts.Upsert(ctx, []*pb.PointStruct{point}); uerr != nil {
+			c.logger.Debug("schema upsert failed", "error", uerr)
+			continue
+		}
+		for _, mk := range cl.members {
+			c.facts.SetPayload(ctx, c.facts.Collection(), []*pb.PointId{
+				{PointIdOptions: &pb.PointId_Uuid{Uuid: gistPointID(mk)}},
+			}, map[string]*pb.Value{"schema_parent": qutil.Nv(schemaKey)})
+		}
+		schemas++
+	}
+	return schemas, nil
+}
+
+// cosineSimilarity computes cosine similarity between two vectors.
+func cosineSimilarity(a, b []float32) float64 {
+	if len(a) != len(b) || len(a) == 0 {
+		return 0
+	}
+	var dot, na, nb float64
+	for i := range a {
+		dot += float64(a[i]) * float64(b[i])
+		na += float64(a[i]) * float64(a[i])
+		nb += float64(b[i]) * float64(b[i])
+	}
+	if na == 0 || nb == 0 {
+		return 0
+	}
+	return dot / (math.Sqrt(na) * math.Sqrt(nb))
+}
+
+// getGistVec returns the vector for a gist by its key.
+func getGistVec(entries []gistEntry, key string) []float32 {
+	for _, e := range entries {
+		if e.key == key {
+			return e.vec
+		}
+	}
+	return nil
+}
+
+// scheduleReplay selects up to n sessions, mixing newest with older ones.
 func scheduleReplay(pool []Session, n int, interleaveRatio float64) []Session {
 	if n <= 0 || len(pool) == 0 {
 		return nil
@@ -407,13 +584,8 @@ func scheduleReplay(pool []Session, n int, interleaveRatio float64) []Session {
 	}
 	oldCount := int(float64(n) * interleaveRatio)
 	newCount := n - oldCount
-
 	newest := pool[:newCount]
-
-	// Candidates for the "old" slice: everything after the newest window.
 	oldPool := append([]Session(nil), pool[newCount:]...)
-	// Weight older sessions by importance (turn count) so richer sessions are
-	// replayed preferentially — the "ripple" scheduler.
 	sort.SliceStable(oldPool, func(i, j int) bool {
 		return replayImportance(oldPool[i]) > replayImportance(oldPool[j])
 	})
@@ -421,15 +593,14 @@ func scheduleReplay(pool []Session, n int, interleaveRatio float64) []Session {
 		oldCount = len(oldPool)
 	}
 	old := oldPool[:oldCount]
-
 	out := make([]Session, 0, len(newest)+len(old))
 	out = append(out, newest...)
 	out = append(out, old...)
 	return out
 }
 
-// replayImportance scores a session for replay priority. Turn count is a proxy
-// for information richness; recency provides a mild tiebreak.
+// replayImportance scores session replay priority using turn count, recency,
+// and access count (when ReplayAccessBoost > 0).
 func replayImportance(s Session) float64 {
 	score := float64(s.TurnCount)
 	if t, err := time.Parse(time.RFC3339, s.UpdatedAt); err == nil {
@@ -437,7 +608,7 @@ func replayImportance(s Session) float64 {
 		if days < 0 {
 			days = 0
 		}
-		score += (1.0 / (1.0 + days)) // recency bonus in [0,1]
+		score += (1.0 / (1.0 + days))
 	}
 	return score
 }
@@ -469,7 +640,6 @@ func renderTranscript(turns []Turn) string {
 }
 
 func trimGist(s string) string {
-	// Trim surrounding whitespace and common markdown noise.
 	out := s
 	for len(out) > 0 && (out[0] == ' ' || out[0] == '\n' || out[0] == '\t' || out[0] == '\r') {
 		out = out[1:]
