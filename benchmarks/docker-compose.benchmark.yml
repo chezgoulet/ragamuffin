@@ -1,0 +1,9 @@
+name: ragamuffin-benchmark
+
+services:
+  ragamuffin:
+    image: ragamuffin:benchmark
+
+  qdrant:
+    ports:
+      - "127.0.0.1:6333:6333"
