@@ -79,6 +79,8 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpHybridSearch(ctx, args)
 	case "verify":
 		return s.mcpVerify(ctx, args)
+	case "context":
+		return s.mcpContext(ctx, args)
 	case "context_bundle":
 		return s.mcpContextBundle(ctx, args)
 	case "dialectic":
@@ -133,7 +135,8 @@ var toolProfileMap = map[string][]string{
 	"status":            {"core", "session", "analyst", "graph"},
 	"draft":             {"core", "session", "analyst", "graph"},
 	"fact_delete":       {"core", "session", "analyst", "graph"},
-	"context_bundle":    {"core", "session", "analyst", "graph"},
+	"context":           {"core", "session", "analyst", "graph"},
+	"context_bundle":    {"analyst"},
 	"dialectic":         {"core", "session", "analyst", "graph"},
 	"peer_list":         {"core", "session", "analyst", "graph"},
 	"get_chunk":         {"core", "session", "analyst", "graph"},
@@ -374,8 +377,19 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				},
 				"required": []string{"fact"},
 			}),
+		s.toolDef("context",
+			"Get layered context about a topic. Use at session start or when returning to a vault after time away. Returns schemas (cross-session principles), gists (session summaries), and episodes (recall results) with a coverage score (high/medium/low/none).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "The topic to get context on"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results per layer (1-20, default 5)"},
+				},
+				"required": []string{"query"},
+			}),
 		s.toolDef("context_bundle",
-			"Get a quick orientation snapshot. Use at session start or when returning to a vault after time away. Returns peer card, recent facts, and relevant memories.",
+			"Get a quick orientation snapshot (legacy). Prefer memory.context which provides layered schemas → gists → episodes. Returns peer card, recent facts, and relevant memories.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1200,6 +1214,78 @@ func (s *Server) mcpHybridSearch(ctx context.Context, args map[string]interface{
 		"chunks": results,
 		"facts":  facts,
 	}, nil
+}
+
+// ── Context handler (reconstructive retrieval) ──────────────────────────────
+
+// mcpContext returns layered context about a topic: schemas (cross-session
+// principles), gists (consolidated session summaries), and episodes (specific
+// chunk recall). This is reconstructive retrieval — it builds up from the
+// most abstract to the most concrete layer. Replaces context_bundle.
+func (s *Server) mcpContext(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+
+	topK := 5
+	if v, ok := args["top_k"].(float64); ok && v > 0 && v <= 20 {
+		topK = int(v)
+	}
+
+	// Fetch each layer independently — errors degrade gracefully.
+	schemas := s.factsByFilter(ctx, sourceTypeFilter("schema"), topK)
+	gists := s.factsByFilter(ctx, sourceTypeFilter("consolidation"), topK)
+
+	var episodes []map[string]interface{}
+	{
+		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer recallCancel()
+		results, _, err := s.doRecall(recallCtx, recallRequest{
+			Query:  query,
+			TopK:   topK,
+			Detail: "l1",
+		})
+		if err == nil {
+			for _, r := range results {
+				m := map[string]interface{}{
+					"score":             r.Score,
+					"chunk_id":          r.ChunkID,
+					"source_file":       r.SourceFile,
+					"header":            r.Header,
+					"first_paragraph":   r.FirstParagraph,
+					"file_last_updated": r.FileLastUpdated,
+				}
+				episodes = append(episodes, m)
+			}
+		}
+	}
+
+	// Coverage scoring: how complete is our knowledge of this topic?
+	coverage := coverageScore(schemas, gists, episodes)
+
+	return map[string]interface{}{
+		"query":    query,
+		"vault":    vaultFromContext(ctx),
+		"schemas":  schemas,
+		"gists":    gists,
+		"episodes": episodes,
+		"coverage": coverage,
+	}, nil
+}
+
+// coverageScore returns a label for how well the vault covers a topic.
+func coverageScore(schemas, gists []map[string]interface{}, episodes []map[string]interface{}) string {
+	switch {
+	case len(schemas) > 0:
+		return "high"
+	case len(gists) > 0:
+		return "medium"
+	case len(episodes) > 0:
+		return "low"
+	default:
+		return "none"
+	}
 }
 
 // ── Context bundle handler ──────────────────────────────────────────────────
