@@ -55,6 +55,14 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 	rewrite := r.URL.Query().Get("rewrite")
 	rerank := r.URL.Query().Get("rerank") == "true"
 
+	// Optional retrieval mode (#877): dense | sparse | hybrid. Empty falls
+	// back to doRecall's server default, so existing callers are unchanged.
+	mode := r.URL.Query().Get("mode")
+	if mode != "" && mode != "dense" && mode != "sparse" && mode != "hybrid" {
+		writeError(w, http.StatusBadRequest, "INVALID_REQUEST", "mode must be one of: dense, sparse, hybrid")
+		return
+	}
+
 	var results []hybridResult
 
 	// ── 1. Chunks (vector recall) ──
@@ -62,6 +70,7 @@ func (s *Server) handleHybrid(w http.ResponseWriter, r *http.Request) {
 		chunks, _, err := s.doRecall(r.Context(), recallRequest{
 			Query:   query,
 			TopK:    topK,
+			Mode:    mode,
 			Rewrite: rewrite,
 			Rerank:  rerank,
 		})

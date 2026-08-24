@@ -235,6 +235,9 @@ func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb
 // hybridRecall fuses dense semantic + lexical BM25 results via Reciprocal Rank
 // Fusion (RRF). The two rankers produce heterogeneous scores (cosine vs BM25),
 // which RRF reconciles without calibration (Cormack et al., SIGIR 2009).
+// When SourceTierBoost is enabled (default), the fused ranking gets a small
+// additive source-class preference (library/reference over session notes)
+// applied on RRF scores — never on raw similarity — so dense mode is untouched.
 func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	vault := vaultFromContext(ctx)
 	if vault == "" {
@@ -259,14 +262,49 @@ func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []f
 	}
 
 	fused := retrieval.Hybrid(denseIDs, lexicalIDs, 60)
+	if len(fused) > req.TopK {
+		fused = fused[:req.TopK]
+	}
+	if s.cfg.SourceTierBoost {
+		fused = s.applySourceTierBoost(ctx, vault, fused)
+	}
 	if len(fused) == 0 {
 		// Degenerate: dense only.
 		return mapDenseResults(denseResults, req.Detail), topScoreOf(denseResults), nil
 	}
-	if len(fused) > req.TopK {
-		fused = fused[:req.TopK]
-	}
 	return s.recallByIDs(ctx, fused, req, filter)
+}
+
+// applySourceTierBoost reorders a fused RRF ranking by document class
+// (issue #877): library/reference docs get a small additive preference over
+// session notes/transcripts. Source paths come from a single batched point
+// fetch over just the fused head, so the query-path cost is one extra
+// GetPoints call. Any failure degrades to the unboosted order.
+func (s *Server) applySourceTierBoost(ctx context.Context, vault string, fused []retrieval.RankedID) []retrieval.RankedID {
+	if len(fused) == 0 {
+		return fused
+	}
+	qc := s.qdrantFor(ctx)
+	if qc == nil {
+		return fused
+	}
+	ids := make([]*pb.PointId, 0, len(fused))
+	for _, r := range fused {
+		ids = append(ids, pb.NewIDUUID(r.ID))
+	}
+	pts, err := qc.GetPoints(ctx, qc.Collection(), ids)
+	if err != nil {
+		s.log(ctx).Warn("source tier boost: point fetch failed; skipping boost", "vault", vault, "error", err)
+		return fused
+	}
+	docs := make(map[string]string, len(pts))
+	for _, p := range pts {
+		src := p.GetPayload()["source_file"].GetStringValue()
+		if src != "" {
+			docs[p.Id.GetUuid()] = src
+		}
+	}
+	return retrieval.ApplyTierBoost(fused, docs, nil)
 }
 
 // recallByIDs fetches payloads for a fused ranking and maps them to

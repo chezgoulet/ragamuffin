@@ -131,6 +131,12 @@ type Config struct {
 	// This is the server-side allow flag; requests still pass rerank=true.
 	RerankEnabled bool
 
+	// SourceTierBoost applies a small additive boost to fused RRF ranks by
+	// document class (library/reference docs over session notes/transcripts).
+	// Only affects hybrid/sparse recall (fused rankings); dense scores are
+	// untouched. See internal/retrieval/tier.go. Default: true.
+	SourceTierBoost bool
+
 	// Pruner configuration
 	PrunerEnabled                bool
 	PrunerStaleInterval          time.Duration
@@ -568,6 +574,8 @@ func Load() (*Config, error) {
 		SparseEnabled:    envBool("RAGAMUFFIN_SPARSE"),
 		RetrievalRewrite: envOrDefault("RAGAMUFFIN_RETRIEVAL_REWRITE", "off"),
 		RerankEnabled:    envBool("RAGAMUFFIN_RERANK"),
+
+		SourceTierBoost: !envBool("RAGAMUFFIN_SOURCE_TIER_BOOST_OFF"),
 
 		PrunerEnabled:                envBool("RAGAMUFFIN_PRUNER_ENABLED"),
 		PrunerStaleInterval:          envDuration("RAGAMUFFIN_PRUNER_STALE_INTERVAL", 24*time.Hour),

@@ -187,6 +187,7 @@ func (s *Server) Recovery(next http.Handler) http.Handler {
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// Instance-wide routes (always registered)
 	mux.HandleFunc("/v1/briefing", s.withRequestID(s.withRateLimit("/v1/briefing", s.handleBriefing)))
+	mux.HandleFunc("/v1/rerank", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/rerank", s.handleRerank))))
 	mux.HandleFunc("/v1/hybrid", s.withRequestID(s.withQdrant(s.withRateLimit("/v1/hybrid", s.handleHybrid))))
 	mux.HandleFunc("/health", s.withRequestID(s.handleHealth))
 	mux.HandleFunc("/stats", s.withRequestID(s.withQdrant(s.handleStats)))

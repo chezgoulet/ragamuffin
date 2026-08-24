@@ -148,6 +148,8 @@ Quick-reference `.env.example` at the repo root.
 | `RAGAMUFFIN_EXTRACT_*` | no | Enable automatic fact extraction from documents and conversations |
 | `RAGAMUFFIN_PRUNER_*` | no | Enable background fact health scans (stale, conflict, low-confidence) |
 | `RAGAMUFFIN_GIT_*` | no | Enable `/draft` PR mode |
+| `RAGAMUFFIN_RERANK` | no | Enable LLM listwise reranker (per-request override via `rerank=true`) |
+| `RAGAMUFFIN_SOURCE_TIER_BOOST_OFF` | no | Set to disable the source-tier ranking boost (on by default) |
 
 ## Multi-Tenant Vault Setup
 
