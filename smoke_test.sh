@@ -88,6 +88,31 @@ CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/recall" \
   -d '{"query":"test","rewrite":"bogus"}')
 assert_status "POST /recall invalid rewrite returns 400" "400" "$CODE" "rewrite=bogus"
 
+# ── /v1/rerank (POST, #877) ────────────────────────────────────────────────
+echo "--- /v1/rerank ---"
+# Without RAGAMUFFIN_RERANK the seam is off: 501 with RERANK_DISABLED.
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$BASE/v1/rerank" \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"test","docs":[{"id":"a","text":"alpha"}]}')
+if [ "$CODE" = "501" ] || [ "$CODE" = "200" ]; then
+  green "/v1/rerank gated correctly (got $CODE; 501 expected without RAGAMUFFIN_RERANK, 200 with)"
+else
+  red "/v1/rerank gating" "expected 501 (or 200 if rerank enabled), got $CODE"
+fi
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$BASE/v1/rerank")
+assert_status "GET /v1/rerank returns 405" "405" "$CODE" "method check"
+
+# ── /v1/hybrid mode param (#877) ───────────────────────────────────────────
+echo "--- /v1/hybrid mode param ---"
+RESP=$(curl -sf "$BASE/v1/hybrid?query=test&mode=hybrid" 2>&1) && RC=0 || RC=$?
+assert_status "GET /v1/hybrid mode=hybrid returns 200" "0" "$RC" "$RESP"
+assert_field_type "hybrid (mode=hybrid) has results" "results" "list" "$RESP"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/v1/hybrid?query=test&mode=bogus")
+assert_status "GET /v1/hybrid invalid mode returns 400" "400" "$CODE" "mode=bogus"
+
+
 # /recall: verify first_paragraph is returned
 RESP=$(curl -sf -X POST "$BASE/recall" \
   -H 'Content-Type: application/json' \
