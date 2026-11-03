@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -250,6 +251,12 @@ type Config struct {
 
 	// Optional — MCP tool profile (default: "core")
 	MCPProfile string
+
+	// Optional — pprof listener (empty = disabled). Must be a loopback
+	// address (127.0.0.1:PORT, [::1]:PORT, or localhost:PORT); the profiling
+	// endpoints expose heap contents and goroutine state, so they are never
+	// served from the public API listener. See docs/operations/pprof.md.
+	PprofAddr string
 }
 
 // IsMultiTenant returns true when multi-tenancy is active.
@@ -488,7 +495,30 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_PROFILE must be 'core', 'session', 'analyst', 'graph', or 'full', got %q", c.MCPProfile))
 	}
 
+	// pprof is opt-in and must never bind a publicly reachable interface.
+	// An empty value disables it entirely.
+	if c.PprofAddr != "" && !IsLoopbackAddr(c.PprofAddr) {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_PPROF_ADDR must be a loopback address such as 127.0.0.1:6060 (got %q)", c.PprofAddr))
+	}
+
 	return errs
+}
+
+// IsLoopbackAddr reports whether addr is a host:port whose host resolves to
+// loopback only. An empty host (":6060", meaning all interfaces) is rejected.
+func IsLoopbackAddr(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func parseURL(raw string) (interface{}, error) {
@@ -649,6 +679,8 @@ func Load() (*Config, error) {
 
 		MCPToolPrefix: envOrDefault("RAGAMUFFIN_MCP_TOOL_PREFIX", "memory."),
 		MCPProfile:    envOrDefault("RAGAMUFFIN_MCP_PROFILE", "core"),
+
+		PprofAddr: os.Getenv("RAGAMUFFIN_PPROF_ADDR"),
 	}
 
 	// Parse vaults root for multi-tenant path validation
