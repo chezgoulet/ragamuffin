@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -183,6 +184,18 @@ type Config struct {
 	ReconsolidationEnabled bool
 	ReconsolidationWindow  time.Duration // default 30m when enabled
 
+	// Prediction-error reconsolidation (B6). When a fact is updated, computes
+	// the prediction error between the old and new values using normalized
+	// Levenshtein distance. In dry-run mode (default) PE is logged and emitted
+	// as a CloudEvent but no side effects occur. With dry-run off, low-PE
+	// updates auto-confirm and high-PE updates flag for review.
+	PEDryRun             bool    // dry-run: log+emit but no side effects (default true)
+	PELive               bool    // live mode: when true, dry-run is disabled (RAGAMUFFIN_PE_LIVE)
+	PEReinforceThreshold float64 // below this → reinforcement (default 0.1)
+	PEMinorThreshold     float64 // below this → minor-update (default 0.4)
+	PEMajorThreshold     float64 // below this → major-update (default 0.7)
+	// Above PEMajorThreshold → new-learning
+
 	RestoreMismatchThreshold float64 // 0.0-1.0, default 0.1
 	LogStorePath             string  // explicit path for log.db; empty = heuristic
 	LogstoreMaxRows          int     // 0 = unlimited
@@ -250,6 +263,12 @@ type Config struct {
 
 	// Optional — MCP tool profile (default: "core")
 	MCPProfile string
+
+	// Optional — pprof listener (empty = disabled). Must be a loopback
+	// address (127.0.0.1:PORT, [::1]:PORT, or localhost:PORT); the profiling
+	// endpoints expose heap contents and goroutine state, so they are never
+	// served from the public API listener. See docs/operations/pprof.md.
+	PprofAddr string
 }
 
 // IsMultiTenant returns true when multi-tenancy is active.
@@ -441,6 +460,17 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_RECONSOLIDATION_WINDOW must be positive when reconsolidation is enabled")
 	}
 
+	// PE thresholds must be monotonic: 0 ≤ reinforce < minor < major ≤ 1.
+	if c.PEReinforceThreshold < 0 || c.PEReinforceThreshold >= c.PEMinorThreshold {
+		errs = append(errs, "RAGAMUFFIN_PE_REINFORCE_THRESHOLD must be >= 0 and < PE_MINOR_THRESHOLD")
+	}
+	if c.PEMinorThreshold >= c.PEMajorThreshold {
+		errs = append(errs, "RAGAMUFFIN_PE_MINOR_THRESHOLD must be < PE_MAJOR_THRESHOLD")
+	}
+	if c.PEMajorThreshold > 1.0 {
+		errs = append(errs, "RAGAMUFFIN_PE_MAJOR_THRESHOLD must be <= 1.0")
+	}
+
 	// Auth mode must be valid
 	switch strings.ToLower(c.AuthMode) {
 	case "none", "api_key", "jwt", "oidc":
@@ -476,6 +506,8 @@ func (c *Config) Validate() []string {
 		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not be empty")
 	} else if !strings.HasSuffix(c.MCPToolPrefix, ".") && !strings.HasSuffix(c.MCPToolPrefix, "_") {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_TOOL_PREFIX must end with '.' or '_', got %q", c.MCPToolPrefix))
+	} else if len(c.MCPToolPrefix) < 2 {
+		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must contain at least one character before the separator")
 	} else if strings.Contains(c.MCPToolPrefix[:len(c.MCPToolPrefix)-1], " ") {
 		errs = append(errs, "RAGAMUFFIN_MCP_TOOL_PREFIX must not contain whitespace")
 	}
@@ -488,7 +520,30 @@ func (c *Config) Validate() []string {
 		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_MCP_PROFILE must be 'core', 'session', 'analyst', 'graph', or 'full', got %q", c.MCPProfile))
 	}
 
+	// pprof is opt-in and must never bind a publicly reachable interface.
+	// An empty value disables it entirely.
+	if c.PprofAddr != "" && !IsLoopbackAddr(c.PprofAddr) {
+		errs = append(errs, fmt.Sprintf("RAGAMUFFIN_PPROF_ADDR must be a loopback address such as 127.0.0.1:6060 (got %q)", c.PprofAddr))
+	}
+
 	return errs
+}
+
+// IsLoopbackAddr reports whether addr is a host:port whose host resolves to
+// loopback only. An empty host (":6060", meaning all interfaces) is rejected.
+func IsLoopbackAddr(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host == "" {
+		return false
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func parseURL(raw string) (interface{}, error) {
@@ -604,6 +659,12 @@ func Load() (*Config, error) {
 		ReconsolidationEnabled: envBool("RAGAMUFFIN_RECONSOLIDATION_ENABLED"),
 		ReconsolidationWindow:  envDuration("RAGAMUFFIN_RECONSOLIDATION_WINDOW", 30*time.Minute),
 
+		PELive:               envBool("RAGAMUFFIN_PE_LIVE"), // default false → PEDryRun=true
+		PEDryRun:             true,                          // overridden in Load() from PELive
+		PEReinforceThreshold: envFloat("RAGAMUFFIN_PE_REINFORCE_THRESHOLD", 0.1),
+		PEMinorThreshold:     envFloat("RAGAMUFFIN_PE_MINOR_THRESHOLD", 0.4),
+		PEMajorThreshold:     envFloat("RAGAMUFFIN_PE_MAJOR_THRESHOLD", 0.7),
+
 		RestoreMismatchThreshold: envFloat("RAGAMUFFIN_RESTORE_MISMATCH_THRESHOLD", 0.1),
 		LogStorePath:             os.Getenv("RAGAMUFFIN_LOGSTORE_PATH"),
 		LogstoreMaxRows:          envInt("RAGAMUFFIN_LOGSTORE_MAX_ROWS", 100000),
@@ -649,6 +710,13 @@ func Load() (*Config, error) {
 
 		MCPToolPrefix: envOrDefault("RAGAMUFFIN_MCP_TOOL_PREFIX", "memory."),
 		MCPProfile:    envOrDefault("RAGAMUFFIN_MCP_PROFILE", "core"),
+
+		PprofAddr: os.Getenv("RAGAMUFFIN_PPROF_ADDR"),
+	}
+
+	// PE dry-run defaults to true; set RAGAMUFFIN_PE_LIVE=true to disable.
+	if cfg.PELive {
+		cfg.PEDryRun = false
 	}
 
 	// Parse vaults root for multi-tenant path validation

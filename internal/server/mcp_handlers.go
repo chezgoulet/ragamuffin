@@ -13,6 +13,7 @@ import (
 	"github.com/chezgoulet/ragamuffin/internal/indexer"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	"github.com/chezgoulet/ragamuffin/internal/mcp"
+	"github.com/chezgoulet/ragamuffin/internal/retrieval"
 	pb "github.com/qdrant/go-client/qdrant"
 
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
@@ -79,6 +80,8 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 		return s.mcpHybridSearch(ctx, args)
 	case "verify":
 		return s.mcpVerify(ctx, args)
+	case "context":
+		return s.mcpContext(ctx, args)
 	case "context_bundle":
 		return s.mcpContextBundle(ctx, args)
 	case "dialectic":
@@ -124,37 +127,37 @@ func (s *Server) mcpDispatch(ctx context.Context, toolName string, args map[stri
 // toolProfileMap assigns each base tool name to its profile set.
 // Tools not listed default to "full"-only.
 var toolProfileMap = map[string][]string{
-	"recall":            {"core", "session", "analyst", "graph"},
-	"ask":               {"core", "session", "analyst", "graph"},
-	"store":             {"core", "session", "analyst", "graph"},
-	"fact_get":          {"core", "session", "analyst", "graph"},
-	"fact_put":          {"core", "session", "analyst", "graph"},
-	"fact_list":         {"core", "session", "analyst", "graph"},
-	"status":            {"core", "session", "analyst", "graph"},
-	"draft":             {"core", "session", "analyst", "graph"},
-	"fact_delete":       {"core", "session", "analyst", "graph"},
-	"context_bundle":    {"core", "session", "analyst", "graph"},
-	"dialectic":         {"core", "session", "analyst", "graph"},
-	"peer_list":         {"core", "session", "analyst", "graph"},
-	"get_chunk":         {"core", "session", "analyst", "graph"},
-	"session_create":    {"session", "analyst"},
-	"session_get":       {"session", "analyst"},
-	"session_list":      {"session", "analyst"},
-	"turn_append":       {"session"},
-	"hybrid_search":     {"analyst"},
-	"verify":            {"analyst"},
-	"audit":             {"analyst"},
-	"contradictions":    {"analyst"},
-	"review":            {"analyst"},
-	"fact_graph":        {"analyst"},
-	"fact_history":      {"analyst"},
-	"briefing":          {"analyst"},
-	"changes":           {"analyst"},
+	// core (8): essential tools every agent needs. PR #872 adds memory.context
+	// here as the reconstructive entry point (it replaces context_bundle, which
+	// #874 keeps full-only while deprecated).
+	"recall":    {"core", "session", "analyst", "graph"},
+	"ask":       {"core", "session", "analyst", "graph"},
+	"store":     {"core", "session", "analyst", "graph"},
+	"fact_get":  {"core", "session", "analyst", "graph"},
+	"fact_put":  {"core", "session", "analyst", "graph"},
+	"fact_list": {"core", "session", "analyst", "graph"},
+	"status":    {"core", "session", "analyst", "graph"},
+	"context":   {"core", "session", "analyst", "graph"},
+	// session (+4): session management
+	"session_create": {"session", "analyst"},
+	"session_get":    {"session", "analyst"},
+	"session_list":   {"session", "analyst"},
+	"turn_append":    {"session"},
+	// analyst (+5): deep analysis (inherits session)
+	"hybrid_search":  {"analyst"},
+	"verify":         {"analyst"},
+	"audit":          {"analyst"},
+	"contradictions": {"analyst"},
+	"review":         {"analyst"},
+	// graph (+5): entity graph traversal (inherits core only)
 	"graph_entity":      {"graph"},
 	"graph_edges":       {"graph"},
 	"graph_communities": {"graph"},
 	"links":             {"graph"},
 	"fact_provenance":   {"graph"},
+	// full-only (unlisted = full-only): draft, fact_delete, fact_graph,
+	// fact_history, context_bundle, dialectic, peer_list, get_chunk,
+	// briefing, changes, stats
 }
 
 // toolInProfile checks whether a tool with the given base name belongs to the given profile.
@@ -204,7 +207,7 @@ func (s *Server) mcpToolsForProfile(profile string) []mcp.ToolDefinition {
 func (s *Server) mcpTools() []mcp.ToolDefinition {
 	return []mcp.ToolDefinition{
 		s.toolDef("recall",
-			"Search your knowledge base before starting work on any topic. Use this to check what's already known, find prior decisions, or locate relevant documentation. Returns ranked text chunks with source files and similarity scores.",
+			"Search your knowledge base before starting work on any topic. Use this to check what's already known, find prior decisions, or locate relevant documentation. Returns ranked text chunks with source files, similarity scores, and a query_type field (semantic/temporal/causal/entity/lookup).",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -267,7 +270,7 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				"required": []string{"key"},
 			}),
 		s.toolDef("fact_put",
-			"Record a discrete decision, preference, or configuration as a named fact. Use for small, structured knowledge — connection strings, architectural decisions, agent preferences. Facts are versioned and can be superseded.",
+			"Record a discrete decision, preference, or configuration as a named fact. Use for small, structured knowledge — connection strings, architectural decisions, agent preferences. Returns the stored fact key, value, and status.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -374,8 +377,19 @@ func (s *Server) mcpTools() []mcp.ToolDefinition {
 				},
 				"required": []string{"fact"},
 			}),
+		s.toolDef("context",
+			"Get layered context about a topic. Use at session start or when returning to a vault after time away. Returns schemas (cross-session principles), gists (session summaries), and episodes (recall results) with a coverage score (high/medium/low/none).",
+			map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string", "description": "The topic to get context on"},
+					"vault": map[string]interface{}{"type": "string", "description": "Target vault name (multi-tenant)"},
+					"top_k": map[string]interface{}{"type": "integer", "description": "Max results per layer (1-20, default 5)"},
+				},
+				"required": []string{"query"},
+			}),
 		s.toolDef("context_bundle",
-			"Get a quick orientation snapshot. Use at session start or when returning to a vault after time away. Returns peer card, recent facts, and relevant memories.",
+			"Get a quick orientation snapshot (legacy). Prefer memory.context which provides layered schemas → gists → episodes. Returns peer card, recent facts, and relevant memories.",
 			map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -619,8 +633,9 @@ func (s *Server) mcpRecall(ctx context.Context, args map[string]interface{}) (in
 	}
 
 	return map[string]interface{}{
-		"results":   out,
-		"top_score": topScore,
+		"results":    out,
+		"top_score":  topScore,
+		"query_type": string(retrieval.ClassifyQuery(query)),
 	}, nil
 }
 
@@ -1200,6 +1215,78 @@ func (s *Server) mcpHybridSearch(ctx context.Context, args map[string]interface{
 		"chunks": results,
 		"facts":  facts,
 	}, nil
+}
+
+// ── Context handler (reconstructive retrieval) ──────────────────────────────
+
+// mcpContext returns layered context about a topic: schemas (cross-session
+// principles), gists (consolidated session summaries), and episodes (specific
+// chunk recall). This is reconstructive retrieval — it builds up from the
+// most abstract to the most concrete layer. Replaces context_bundle.
+func (s *Server) mcpContext(ctx context.Context, args map[string]interface{}) (interface{}, error) {
+	query, _ := args["query"].(string)
+	if query == "" {
+		return nil, fmt.Errorf("query is required")
+	}
+
+	topK := 5
+	if v, ok := args["top_k"].(float64); ok && v > 0 && v <= 20 {
+		topK = int(v)
+	}
+
+	// Fetch each layer independently — errors degrade gracefully.
+	schemas := s.factsByFilter(ctx, sourceTypeFilter("schema"), topK)
+	gists := s.factsByFilter(ctx, sourceTypeFilter("consolidation"), topK)
+
+	var episodes []map[string]interface{}
+	{
+		recallCtx, recallCancel := context.WithTimeout(ctx, 15*time.Second)
+		defer recallCancel()
+		results, _, err := s.doRecall(recallCtx, recallRequest{
+			Query:  query,
+			TopK:   topK,
+			Detail: "l1",
+		})
+		if err == nil {
+			for _, r := range results {
+				m := map[string]interface{}{
+					"score":             r.Score,
+					"chunk_id":          r.ChunkID,
+					"source_file":       r.SourceFile,
+					"header":            r.Header,
+					"first_paragraph":   r.FirstParagraph,
+					"file_last_updated": r.FileLastUpdated,
+				}
+				episodes = append(episodes, m)
+			}
+		}
+	}
+
+	// Coverage scoring: how complete is our knowledge of this topic?
+	coverage := coverageScore(schemas, gists, episodes)
+
+	return map[string]interface{}{
+		"query":    query,
+		"vault":    vaultFromContext(ctx),
+		"schemas":  schemas,
+		"gists":    gists,
+		"episodes": episodes,
+		"coverage": coverage,
+	}, nil
+}
+
+// coverageScore returns a label for how well the vault covers a topic.
+func coverageScore(schemas, gists []map[string]interface{}, episodes []map[string]interface{}) string {
+	switch {
+	case len(schemas) > 0:
+		return "high"
+	case len(gists) > 0:
+		return "medium"
+	case len(episodes) > 0:
+		return "low"
+	default:
+		return "none"
+	}
 }
 
 // ── Context bundle handler ──────────────────────────────────────────────────

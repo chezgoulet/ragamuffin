@@ -93,6 +93,11 @@ docker inspect ragamuffin | jq '.[0].HostConfig.Memory'
 # Use /vault/{name}/v1/snapshot instead of export for large vaults
 ```
 
+For a reindex that grows without bound (issue #880), enable the opt-in heap
+profiler before retrying: see [docs/operations/pprof.md](docs/operations/pprof.md).
+Set `RAGAMUFFIN_PPROF_ADDR=127.0.0.1:6060` and take a heap profile while RSS
+is climbing. The listener refuses non-loopback addresses.
+
 ---
 
 ## 5. Configuration Corruption

@@ -96,3 +96,73 @@ func TestSnippetCollapsesWhitespace(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestAccessBoostLiftOnly(t *testing.T) {
+	ranked := []RankedID{
+		{ID: "a", Score: 0.5},
+		{ID: "b", Score: 0.4},
+		{ID: "c", Score: 0.3},
+	}
+	counts := map[string]int64{"a": 10, "b": 0}
+	got := AccessBoost(ranked, counts, 3, 2.0)
+	if len(got) != 3 {
+		t.Fatalf("got %d results, want 3", len(got))
+	}
+	// a has boost (~+0.69), should still be first; b has no boost; c unchanged.
+	if got[0].ID != "a" {
+		t.Errorf("top result = %q, want 'a'", got[0].ID)
+	}
+	if got[0].Score <= 0.5 {
+		t.Errorf("a's score %f should be boosted above 0.5", got[0].Score)
+	}
+	if got[1].ID != "b" || got[1].Score != 0.4 {
+		t.Errorf("b should be unchanged at 0.4, got %s=%f", got[1].ID, got[1].Score)
+	}
+}
+
+func TestAccessBoostNilCounts(t *testing.T) {
+	ranked := []RankedID{{ID: "a", Score: 0.5}}
+	got := AccessBoost(ranked, nil, 1, 2.0)
+	if len(got) != 1 || got[0].Score != 0.5 {
+		t.Errorf("nil counts should not mutate: got %+v", got)
+	}
+}
+
+func TestAccessBoostEmpty(t *testing.T) {
+	if got := AccessBoost(nil, map[string]int64{}, 5, 2.0); got != nil {
+		t.Errorf("nil input should return nil, got %+v", got)
+	}
+}
+
+func TestAccessBoostTopKTruncation(t *testing.T) {
+	ranked := []RankedID{
+		{ID: "a", Score: 0.1},
+		{ID: "b", Score: 0.2},
+		{ID: "c", Score: 0.3},
+		{ID: "d", Score: 0.4},
+		{ID: "e", Score: 0.5},
+	}
+	counts := map[string]int64{"a": 1000}
+	got := AccessBoost(ranked, counts, 2, 2.0)
+	if len(got) != 2 {
+		t.Errorf("topK=2 should return 2 results, got %d", len(got))
+	}
+	// a should be boosted to top.
+	if got[0].ID != "a" {
+		t.Errorf("boosted a should be first, got %q", got[0].ID)
+	}
+}
+
+func TestAccessBoostFetchMultiplier(t *testing.T) {
+	ranked := []RankedID{
+		{ID: "a", Score: 0.9},
+		{ID: "b", Score: 0.1},
+	}
+	counts := map[string]int64{"b": 1000}
+	// fetchMultiplier=1.0 should still work (no extra fetch window).
+	got := AccessBoost(ranked, counts, 2, 1.0)
+	if len(got) != 2 {
+		t.Errorf("expected 2 results, got %d", len(got))
+	}
+	// b gets boost but might not beat a with 0.9
+}

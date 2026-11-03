@@ -604,6 +604,25 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
+	// ── Optional pprof listener (issue #880 diagnostics) ──────────────────
+	// Opt-in, loopback-only, and served by its own http.Server — never mounted
+	// on the public mux above. See docs/operations/pprof.md.
+	var pprofServer *http.Server
+	if cfg.PprofAddr != "" {
+		pprofServer, err = server.NewPprofServer(cfg.PprofAddr)
+		if err != nil {
+			logger.Error("pprof listener configuration rejected", "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			logger.Info("pprof listener enabled (loopback only)", "addr", cfg.PprofAddr,
+				"heap_profile", fmt.Sprintf("http://%s/debug/pprof/heap", cfg.PprofAddr))
+			if err := pprofServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				logger.Error("pprof listener error", "error", err)
+			}
+		}()
+	}
+
 	// Unified signal handler — sequences: cancel server goroutines → cancel indexers → close watchers → shutdown HTTP server
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -644,6 +663,9 @@ func main() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer shutdownCancel()
 		httpServer.Shutdown(shutdownCtx)
+		if pprofServer != nil {
+			pprofServer.Shutdown(shutdownCtx)
+		}
 	}()
 
 	// Emit startup event

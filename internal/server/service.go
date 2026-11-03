@@ -15,6 +15,7 @@ import (
 	pb "github.com/qdrant/go-client/qdrant"
 
 	"github.com/chezgoulet/ragamuffin/internal/auth"
+	"github.com/chezgoulet/ragamuffin/internal/events"
 	"github.com/chezgoulet/ragamuffin/internal/logstore"
 	qutil "github.com/chezgoulet/ragamuffin/internal/qdrantutil"
 	"github.com/chezgoulet/ragamuffin/internal/retrieval"
@@ -232,9 +233,10 @@ func (s *Server) sparseRecall(ctx context.Context, req recallRequest, filter *pb
 	return s.recallByIDs(ctx, ranked, req, filter)
 }
 
-// hybridRecall fuses dense semantic + lexical BM25 results via Reciprocal Rank
-// Fusion (RRF). The two rankers produce heterogeneous scores (cosine vs BM25),
-// which RRF reconciles without calibration (Cormack et al., SIGIR 2009).
+// hybridRecall fuses dense semantic + lexical BM25 results via adaptive-weight
+// Reciprocal Rank Fusion. When the two rankers have low rank overlap (ratio
+// < 0.3), each gets weight proportional to its length; otherwise both get
+// 0.5 (standard RRF). Cormack et al., SIGIR 2009.
 func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []float32, filter *pb.Filter) ([]recallResult, float32, error) {
 	vault := vaultFromContext(ctx)
 	if vault == "" {
@@ -245,22 +247,18 @@ func (s *Server) hybridRecall(ctx context.Context, req recallRequest, vector []f
 	if err != nil {
 		return nil, 0, fmt.Errorf("dense search failed: %w", err)
 	}
-	denseIDs := make([]string, 0, len(denseResults))
+	denseRanked := make([]retrieval.RankedID, 0, len(denseResults))
 	for _, r := range denseResults {
-		denseIDs = append(denseIDs, r.Id.GetUuid())
+		denseRanked = append(denseRanked, retrieval.RankedID{ID: r.Id.GetUuid(), Score: r.Score})
 	}
 
-	var lexicalIDs []string
+	var lexicalRanked []retrieval.RankedID
 	if idx := s.lexicalIndexFor(ctx, vault); idx != nil && idx.Size() > 0 {
-		ranked := idx.Search(req.Query, req.TopK*2)
-		for _, r := range ranked {
-			lexicalIDs = append(lexicalIDs, r.ID)
-		}
+		lexicalRanked = idx.Search(req.Query, req.TopK*2)
 	}
 
-	fused := retrieval.Hybrid(denseIDs, lexicalIDs, 60)
+	fused := retrieval.FuseAdaptive(denseRanked, lexicalRanked, 60)
 	if len(fused) == 0 {
-		// Degenerate: dense only.
 		return mapDenseResults(denseResults, req.Detail), topScoreOf(denseResults), nil
 	}
 	if len(fused) > req.TopK {
@@ -1404,6 +1402,37 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 		created = true
 	}
 
+	// Prediction-error reconsolidation (B6): compute how much the new value
+	// differs from the existing one. Always emits a CloudEvent; side effects
+	// (auto-confirm, flag for review) only happen when dry-run is off.
+	var oldValue string
+	var pe float64
+	var peClassification string
+	if exists {
+		oldValue = s.fetchExistingFactValue(ctx, key)
+		pe = computePE(oldValue, value)
+		peClassification = classifyPE(pe, PEThresholds{
+			Reinforce: s.cfg.PEReinforceThreshold,
+			Minor:     s.cfg.PEMinorThreshold,
+			Major:     s.cfg.PEMajorThreshold,
+		})
+		vault := vaultFromContext(ctx)
+		if s.emitter != nil {
+			s.emitter.Emit(events.TypeFactReconsolidated, events.FactReconsolidatedData{
+				Key:            key,
+				PE:             pe,
+				Classification: peClassification,
+				OldValue:       oldValue,
+				NewValue:       value,
+				Vault:          vault,
+				DryRun:         s.cfg.PEDryRun,
+			})
+		}
+		s.log(ctx).Info("prediction error computed",
+			"key", key, "pe", pe, "classification", peClassification,
+			"dry_run", s.cfg.PEDryRun, "vault", vault)
+	}
+
 	// Build the fact payload (mirrors handleFactsPost's lifecycle field preservation)
 	now := time.Now().UTC().Format(time.RFC3339)
 	var createdAt, status, supersedes, refines, lastConfirmedAt, lastAccessedAt string
@@ -1443,6 +1472,20 @@ func (s *Server) doFactsUpsert(ctx context.Context, key, value, source, sourceTy
 	}
 	if confirmationCount <= 0 {
 		confirmationCount = 1
+	}
+
+	// Non-dry-run PE side effects: auto-confirm on reinforcement,
+	// flag for review on major-update.
+	if exists && !s.cfg.PEDryRun {
+		switch peClassification {
+		case PEReinforcement:
+			confirmationCount++
+			lastConfirmedAt = now
+			s.log(ctx).Info("pe auto-confirm", "key", key, "confirmation_count", confirmationCount)
+		case PEMajorUpdate:
+			status = "needs_review"
+			s.log(ctx).Info("pe flagged for review", "key", key)
+		}
 	}
 
 	if confidence < 0 || confidence > 1.0 {

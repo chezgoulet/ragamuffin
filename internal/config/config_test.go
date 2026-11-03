@@ -1030,3 +1030,86 @@ func TestLoad_AutoProvisionModeNoCrash(t *testing.T) {
 		t.Errorf("expected 0 vaults, got %d", len(cfg.Vaults))
 	}
 }
+
+func TestIsLoopbackAddr(t *testing.T) {
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:6060", true},
+		{"127.0.0.2:6060", true},
+		{"localhost:6060", true},
+		{"LOCALHOST:6060", true},
+		{"[::1]:6060", true},
+		{"0.0.0.0:6060", false},
+		{":6060", false},
+		{"192.168.1.10:6060", false},
+		{"example.com:6060", false},
+		{"127.0.0.1", false},
+		{"127.0.0.1:http", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.addr, func(t *testing.T) {
+			if got := IsLoopbackAddr(tt.addr); got != tt.want {
+				t.Errorf("IsLoopbackAddr(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidate_PprofAddr(t *testing.T) {
+	dir := t.TempDir()
+	os.Setenv("RAGAMUFFIN_VAULT_PATH", dir)
+	os.Setenv("RAGAMUFFIN_QDRANT_URL", "http://localhost:6334")
+	defer func() {
+		os.Unsetenv("RAGAMUFFIN_VAULT_PATH")
+		os.Unsetenv("RAGAMUFFIN_QDRANT_URL")
+		os.Unsetenv("RAGAMUFFIN_PPROF_ADDR")
+	}()
+
+	// Disabled by default.
+	os.Unsetenv("RAGAMUFFIN_PPROF_ADDR")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.PprofAddr != "" {
+		t.Errorf("PprofAddr = %q, want empty by default", cfg.PprofAddr)
+	}
+	if errs := cfg.Validate(); len(errs) != 0 {
+		t.Errorf("expected no errors with pprof disabled, got: %v", errs)
+	}
+
+	// Loopback is accepted.
+	os.Setenv("RAGAMUFFIN_PPROF_ADDR", "127.0.0.1:6060")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load() failed: %v", err)
+	}
+	if cfg.PprofAddr != "127.0.0.1:6060" {
+		t.Errorf("PprofAddr = %q, want 127.0.0.1:6060", cfg.PprofAddr)
+	}
+	if errs := cfg.Validate(); len(errs) != 0 {
+		t.Errorf("expected no errors for loopback pprof addr, got: %v", errs)
+	}
+
+	// Public bind addresses are rejected.
+	for _, addr := range []string{"0.0.0.0:6060", ":6060", "10.1.2.3:6060"} {
+		os.Setenv("RAGAMUFFIN_PPROF_ADDR", addr)
+		cfg, err = Load()
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+		errs := cfg.Validate()
+		found := false
+		for _, e := range errs {
+			if strings.Contains(e, "RAGAMUFFIN_PPROF_ADDR") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected RAGAMUFFIN_PPROF_ADDR error for %q, got: %v", addr, errs)
+		}
+	}
+}

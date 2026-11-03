@@ -8,7 +8,7 @@ Usage:
     client = MCPClient(endpoint="http://ragamuffin:8000")
     client.initialize()
     tools = client.list_tools()
-    result = client.call("ragamuffin_recall", {"query": "...", "vault": "agent::dev"})
+    result = client.call("memory.recall", {"query": "...", "vault": "agent::dev"})
 """
 
 import json
