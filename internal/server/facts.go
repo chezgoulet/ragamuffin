@@ -163,6 +163,17 @@ func (s *Server) factExists(ctx context.Context, key string) (bool, error) {
 	return len(points) > 0, nil
 }
 
+// fetchExistingFactValue returns the fact_value of an existing fact, or "" if
+// the fact doesn't exist or can't be read. Used by PE reconsolidation to
+// compare old and new values without duplicating the scroll logic.
+func (s *Server) fetchExistingFactValue(ctx context.Context, key string) string {
+	points, err := s.facts.ScrollFiltered(ctx, s.factsCollectionFor(ctx), factKeyFilter(key), 1, "")
+	if err != nil || len(points) == 0 {
+		return ""
+	}
+	return qutil.GetPayloadStringValue(points[0].GetPayload(), "fact_value")
+}
+
 // zeroFactVector returns a Vectors wrapper with a zero vector sized to match the
 // configured facts vector dimension. Used as fallback when the embedder is
 // unavailable (degraded mode).
