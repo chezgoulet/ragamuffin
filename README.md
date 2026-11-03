@@ -36,7 +36,7 @@ docker run -d -p 8000:8000 \
 
 ### Prerequisites
 
-- **Go 1.25+** (`go version`)
+- **Go 1.26+** (`go version`)
 - **Qdrant** running locally (`docker run -d -p 6334:6334 qdrant/qdrant`)
 - **Embedding API key** (OpenAI or compatible — `text-embedding-3-small` by default)
 
